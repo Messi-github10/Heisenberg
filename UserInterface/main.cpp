@@ -6,6 +6,31 @@ extern "C" {
 #include <libavformat/avformat.h>
 }
 
+// libplacebo is C++-compatible with PL_API_BEGIN/PL_API_END
+#include <libplacebo/config.h>
+#include <libplacebo/log.h>
+
+#include <cstdio>
+#include <string>
+
+namespace {
+
+void pl_log_callback(void* /*log_priv*/, pl_log_level level, const char* msg) {
+    const char* prefix = "";
+    switch (level) {
+        case PL_LOG_FATAL: prefix = "[FATAL] "; break;
+        case PL_LOG_ERR:   prefix = "[ERR]   "; break;
+        case PL_LOG_WARN:  prefix = "[WARN]  "; break;
+        case PL_LOG_INFO:  prefix = "[INFO]  "; break;
+        case PL_LOG_DEBUG: prefix = "[DEBUG] "; break;
+        case PL_LOG_TRACE: prefix = "[TRACE] "; break;
+        default: break;
+    }
+    std::printf("%s%s\n", prefix, msg);
+}
+
+} // anonymous namespace
+
 int main() {
     // === FFmpeg 验证 ===
     LOG_INFO("=== FFmpeg 版本信息 ===");
@@ -33,6 +58,54 @@ int main() {
     LOG_TRACE("看得到我 (trace)");
     LOG_DEBUG("看得到我 (debug)");
     LOG_INFO("看得到我 (info)");
+
+    // === libplacebo 验证 ===
+    LOG_INFO("=== libplacebo 版本信息 ===");
+    LOG_INFO("PL_MAJOR_VER:   {}", PL_MAJOR_VER);
+    LOG_INFO("PL_API_VER:     {}", PL_API_VER);
+    LOG_INFO("pl_fix_ver():   {}", pl_fix_ver());
+    LOG_INFO("pl_version():   {}", pl_version());
+
+    LOG_INFO("=== libplacebo 特性支持 ===");
+    LOG_INFO("Vulkan:  {}", PL_HAVE_VULKAN  ? "✓" : "✗");
+    LOG_INFO("OpenGL:  {}", PL_HAVE_OPENGL  ? "✓" : "✗");
+    LOG_INFO("D3D11:   {}", PL_HAVE_D3D11   ? "✓" : "✗");
+    LOG_INFO("DOVI:    {}", PL_HAVE_DOVI    ? "✓" : "✗");
+    LOG_INFO("LCMS:    {}", PL_HAVE_LCMS    ? "✓" : "✗");
+    LOG_INFO("SHADERC: {}", PL_HAVE_SHADERC ? "✓" : "✗");
+    LOG_INFO("XXHASH:  {}", PL_HAVE_XXHASH  ? "✓" : "✗");
+
+    LOG_INFO("=== libplacebo 日志系统测试 ===");
+    {
+        pl_log_params params = {
+            .log_cb     = pl_log_callback,
+            .log_priv   = nullptr,
+            .log_level  = PL_LOG_INFO,
+        };
+        pl_log log = pl_log_create(PL_API_VER, &params);
+        if (log) {
+            LOG_INFO("pl_log_create 成功 ✓");
+
+            // 测试日志等级切换 (不产生输出，仅验证 API 无崩溃)
+            pl_log_level_update(log, PL_LOG_DEBUG);
+            pl_log_level_update(log, PL_LOG_INFO);
+            LOG_INFO("pl_log_level_update 无崩溃 ✓");
+
+            // 测试日志参数更新
+            pl_log_params new_params = {
+                .log_cb     = pl_log_simple,
+                .log_priv   = stdout,
+                .log_level  = PL_LOG_INFO,
+            };
+            pl_log_update(log, &new_params);
+            LOG_INFO("pl_log_update (切换为 pl_log_simple) 成功 ✓");
+
+            pl_log_destroy(&log);
+            LOG_INFO("pl_log_destroy 成功 ✓");
+        } else {
+            LOG_ERROR("pl_log_create 失败 ✗");
+        }
+    }
 
     return 0;
 }
