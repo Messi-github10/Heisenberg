@@ -1,0 +1,11 @@
+prefix=D:/Application/FFmpeg/ffmpeg-8.1.1-full_build-shared
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libavutil
+Description: FFmpeg utility library
+Version: 59.8.100
+Requires:
+Libs: -L${libdir} -lavutil
+Cflags: -I${includedir}

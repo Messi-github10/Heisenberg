@@ -1,0 +1,11 @@
+prefix=D:/Application/FFmpeg/ffmpeg-8.1.1-full_build-shared
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libavformat
+Description: FFmpeg container format library
+Version: 61.1.100
+Requires: libavcodec libavutil
+Libs: -L${libdir} -lavformat
+Cflags: -I${includedir}

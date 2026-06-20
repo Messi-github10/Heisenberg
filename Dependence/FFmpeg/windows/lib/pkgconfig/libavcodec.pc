@@ -1,0 +1,11 @@
+prefix=D:/Application/FFmpeg/ffmpeg-8.1.1-full_build-shared
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libavcodec
+Description: FFmpeg codec library
+Version: 61.3.100
+Requires: libavutil
+Libs: -L${libdir} -lavcodec
+Cflags: -I${includedir}

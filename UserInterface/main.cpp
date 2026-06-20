@@ -1,6 +1,19 @@
 #include <Utiles/Logger.hpp>
 
+extern "C" {
+#include <libavutil/avutil.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+}
+
 int main() {
+    // === FFmpeg 验证 ===
+    LOG_INFO("=== FFmpeg 版本信息 ===");
+    LOG_INFO("av_version_info: {}", av_version_info());
+    LOG_INFO("avutil_version:   {}", avutil_version());
+    LOG_INFO("avcodec_version:  {}", avcodec_version());
+    LOG_INFO("avformat_version: {}", avformat_version());
+
     LOG_INFO("=== 默认级别 info — info 及以上可见 ===");
     LOG_TRACE("看不到我 (trace)");
     LOG_DEBUG("看不到我 (debug)");
