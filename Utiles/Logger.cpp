@@ -18,9 +18,9 @@ namespace heisenberg {
 
 namespace {
 
-std::once_flag   g_InitFlag;
-std::atomic_bool g_InitDone{false};
-std::once_flag   g_AtexitFlag;
+std::once_flag g_AtexitFlag;
+
+std::atomic<spdlog::level::level_enum> g_Level{spdlog::level::info};
 
 std::mutex g_ModuleMutex;
 std::unordered_map<std::string, std::shared_ptr<spdlog::logger>> g_ModuleLoggers;
@@ -90,13 +90,27 @@ std::string ExtractModule(const char* file) {
     return std::string(view);
 }
 
+std::once_flag g_ConsoleSetup;
+
 std::shared_ptr<spdlog::logger> CreateModuleLogger(const std::string& module) {
+    if (g_RunId.empty()) {
+        g_RunId = GenerateRunId();
+        std::call_once(g_ConsoleSetup, []() {
+#ifdef _WIN32
+            SetConsoleOutputCP(CP_UTF8);
+#endif
+        });
+    }
+
+    std::call_once(g_AtexitFlag, []() {
+        std::atexit([]() { spdlog::shutdown(); });
+    });
+
     auto logDir = std::filesystem::path(GetExeDirectory()) / "Log" / module;
     std::error_code ec;
     std::filesystem::create_directories(logDir, ec);
 
-    auto logName = g_RunId + ".log";
-    auto logPath = (logDir / logName).string();
+    auto logPath = (logDir / (g_RunId + ".log")).string();
     auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
         logPath, 10 * 1024 * 1024, 5);
 
@@ -107,7 +121,7 @@ std::shared_ptr<spdlog::logger> CreateModuleLogger(const std::string& module) {
         spdlog::sinks_init_list{console_sink, file_sink});
 
     logger->set_pattern(Logger::kDefaultPattern);
-    logger->set_level(spdlog::level::trace);
+    logger->set_level(g_Level.load(std::memory_order_acquire));
     logger->flush_on(spdlog::level::err);
 
     return logger;
@@ -120,52 +134,24 @@ void Logger::Init(const std::string& pattern) {
         g_RunId = GenerateRunId();
     }
 
-    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-
-    auto logDir = std::filesystem::path(GetExeDirectory()) / "Log";
-    std::error_code ec;
-    std::filesystem::create_directories(logDir, ec);
-    auto logPath = (logDir / (g_RunId + ".log")).string();
-    auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-        logPath, 10 * 1024 * 1024, 5);
-
-    auto logger = std::make_shared<spdlog::logger>(
-        "heisenberg",
-        spdlog::sinks_init_list{console_sink, file_sink});
-
-    logger->set_pattern(pattern);
-    logger->set_level(spdlog::level::trace);
-    logger->flush_on(spdlog::level::err);
-
-    spdlog::set_default_logger(std::move(logger));
-
-    g_InitDone.store(true, std::memory_order_release);
-
     std::call_once(g_AtexitFlag, []() {
         std::atexit([]() { spdlog::shutdown(); });
     });
 }
 
 void Logger::SetLevel(spdlog::level::level_enum level) {
-    DefaultLogger()->set_level(level);
+    g_Level.store(level, std::memory_order_release);
+    std::lock_guard lock(g_ModuleMutex);
+    for (auto& [name, logger] : g_ModuleLoggers) {
+        logger->set_level(level);
+    }
 }
 
 void Logger::Shutdown() {
     spdlog::shutdown();
 }
 
-spdlog::logger* Logger::DefaultLogger() {
-    if (!g_InitDone.load(std::memory_order_acquire)) {
-        std::call_once(g_InitFlag, []() { Init(); });
-    }
-    return spdlog::default_logger_raw();
-}
-
 spdlog::logger* Logger::ModuleLogger(const char* file) {
-    if (g_RunId.empty()) {
-        g_RunId = GenerateRunId();
-    }
-
     std::string module = ExtractModule(file);
 
     {
@@ -184,17 +170,6 @@ spdlog::logger* Logger::ModuleLogger(const char* file) {
     }
 
     return logger.get();
-}
-
-std::shared_ptr<spdlog::logger> Logger::CreateLogger(const std::string& name) {
-    auto existing = spdlog::get(name);
-    if (existing) {
-        return existing;
-    }
-
-    auto logger = spdlog::stdout_color_mt(name);
-    logger->set_pattern(kDefaultPattern);
-    return logger;
 }
 
 std::shared_ptr<spdlog::logger> Logger::GetLogger(const std::string& name) {
