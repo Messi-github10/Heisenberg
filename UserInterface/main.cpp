@@ -19,6 +19,10 @@ extern "C" {
 #include <QVersionNumber>
 #include <QString>
 
+#include <Demuxer/DemuxerFactory.hpp>
+#include <Common/Packet.hpp>
+#include <Common/Stream.hpp>
+
 #include <cstdio>
 #include <string>
 
@@ -151,6 +155,109 @@ int main() {
     LOG_INFO("QT_VERSION_MAJOR: {}", QT_VERSION_MAJOR);
     LOG_INFO("QT_VERSION_MINOR: {}", QT_VERSION_MINOR);
     LOG_INFO("QT_VERSION_PATCH: {}", QT_VERSION_PATCH);
+
+    // === Demuxer 单元自测 ===
+    {
+        // 文件路径：优先命令行参数，否则用默认名
+        const char *testFile = R"(C:\Users\NiceFold\Videos\test.mp4)";
+        LOG_INFO("=== Demuxer 单元自测 ===");
+        LOG_INFO("目标文件: {}", testFile);
+
+        auto demuxer = heisenberg::demuxer::createDemuxer();
+
+        // ---- 1. 打开 ----
+        int ret = demuxer->open(testFile);
+        if (ret < 0) {
+            LOG_ERROR("demuxer->open() 失败，返回 {}。请确保文件存在: {}", ret, testFile);
+        } else {
+            LOG_INFO("demuxer->open() 成功 ✓");
+            LOG_INFO("isOpen(): {}", demuxer->isOpen());
+            LOG_INFO("url():     {}", demuxer->url());
+
+            // ---- 2. 流信息 ----
+            const auto &streams = demuxer->streams();
+            LOG_INFO("stream 数量: {}", streams.size());
+            const char *codecNames[] = {
+                "H264", "HEVC", "VP9", "AV1",
+                "AAC", "MP3", "OPUS", "FLAC", "VORBIS", "UNKNOWN"
+            };
+            for (const auto &s : streams) {
+                const auto &c = s.codec;
+                const char *typeStr = s.isVideo() ? "VIDEO" : "AUDIO";
+                const char *codecName = codecNames[static_cast<int>(c.codecId)];
+                LOG_INFO("  stream[{}]: {} id={} codec={} tb={}/{}",
+                    s.index, typeStr, s.demuxerId, codecName,
+                    c.tbNum, c.tbDen);
+                if (s.isVideo()) {
+                    LOG_INFO("    {}x{} {:.3f}fps sar={}:{}",
+                        c.width, c.height, c.fps(), c.sarNum, c.sarDen);
+                } else {
+                    LOG_INFO("    {}Hz {}ch bitDepth={} blockAlign={}",
+                        c.sampleRate, c.channels, c.bitDepth, c.blockAlign);
+                }
+                if (!s.language.empty())
+                    LOG_INFO("    language: {}", s.language);
+                if (!s.title.empty())
+                    LOG_INFO("    title: {}", s.title);
+                LOG_INFO("    default={} forced={}", s.isDefault, s.isForced);
+            }
+
+            // ---- 3. 元数据 ----
+            LOG_INFO("duration:   {:.3f}s", demuxer->duration());
+            LOG_INFO("seekable:   {}", demuxer->seekable());
+            LOG_INFO("startTime:  {:.3f}s", demuxer->startTime());
+            LOG_INFO("formatName: {}", demuxer->formatName());
+
+            // ---- 4. 顺序读包（前 50 个） ----
+            LOG_INFO("--- 顺序读取前 50 个包 ---");
+            int pktCount = 0;
+            while (pktCount < 50) {
+                auto pkt = demuxer->readPacket();
+                if (!pkt) {
+                    LOG_INFO("读包结束（EOF 或错误），共 {} 个", pktCount);
+                    break;
+                }
+                // 仅打印前 10 个以及每第 10 个
+                if (pktCount < 10 || pktCount % 10 == 0) {
+                    LOG_INFO("  pkt[{}]: stream={} pts={:.3f} dts={:.3f} dur={:.3f} {} size={}",
+                        pktCount, pkt->streamIndex,
+                        pkt->pts, pkt->dts, pkt->duration,
+                        pkt->keyframe ? "K" : " ",
+                        pkt->size());
+                }
+                pktCount++;
+            }
+            if (pktCount == 50)
+                LOG_INFO("已读取 {} 个包，不再继续", pktCount);
+
+            // ---- 5. 定位测试 ----
+            if (demuxer->seekable() && demuxer->duration() > 5.0) {
+                LOG_INFO("--- Seek 到 5.0s ---");
+                ret = demuxer->seek(5.0);
+                LOG_INFO("seek() 返回: {}", ret);
+
+                int postSeekCount = 0;
+                while (postSeekCount < 5) {
+                    auto pkt = demuxer->readPacket();
+                    if (!pkt) break;
+                    LOG_INFO("  seek后pkt[{}]: stream={} pts={:.3f} {} size={}",
+                        postSeekCount, pkt->streamIndex,
+                        pkt->pts,
+                        pkt->keyframe ? "K" : " ",
+                        pkt->size());
+                    postSeekCount++;
+                }
+            } else {
+                LOG_INFO("--- 跳过 Seek 测试（不可 seek 或时长不足）---");
+            }
+
+            // ---- 6. 关闭 ----
+            demuxer->close();
+            LOG_INFO("close() 后 isOpen(): {}", demuxer->isOpen());
+        }
+
+        LOG_INFO("=== Demuxer 自测完成 ===");
+    }
 
     return 0;
 }

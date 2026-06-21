@@ -1,5 +1,5 @@
 add_executable(MainApp main.cpp)
-target_link_libraries(MainApp PRIVATE HeisenbergUtiles spdlog ffmpeg libplacebo vulkan volk Qt6::Core Qt6::Gui Qt6::Widgets)
+target_link_libraries(MainApp PRIVATE HeisenbergPreviewer HeisenbergUtiles spdlog ffmpeg libplacebo vulkan volk Qt6::Core Qt6::Gui Qt6::Widgets)
 
 if(MSVC)
     target_compile_options(MainApp PRIVATE /utf-8)
