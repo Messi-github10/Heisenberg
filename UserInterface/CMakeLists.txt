@@ -1,5 +1,5 @@
 add_executable(Heisenberg main.cpp)
-target_link_libraries(Heisenberg PRIVATE HeisenbergUtiles spdlog ffmpeg libplacebo)
+target_link_libraries(Heisenberg PRIVATE HeisenbergUtiles spdlog ffmpeg libplacebo vulkan)
 
 if(MSVC)
     target_compile_options(Heisenberg PRIVATE /utf-8)
@@ -36,6 +36,13 @@ if(WIN32)
     add_custom_command(TARGET Heisenberg POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/Lcms2/debug/bin/lcms2-2.dll,${CMAKE_SOURCE_DIR}/Dependence/Lcms2/bin/lcms2-2.dll>"
+            "$<TARGET_FILE_DIR:Heisenberg>"
+    )
+
+    # Copy Vulkan DLL to output directory
+    add_custom_command(TARGET Heisenberg POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/Vulkan/windows/debug/bin/vulkan-1.dll,${CMAKE_SOURCE_DIR}/Dependence/Vulkan/windows/bin/vulkan-1.dll>"
             "$<TARGET_FILE_DIR:Heisenberg>"
     )
 endif()

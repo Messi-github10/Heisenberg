@@ -10,6 +10,9 @@ extern "C" {
 #include <libplacebo/config.h>
 #include <libplacebo/log.h>
 
+// Vulkan
+#include <vulkan/vulkan.h>
+
 #include <cstdio>
 #include <string>
 
@@ -106,6 +109,21 @@ int main() {
             LOG_ERROR("pl_log_create 失败 ✗");
         }
     }
+
+    // === Vulkan 验证 ===
+    LOG_INFO("=== Vulkan 版本信息 ===");
+    LOG_INFO("Vulkan Header Version: {}.{}.{}",
+        VK_API_VERSION_MAJOR(VK_HEADER_VERSION_COMPLETE),
+        VK_API_VERSION_MINOR(VK_HEADER_VERSION_COMPLETE),
+        VK_API_VERSION_PATCH(VK_HEADER_VERSION_COMPLETE));
+    LOG_INFO("VK_HEADER_VERSION:     {}", VK_HEADER_VERSION);
+    LOG_INFO("VK_API_VERSION_1_0:    {}", (bool)VK_API_VERSION_1_0);
+    LOG_INFO("VK_API_VERSION_1_1:    {}", (bool)VK_API_VERSION_1_1);
+    LOG_INFO("VK_API_VERSION_1_2:    {}", (bool)VK_API_VERSION_1_2);
+    LOG_INFO("VK_API_VERSION_1_3:    {}", (bool)VK_API_VERSION_1_3);
+#ifdef VK_API_VERSION_1_4
+    LOG_INFO("VK_API_VERSION_1_4:    {}", (bool)VK_API_VERSION_1_4);
+#endif
 
     return 0;
 }
