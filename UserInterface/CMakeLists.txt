@@ -1,19 +1,19 @@
-add_executable(Heisenberg main.cpp)
-target_link_libraries(Heisenberg PRIVATE HeisenbergUtiles spdlog ffmpeg libplacebo vulkan)
+add_executable(MainApp main.cpp)
+target_link_libraries(MainApp PRIVATE HeisenbergUtiles spdlog ffmpeg libplacebo vulkan volk)
 
 if(MSVC)
-    target_compile_options(Heisenberg PRIVATE /utf-8)
+    target_compile_options(MainApp PRIVATE /utf-8)
 endif()
 
 if(WIN32)
-    add_custom_command(TARGET Heisenberg POST_BUILD
+    add_custom_command(TARGET MainApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/SpdLog/windows/debug/bin/spdlogd.dll,${CMAKE_SOURCE_DIR}/Dependence/SpdLog/windows/bin/spdlog.dll>"
-            "$<TARGET_FILE_DIR:Heisenberg>"
+            "$<TARGET_FILE_DIR:MainApp>"
     )
 
     # Copy FFmpeg DLLs to output directory
-    add_custom_command(TARGET Heisenberg POST_BUILD
+    add_custom_command(TARGET MainApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avcodec-62.dll"
             "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avdevice-62.dll"
@@ -22,27 +22,27 @@ if(WIN32)
             "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avutil-60.dll"
             "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/swresample-6.dll"
             "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/swscale-9.dll"
-            "$<TARGET_FILE_DIR:Heisenberg>"
+            "$<TARGET_FILE_DIR:MainApp>"
     )
 
     # Copy libplacebo DLL to output directory
-    add_custom_command(TARGET Heisenberg POST_BUILD
+    add_custom_command(TARGET MainApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/Dependence/LibPlacebo/windows/bin/libplacebo-365.dll"
-            "$<TARGET_FILE_DIR:Heisenberg>"
+            "$<TARGET_FILE_DIR:MainApp>"
     )
 
     # Copy LCMS2 DLL (libplacebo runtime dependency) to output directory
-    add_custom_command(TARGET Heisenberg POST_BUILD
+    add_custom_command(TARGET MainApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/Lcms2/debug/bin/lcms2-2.dll,${CMAKE_SOURCE_DIR}/Dependence/Lcms2/bin/lcms2-2.dll>"
-            "$<TARGET_FILE_DIR:Heisenberg>"
+            "$<TARGET_FILE_DIR:MainApp>"
     )
 
     # Copy Vulkan DLL to output directory
-    add_custom_command(TARGET Heisenberg POST_BUILD
+    add_custom_command(TARGET MainApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/Vulkan/windows/debug/bin/vulkan-1.dll,${CMAKE_SOURCE_DIR}/Dependence/Vulkan/windows/bin/vulkan-1.dll>"
-            "$<TARGET_FILE_DIR:Heisenberg>"
+            "$<TARGET_FILE_DIR:MainApp>"
     )
 endif()

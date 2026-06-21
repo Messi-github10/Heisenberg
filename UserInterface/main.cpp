@@ -10,8 +10,10 @@ extern "C" {
 #include <libplacebo/config.h>
 #include <libplacebo/log.h>
 
-// Vulkan
+// Vulkan — VK_NO_PROTOTYPES 必须在 vulkan.h 之前定义，volk 会提供自己的函数加载
+#define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
+#include <volk.h>
 
 #include <cstdio>
 #include <string>
@@ -124,6 +126,18 @@ int main() {
 #ifdef VK_API_VERSION_1_4
     LOG_INFO("VK_API_VERSION_1_4:    {}", (bool)VK_API_VERSION_1_4);
 #endif
+
+    // === Volk 验证 ===
+    LOG_INFO("=== Volk 验证 ===");
+    {
+        VkResult result = volkInitialize();
+        if (result == VK_SUCCESS) {
+            LOG_INFO("volkInitialize 成功 ✓");
+        } else {
+            LOG_WARN("volkInitialize 返回 {}", (int)result);
+            LOG_WARN("(没有 Vulkan 驱动时这是正常的)");
+        }
+    }
 
     return 0;
 }
