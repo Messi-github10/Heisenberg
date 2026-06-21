@@ -1,5 +1,5 @@
 add_executable(MainApp main.cpp)
-target_link_libraries(MainApp PRIVATE HeisenbergUtiles spdlog ffmpeg libplacebo vulkan volk)
+target_link_libraries(MainApp PRIVATE HeisenbergUtiles spdlog ffmpeg libplacebo vulkan volk Qt6::Core Qt6::Gui Qt6::Widgets)
 
 if(MSVC)
     target_compile_options(MainApp PRIVATE /utf-8)
@@ -44,5 +44,13 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/Vulkan/windows/debug/bin/vulkan-1.dll,${CMAKE_SOURCE_DIR}/Dependence/Vulkan/windows/bin/vulkan-1.dll>"
             "$<TARGET_FILE_DIR:MainApp>"
+    )
+
+    # 使用 windeployqt 自动部署 Qt6 DLL 与平台插件到构建输出目录
+    add_custom_command(TARGET MainApp POST_BUILD
+        COMMAND "${QT_PATH}/bin/windeployqt.exe"
+            "$<TARGET_FILE:MainApp>"
+            --no-translations
+        COMMENT "Deploying Qt6 DLLs..."
     )
 endif()

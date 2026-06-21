@@ -15,6 +15,10 @@ extern "C" {
 #include <vulkan/vulkan.h>
 #include <volk.h>
 
+#include <QCoreApplication>
+#include <QVersionNumber>
+#include <QString>
+
 #include <cstdio>
 #include <string>
 
@@ -138,6 +142,15 @@ int main() {
             LOG_WARN("(没有 Vulkan 驱动时这是正常的)");
         }
     }
+
+    // === Qt 6 验证 ===
+    LOG_INFO("=== Qt 6 版本信息 ===");
+    LOG_INFO("Qt Version: {}", qVersion());
+    LOG_INFO("QT_VERSION_STR: {}", QT_VERSION_STR);
+    LOG_INFO("QT_VERSION: {:x}", QT_VERSION);
+    LOG_INFO("QT_VERSION_MAJOR: {}", QT_VERSION_MAJOR);
+    LOG_INFO("QT_VERSION_MINOR: {}", QT_VERSION_MINOR);
+    LOG_INFO("QT_VERSION_PATCH: {}", QT_VERSION_PATCH);
 
     return 0;
 }
