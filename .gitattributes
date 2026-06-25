@@ -1,0 +1,6 @@
+# Git LFS - Third-party binary dependencies under Dependence/
+Dependence/**/*.dll filter=lfs diff=lfs merge=lfs -text
+Dependence/**/*.exe filter=lfs diff=lfs merge=lfs -text
+Dependence/**/*.lib filter=lfs diff=lfs merge=lfs -text
+Dependence/**/*.a filter=lfs diff=lfs merge=lfs -text
+Dependence/**/*.pdb filter=lfs diff=lfs merge=lfs -text

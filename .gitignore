@@ -17,11 +17,15 @@
 # Debugger Files
 *.pdb
 
+!Dependence/**/*.pdb
+
 # Compiled Dynamic libraries
 *.so
 *.dylib
 *.dll
 *.so.*
+
+!Dependence/**/*.dll
 
 
 # Fortran module files
@@ -34,10 +38,15 @@
 *.a
 *.lib
 
+!Dependence/**/*.lib
+!Dependence/**/*.a
+
 # Executables
 *.exe
 *.out
 *.app
+
+!Dependence/**/*.exe
 
 # Build directories
 build/
