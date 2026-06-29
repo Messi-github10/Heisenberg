@@ -159,7 +159,7 @@ int main() {
     // === Demuxer 单元自测 ===
     {
         // 文件路径：优先命令行参数，否则用默认名
-        const char *testFile = R"(C:\Users\NiceFold\Videos\test.mp4)";
+        const char *testFile = R"(C:\Users\A\Videos\素材\istockphoto-1474111143-640_adpp_is.mp4)";
         LOG_INFO("=== Demuxer 单元自测 ===");
         LOG_INFO("目标文件: {}", testFile);
 
