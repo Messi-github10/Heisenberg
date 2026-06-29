@@ -20,6 +20,7 @@ extern "C" {
 #include <QString>
 
 #include <Demuxer/DemuxerFactory.hpp>
+#include <Decoder/DecoderFactory.hpp>
 #include <Common/Packet.hpp>
 #include <Common/Stream.hpp>
 
@@ -257,6 +258,131 @@ int main() {
         }
 
         LOG_INFO("=== Demuxer 自测完成 ===");
+    }
+
+    // === Decoder 单元自测 ===
+    {
+        const char* testFile = R"(C:\Users\A\Videos\素材\istockphoto-1474111143-640_adpp_is.mp4)";
+        LOG_INFO("=== Decoder 单元自测 ===");
+
+        // 1. 打开文件获取流信息
+        auto demuxer = heisenberg::demuxer::createDemuxer();
+        if (demuxer->open(testFile) < 0) {
+            LOG_ERROR("跳过 Decoder 测试：无法打开文件 {}", testFile);
+        } else {
+            // 找到第一个视频流
+            const heisenberg::Stream* videoStream = nullptr;
+            for (const auto& s : demuxer->streams()) {
+                if (s.isVideo()) {
+                    videoStream = &s;
+                    break;
+                }
+            }
+
+            if (!videoStream) {
+                LOG_WARN("跳过 Decoder 测试：文件中没有视频流");
+            } else {
+                LOG_INFO("找到视频流: {}x{} codec={} tb={}/{}",
+                    videoStream->codec.width, videoStream->codec.height,
+                    static_cast<int>(videoStream->codec.codecId),
+                    videoStream->codec.tbNum, videoStream->codec.tbDen);
+
+                // 2. 通过工厂创建 Software 解码器
+                heisenberg::decoder::DecoderConfig config;
+                config.preferred = heisenberg::decoder::DecoderBackend::Software;
+                auto decoder = heisenberg::decoder::createDecoder(config);
+                if (!decoder) {
+                    LOG_ERROR("createDecoder(Software) 返回 nullptr");
+                } else {
+                    LOG_INFO("createDecoder(Software) 成功 ✓");
+                    LOG_INFO("backend: {}", static_cast<int>(decoder->backend()));
+                    LOG_INFO("isHardware: {}", decoder->isHardware());
+
+                    // 3. 打开解码器
+                    int ret = decoder->open(*videoStream);
+                    if (ret < 0) {
+                        LOG_ERROR("decoder->open() 失败，返回 {}", ret);
+                    } else {
+                        LOG_INFO("decoder->open() 成功 ✓");
+                        LOG_INFO("outputPixelFormat: {}", decoder->outputPixelFormat());
+
+                        // 4. 解码循环：喂包 → 取帧
+                        int frameCount = 0;
+                        int packetFed = 0;
+                        const int maxFrames = 10;
+
+                        while (frameCount < maxFrames) {
+                            auto pkt = demuxer->readPacket();
+                            if (!pkt) break; // EOF
+
+                            // 只喂视频流
+                            if (pkt->streamIndex != videoStream->index) continue;
+
+                            packetFed++;
+
+                            ret = decoder->sendPacket(pkt);
+                            if (ret < 0) {
+                                LOG_WARN("sendPacket 失败 @ pkt[{}] ret={}", packetFed, ret);
+                                continue;
+                            }
+
+                            // 一个包可能产多帧，循环取
+                            while (frameCount < maxFrames) {
+                                auto frame = decoder->receiveFrame();
+                                if (!frame) break; // EAGAIN 或 EOF
+
+                                LOG_INFO("  frame[{}]: {}x{} fmt={} pts={:.3f}",
+                                    frameCount,
+                                    frame->width, frame->height,
+                                    frame->format,
+                                    frame->pts != AV_NOPTS_VALUE
+                                        ? static_cast<double>(frame->pts) : -1.0);
+
+                                frameCount++;
+                            }
+                        }
+
+                        LOG_INFO("解码完成：喂入 {} 个视频包，产出 {} 帧",
+                            packetFed, frameCount);
+
+                        // 5. flush + 重新解码（模拟 seek 后场景）
+                        LOG_INFO("--- 测试 flush ---");
+                        decoder->flush();
+                        LOG_INFO("decoder->flush() 完成 ✓");
+
+                        // seek 到文件开头，喂几个包验证解码器恢复
+                        demuxer->seek(0.0);
+                        int postFlushFrames = 0;
+                        int postFlushPackets = 0;
+                        while (postFlushFrames < 3) {
+                            auto pkt = demuxer->readPacket();
+                            if (!pkt) break;
+                            if (pkt->streamIndex != videoStream->index) continue;
+                            postFlushPackets++;
+                            decoder->sendPacket(pkt);
+                            auto frame = decoder->receiveFrame();
+                            if (frame) {
+                                LOG_INFO("  flush后frame[{}]: pts={:.3f}",
+                                    postFlushFrames,
+                                    frame->pts != AV_NOPTS_VALUE
+                                        ? static_cast<double>(frame->pts) : -1.0);
+                                postFlushFrames++;
+                            }
+                        }
+                        LOG_INFO("flush后解码：喂入 {} 包，产出 {} 帧",
+                            postFlushPackets, postFlushFrames);
+
+                        // 6. 关闭
+                        decoder->close();
+                        LOG_INFO("decoder->close() 后 isOpen: {}", decoder->isOpen());
+                    }
+                }
+            }
+
+            demuxer->close();
+        }
+
+        LOG_INFO("=== Decoder 自测完成 ===");
     }
 
     return 0;
