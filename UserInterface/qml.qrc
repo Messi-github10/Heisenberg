@@ -1,0 +1,13 @@
+<RCC>
+    <qresource prefix="/">
+        <file>Qml/Main.qml</file>
+        <file>Qml/MediaPoolPane.qml</file>
+        <file>Qml/ViewerPane.qml</file>
+        <file>Qml/MediaInfoPane.qml</file>
+        <file>Qml/ColorGradingPane.qml</file>
+        <file>Qml/ScopesPane.qml</file>
+        <file>Qml/Controls/ColorWheel.qml</file>
+        <file>Qml/Controls/PlaybackBar.qml</file>
+        <file>Qml/Controls/CurvesEditor.qml</file>
+    </qresource>
+</RCC>
