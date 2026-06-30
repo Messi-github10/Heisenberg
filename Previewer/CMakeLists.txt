@@ -13,6 +13,14 @@ add_library(HeisenbergPreviewer STATIC
         Decoder/DecoderFactory.hpp
         Decoder/HwTransfer.cpp
         Decoder/HwTransfer.hpp
+        Render/SwapChain.hpp
+        Render/SwapChain.cpp
+        Render/RenderEngine.hpp
+        Render/RenderEngine.cpp
+        Render/GpuContext.hpp
+        Render/GpuContext.cpp
+        Render/VulkanContext.hpp
+        Render/VulkanContext.cpp
 )
 
 target_include_directories(HeisenbergPreviewer PUBLIC

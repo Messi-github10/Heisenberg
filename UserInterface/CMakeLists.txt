@@ -1,5 +1,28 @@
-add_executable(MainApp main.cpp)
-target_link_libraries(MainApp PRIVATE HeisenbergPreviewer HeisenbergUtiles spdlog ffmpeg libplacebo vulkan volk Qt6::Core Qt6::Gui Qt6::Widgets)
+add_executable(MainApp
+    main.cpp
+    qml.qrc
+    Backend/MediaPoolModel.hpp        Backend/MediaPoolModel.cpp
+    Backend/PlayerController.hpp      Backend/PlayerController.cpp
+    Backend/MediaInfoProvider.hpp      Backend/MediaInfoProvider.cpp
+    Backend/ColorGradeModel.hpp        Backend/ColorGradeModel.cpp
+    Backend/ScopeDataProvider.hpp      Backend/ScopeDataProvider.cpp
+)
+
+set_target_properties(MainApp PROPERTIES
+    AUTOMOC ON
+    AUTORCC ON
+)
+
+target_include_directories(MainApp PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/Backend
+)
+
+target_link_libraries(MainApp PRIVATE
+    HeisenbergPreviewer HeisenbergUtiles
+    spdlog ffmpeg libplacebo vulkan volk
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Quick Qt6::QuickControls2 Qt6::QuickLayouts Qt6::QuickDialogs2
+)
 
 if(MSVC)
     target_compile_options(MainApp PRIVATE /utf-8)
@@ -51,6 +74,7 @@ if(WIN32)
         COMMAND "${QT_PATH}/bin/windeployqt.exe"
             "$<TARGET_FILE:MainApp>"
             --no-translations
+            --qmldir "${CMAKE_CURRENT_LIST_DIR}/Qml"
         COMMENT "Deploying Qt6 DLLs..."
     )
 endif()
