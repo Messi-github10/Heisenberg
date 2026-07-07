@@ -1,11 +1,10 @@
-# Volk — Vulkan meta-loader, pre-built from vcpkg (MIT licensed)
-# Static library, no DLL required
-add_library(volk INTERFACE)
+add_library(volk STATIC
+    "${CMAKE_CURRENT_LIST_DIR}/include/volk.c")
 
-target_include_directories(volk INTERFACE
-    "${CMAKE_CURRENT_LIST_DIR}/include"
-)
+target_include_directories(volk PUBLIC
+    "${CMAKE_CURRENT_LIST_DIR}/include")
 
-target_link_libraries(volk INTERFACE
-    "$<IF:$<CONFIG:Debug>,${CMAKE_CURRENT_LIST_DIR}/debug/lib/volk.lib,${CMAKE_CURRENT_LIST_DIR}/lib/volk.lib>"
-)
+target_link_libraries(volk PUBLIC vulkan)
+
+target_compile_definitions(volk PUBLIC
+    VK_NO_PROTOTYPES)
