@@ -18,15 +18,11 @@ extern "C" {
 namespace heisenberg {
 namespace decoder {
 
-// ============================================================
-// AVFrame 自定义删除器，供 shared_ptr 使用
-// ============================================================
 namespace {
 void avframeDeleter(AVFrame* frame) {
     av_frame_free(&frame);
 }
 
-/// 将项目内部的 CodecParams::ID 映射回 FFmpeg AVCodecID。
 AVCodecID toAVCodecID(CodecParams::ID id) {
     switch (id) {
     case CodecParams::H264:   return AV_CODEC_ID_H264;
@@ -43,9 +39,6 @@ AVCodecID toAVCodecID(CodecParams::ID id) {
 }
 } // namespace
 
-// ============================================================
-// Impl
-// ============================================================
 struct SoftwareDecoder::Impl {
     const AVCodec* codec = nullptr;
     AVCodecContext* ctx = nullptr;
@@ -63,9 +56,6 @@ struct SoftwareDecoder::Impl {
     }
 };
 
-// ============================================================
-// 生命周期
-// ============================================================
 SoftwareDecoder::SoftwareDecoder()
     : impl_(std::make_unique<Impl>()) {}
 
@@ -76,7 +66,6 @@ SoftwareDecoder::~SoftwareDecoder() {
 int SoftwareDecoder::open(const Stream& stream) {
     impl_->close();
 
-    // 1. 找到对应的 FFmpeg 软件解码器
     AVCodecID avCodecId = toAVCodecID(stream.codec.codecId);
     if (avCodecId == AV_CODEC_ID_NONE) {
         return -1;
@@ -87,23 +76,19 @@ int SoftwareDecoder::open(const Stream& stream) {
         return -2;
     }
 
-    // 2. 分配解码上下文
     impl_->ctx = avcodec_alloc_context3(impl_->codec);
     if (!impl_->ctx) {
         impl_->close();
         return -3;
     }
 
-    // 3. 从 Stream 填充解码参数
     impl_->ctx->width = stream.codec.width;
     impl_->ctx->height = stream.codec.height;
-    impl_->ctx->pix_fmt = AV_PIX_FMT_NONE; // 让 FFmpeg 自动选择
+    impl_->ctx->pix_fmt = AV_PIX_FMT_NONE;
 
-    // 时间基
     impl_->ctx->time_base = {stream.codec.tbNum, stream.codec.tbDen};
     impl_->ctx->framerate = {stream.codec.fpsNum, stream.codec.fpsDen};
 
-    // extradata（H.264 的 SPS/PPS 等）
     if (stream.codec.extradata() && stream.codec.extradataSize() > 0) {
         impl_->ctx->extradata = static_cast<uint8_t*>(
             av_mallocz(stream.codec.extradataSize() + AV_INPUT_BUFFER_PADDING_SIZE));
@@ -116,15 +101,12 @@ int SoftwareDecoder::open(const Stream& stream) {
         impl_->ctx->extradata_size = stream.codec.extradataSize();
     }
 
-    // 4. 打开解码器
     int ret = avcodec_open2(impl_->ctx, impl_->codec, nullptr);
     if (ret < 0) {
         impl_->close();
         return ret;
     }
 
-    // 注意：pixelFormat_ 此时可能为 AV_PIX_FMT_NONE（H.264 等需首帧解码后才确定）。
-    // receiveFrame 会在首帧时自动更新。
     impl_->pixelFormat_ = impl_->ctx->pix_fmt;
     impl_->isOpen_ = true;
     return 0;
@@ -138,16 +120,12 @@ bool SoftwareDecoder::isOpen() const {
     return impl_->isOpen_;
 }
 
-// ============================================================
-// 解码
-// ============================================================
 int SoftwareDecoder::sendPacket(std::shared_ptr<const Packet> packet) {
     if (!impl_->isOpen_) {
         return -1;
     }
 
     if (!packet || packet->empty()) {
-        // 空包表示 flush：通知解码器不再有输入数据，取完缓冲帧
         return avcodec_send_packet(impl_->ctx, nullptr);
     }
 
@@ -187,15 +165,13 @@ std::shared_ptr<AVFrame> SoftwareDecoder::receiveFrame() {
     int ret = avcodec_receive_frame(impl_->ctx, raw);
     if (ret < 0) {
         av_frame_free(&raw);
-        return nullptr; // EAGAIN（需要更多包）或 EOF 或其他错误
+        return nullptr;
     }
 
-    // 首帧：更新运行时确定的 pixelFormat
     if (impl_->pixelFormat_ == AV_PIX_FMT_NONE && raw->format != AV_PIX_FMT_NONE) {
         impl_->pixelFormat_ = raw->format;
     }
 
-    // PTS 从 time_base 换算为毫秒（保持整数精度）
     if (raw->pts != AV_NOPTS_VALUE) {
         raw->pts = av_rescale_q(raw->pts, impl_->ctx->time_base, {1, 1000});
     }
@@ -203,18 +179,12 @@ std::shared_ptr<AVFrame> SoftwareDecoder::receiveFrame() {
     return std::shared_ptr<AVFrame>(raw, avframeDeleter);
 }
 
-// ============================================================
-// Seek 支持
-// ============================================================
 void SoftwareDecoder::flush() {
     if (impl_->ctx) {
         avcodec_flush_buffers(impl_->ctx);
     }
 }
 
-// ============================================================
-// 能力查询
-// ============================================================
 DecoderBackend SoftwareDecoder::backend() const {
     return DecoderBackend::Software;
 }

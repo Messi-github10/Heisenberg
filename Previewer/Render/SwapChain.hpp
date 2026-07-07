@@ -6,14 +6,36 @@
 
 #include <memory>
 
+extern "C" {
+#include <libplacebo/swapchain.h>
+#include <libplacebo/vulkan.h>
+#include <libplacebo/renderer.h>
+}
+
+#include <vulkan/vulkan.h>
+
 namespace heisenberg {
 namespace render {
 
-// Phase 2: Swapchain，封装 pl_swapchain，管理窗口表面和帧呈现
 class SwapChain {
 public:
-    SwapChain();
+    SwapChain(pl_vulkan vk, VkSurfaceKHR surface, int width, int height);
     ~SwapChain();
+
+    SwapChain(const SwapChain&)            = delete;
+    SwapChain& operator=(const SwapChain&) = delete;
+    SwapChain(SwapChain&&)                 = delete;
+    SwapChain& operator=(SwapChain&&)      = delete;
+
+    bool startFrame();
+
+    const pl_frame* getTargetFrame() const;
+
+    bool submitFrame();
+
+    void swapBuffers();
+
+    bool resize(int* width, int* height);
 
 private:
     struct Impl;

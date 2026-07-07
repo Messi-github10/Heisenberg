@@ -6,18 +6,28 @@
 
 #include <memory>
 
-namespace pl { struct gpu; }
+extern "C" {
+#include <libplacebo/vulkan.h>
+}
 
 namespace heisenberg {
 namespace render {
 
-// Phase 2: pl_gpu 的 RAII 封装（依赖 VulkanContext 创建的 VkDevice）
 class GpuContext {
 public:
     GpuContext();
     ~GpuContext();
 
+    GpuContext(const GpuContext&)            = delete;
+    GpuContext& operator=(const GpuContext&) = delete;
+
+    pl_gpu    gpu()    const;
+    pl_vulkan vulkan() const;
+
 private:
+    void createLog();
+    void importVulkan();
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

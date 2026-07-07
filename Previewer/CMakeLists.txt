@@ -11,8 +11,8 @@ add_library(HeisenbergPreviewer STATIC
         Decoder/CudaDecoder.hpp
         Decoder/DecoderFactory.cpp
         Decoder/DecoderFactory.hpp
-        Decoder/HwTransfer.cpp
-        Decoder/HwTransfer.hpp
+        Decoder/TextureTransfer.cpp
+        Decoder/TextureTransfer.hpp
         Render/SwapChain.hpp
         Render/SwapChain.cpp
         Render/RenderEngine.hpp
@@ -29,6 +29,18 @@ target_include_directories(HeisenbergPreviewer PUBLIC
 
 target_link_libraries(HeisenbergPreviewer PUBLIC
     ffmpeg
+    HeisenbergUtiles
+    libplacebo
+    vulkan
+    volk
+)
+
+target_compile_definitions(HeisenbergPreviewer PUBLIC
+    VK_NO_PROTOTYPES
+    VK_USE_PLATFORM_WIN32_KHR
+    VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN
 )
 
 if(MSVC)
