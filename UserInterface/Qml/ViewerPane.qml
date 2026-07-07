@@ -29,17 +29,29 @@ Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            // 画面占位（Phase 2 替换为 Vulkan 渲染表面）
-            Rectangle {
+            // 通过 FrameImageProvider 显示解码帧
+            // frameRevision 变化时 URL 变化，驱动 QML 重新请求帧
+            Image {
+                id: videoPreview
                 anchors.centerIn: parent
                 width: parent.width * 0.9
                 height: parent.height * 0.9
-                color: "#0a0a0a"
-                border.color: "#333333"
+                fillMode: Image.PreserveAspectFit
+                source: "image://frame/preview?" + (root.controller ? root.controller.frameRevision : 0)
+                cache: false
+
+                // 无帧时显示占位文字
+                Rectangle {
+                    anchors.fill: parent
+                    color: "#0a0a0a"
+                    border.color: "#333333"
+                    z: -1
+                }
 
                 Label {
                     anchors.centerIn: parent
-                    text: "Video Preview"
+                    text: videoPreview.sourceSize.width > 0
+                          ? "" : "Video Preview"
                     color: "#444444"
                     font.pixelSize: 18
                 }

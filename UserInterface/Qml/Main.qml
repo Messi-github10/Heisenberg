@@ -13,8 +13,8 @@ Window {
     color: "#1a1a1a"
 
     // ---- Backend 实例 ----
+    // PlayerController 通过 rootContext setContextProperty 注入
     MediaPoolModel     { id: mediaPoolModel }
-    PlayerController   { id: playerController }
     MediaInfoProvider  { id: mediaInfoProvider }
     ColorGradeModel    { id: colorGradeModel }
     ScopeDataProvider  { id: scopeDataProvider }
@@ -40,7 +40,10 @@ Window {
                 width: parent.width * 0.15
                 height: parent.height
                 model: mediaPoolModel
-                onFileSelected: function(filePath) { /* TODO: Phase 2 */ }
+                onFileSelected: function(filePath) {
+                    if (typeof playerController !== "undefined" && playerController)
+                        playerController.openFile(filePath)
+                }
             }
 
             // --- 上方中间：播放器（填充） ---

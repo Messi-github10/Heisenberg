@@ -9,7 +9,7 @@ list(APPEND CMAKE_PREFIX_PATH "${QT_PATH}")
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Quick QuickControls2 QuickLayouts QuickDialogs2)
 
 add_subdirectory(Dependence)
-add_subdirectory(Previewer)
 add_subdirectory(Utiles)
+add_subdirectory(Previewer)
 add_subdirectory(UserInterface)
 

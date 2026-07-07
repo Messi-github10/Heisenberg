@@ -4,56 +4,120 @@
 
 #include "PlayerController.hpp"
 
+#include <Controller/PlaybackController.hpp>
+#include <Utiles/Logger.hpp>
+
 namespace heisenberg {
 namespace ui {
 
 PlayerController::PlayerController(QObject* parent)
     : QObject(parent)
 {
-    // TODO: Phase 2 — 创建 DecoderWrapper，连接帧到达信号
 }
 
 PlayerController::~PlayerController() = default;
 
-void PlayerController::play()
-{
-    // TODO: Phase 2 — 启动解码线程 + 渲染定时器
+// ============================================================
+// 依赖注入
+// ============================================================
+
+void PlayerController::setPlaybackController(ctrl::PlaybackController* ctrl) {
+    ctrl_ = ctrl;
+    if (!ctrl_) return;
+
+    // frameReady → 更新 FrameImageProvider + frameRevision
+    connect(ctrl_, &ctrl::PlaybackController::frameReady,
+            this, [this](const QImage& img) {
+        if (imageProvider_) {
+            imageProvider_->setFrame(img);
+        }
+        frameRevision_++;
+        emit frameDecoded();  // 驱动 QML Image 刷新
+    });
+
+    // positionChanged → currentTime
+    connect(ctrl_, &ctrl::PlaybackController::positionChanged,
+            this, [this](double seconds) {
+        currentTime_ = seconds;
+        emit currentTimeChanged();
+    });
+
+    // stateChanged → isPlaying
+    connect(ctrl_, &ctrl::PlaybackController::stateChanged,
+            this, [this](ctrl::PlaybackController::State s) {
+        bool playing = (s == ctrl::PlaybackController::Playing);
+        if (isPlaying_ != playing) {
+            isPlaying_ = playing;
+            emit isPlayingChanged();
+        }
+    });
+
+    // durationChanged
+    connect(ctrl_, &ctrl::PlaybackController::durationChanged,
+            this, [this](double d) {
+        duration_ = d;
+        emit durationChanged();
+    });
+
+    // endOfStream
+    connect(ctrl_, &ctrl::PlaybackController::endOfStream,
+            this, [this]() {
+        if (isPlaying_) {
+            isPlaying_ = false;
+            emit isPlayingChanged();
+        }
+    });
 }
 
-void PlayerController::pause()
-{
-    // TODO: Phase 2 — 暂停渲染定时器
+void PlayerController::setImageProvider(FrameImageProvider* provider) {
+    imageProvider_ = provider;
 }
 
-void PlayerController::togglePlayPause()
-{
-    // TODO: Phase 2
+// ============================================================
+// 文件加载
+// ============================================================
+
+bool PlayerController::openFile(const QString& path) {
+    if (!ctrl_) return false;
+
+    bool ok = ctrl_->open(path.toStdString());
+    if (ok) {
+        currentFile_ = path;
+        duration_    = ctrl_->duration();
+        isSeekable_  = ctrl_->isSeekable();
+        emit currentFileChanged();
+        emit durationChanged();
+        emit isSeekableChanged();
+    }
+    return ok;
 }
 
-void PlayerController::seek(double /*seconds*/)
-{
-    // TODO: Phase 2 — Demuxer::seek + Decoder::flush + 逐帧定位
+void PlayerController::closeFile() {
+    if (ctrl_) ctrl_->close();
+    currentFile_.clear();
+    currentTime_ = 0.0;
+    duration_    = 0.0;
+    isSeekable_  = false;
+    isPlaying_   = false;
+    emit currentFileChanged();
+    emit currentTimeChanged();
+    emit durationChanged();
+    emit isSeekableChanged();
+    emit isPlayingChanged();
 }
 
-void PlayerController::stepForward(int /*frames*/)
-{
-    // TODO: Phase 2
-}
+// ============================================================
+// 播放控制 — 全部转发到 PlaybackController
+// ============================================================
 
-void PlayerController::stepBackward(int /*frames*/)
-{
-    // TODO: Phase 2
-}
-
-void PlayerController::goToStart()
-{
-    // TODO: Phase 2
-}
-
-void PlayerController::goToEnd()
-{
-    // TODO: Phase 2
-}
+void PlayerController::play()             { if (ctrl_) ctrl_->play(); }
+void PlayerController::pause()            { if (ctrl_) ctrl_->pause(); }
+void PlayerController::togglePlayPause()  { if (ctrl_) ctrl_->togglePlayPause(); }
+void PlayerController::seek(double s)     { if (ctrl_) ctrl_->seek(s); }
+void PlayerController::stepForward(int n) { if (ctrl_) ctrl_->stepForward(n); }
+void PlayerController::stepBackward(int n){ if (ctrl_) ctrl_->stepBackward(n); }
+void PlayerController::goToStart()        { if (ctrl_) ctrl_->goToStart(); }
+void PlayerController::goToEnd()          { if (ctrl_) ctrl_->goToEnd(); }
 
 } // namespace ui
 } // namespace heisenberg

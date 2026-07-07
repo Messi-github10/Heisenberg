@@ -6,6 +6,8 @@ add_executable(MainApp
     Backend/MediaInfoProvider.hpp      Backend/MediaInfoProvider.cpp
     Backend/ColorGradeModel.hpp        Backend/ColorGradeModel.cpp
     Backend/ScopeDataProvider.hpp      Backend/ScopeDataProvider.cpp
+    ../Previewer/Controller/PlaybackController.hpp
+    ../Previewer/Controller/PlaybackController.cpp
 )
 
 set_target_properties(MainApp PROPERTIES
@@ -27,6 +29,11 @@ target_link_libraries(MainApp PRIVATE
 if(MSVC)
     target_compile_options(MainApp PRIVATE /utf-8)
 endif()
+
+target_compile_definitions(MainApp PRIVATE
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN
+)
 
 if(WIN32)
     add_custom_command(TARGET MainApp POST_BUILD
