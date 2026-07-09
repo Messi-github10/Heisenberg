@@ -14,21 +14,8 @@ const wchar_t* VideoOutputItem::windowClassName() {
 }
 
 static LRESULT CALLBACK popupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_LBUTTONDOWN:
-    case WM_RBUTTONDOWN:
-    case WM_MBUTTONDOWN:
-    case WM_NCLBUTTONDOWN:
-    case WM_NCRBUTTONDOWN:
-    case WM_NCMBUTTONDOWN:
-        // 用户点击视频画面 → 激活主窗口
-        if (HWND owner = GetWindow(hwnd, GW_OWNER)) {
-            SetForegroundWindow(owner);
-        }
-        break;
-    case WM_MOUSEACTIVATE:
-        // 不让 popup 抢焦点
-        return MA_NOACTIVATE;
+    if (msg == WM_MOUSEACTIVATE) {
+        return MA_NOACTIVATE;  // 不让 popup 抢焦点
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
@@ -92,7 +79,8 @@ void VideoOutputItem::createPopupWindow() {
         classRegistered_ = true;
     }
 
-    // 不用 owned window 关系，避免干扰主窗口启动焦点
+    // 先创建独立 popup（无 owner），避免启动时干扰主窗口焦点
+    HWND ownerHwnd = reinterpret_cast<HWND>(w->winId());
     hwnd_ = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         windowClassName(),
@@ -105,15 +93,15 @@ void VideoOutputItem::createPopupWindow() {
     if (!hwnd_) return;
 
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-    // 初始 Z-order：popup 在主窗口上面
-    {
-        HWND mainHwnd = reinterpret_cast<HWND>(w->winId());
-        SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        SetWindowPos(mainHwnd, hwnd_, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
     syncPopupGeometry();
+
+    // 延迟绑定 owner：等主窗口完全就绪后再建立 owned 关系
+    QMetaObject::invokeMethod(this, [this, ownerHwnd]() {
+        if (hwnd_) {
+            SetWindowLongPtr(hwnd_, GWLP_HWNDPARENT,
+                             reinterpret_cast<LONG_PTR>(ownerHwnd));
+        }
+    }, Qt::QueuedConnection);
 
     initialized_ = true;
     LOG_INFO("VideoOutputItem: popup created, hwnd=0x{:x}, size={}x{}",
@@ -159,21 +147,4 @@ void VideoOutputItem::trackMainWindow() {
     connect(w, &QQuickWindow::widthChanged, this, [this]() { syncPopupGeometry(); });
     connect(w, &QQuickWindow::heightChanged, this, [this]() { syncPopupGeometry(); });
 
-    // 主窗口激活/失活 → 显示/隐藏 popup + Z-order
-    connect(w, &QQuickWindow::activeChanged, this, [this]() {
-        if (!hwnd_) return;
-        QQuickWindow* w = window();
-        if (w && w->isActive()) {
-            ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-            // 把 popup 放在主窗口上面
-            HWND mainHwnd = reinterpret_cast<HWND>(w->winId());
-            SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            SetWindowPos(mainHwnd, hwnd_, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            syncPopupGeometry();
-        } else {
-            ShowWindow(hwnd_, SW_HIDE);
-        }
-    });
 }
