@@ -40,10 +40,9 @@ SwapChain::SwapChain(pl_vulkan vk, VkSurfaceKHR surface, int width, int height)
         throw std::runtime_error("pl_vulkan_create_swapchain() failed");
     }
 
-    int w = width, h = height;
-    resize(&w, &h);
-
-    LOG_INFO("SwapChain: created — {}x{}", w, h);
+    // 不在构造函数中 resize — 延迟到第一次 startFrame
+    // 让窗口有足够时间完成初始化（处理消息泵等）
+    LOG_INFO("SwapChain: wrapper created (swapchain deferred)");
 }
 
 SwapChain::~SwapChain() {
@@ -60,6 +59,10 @@ bool SwapChain::startFrame() {
 
     bool ok = pl_swapchain_start_frame(impl_->sw, &impl_->sw_frame);
     if (!ok) {
+        static int failCount = 0;
+        if (failCount++ < 3) {
+            LOG_WARN("SwapChain: pl_swapchain_start_frame failed");
+        }
         return false;
     }
 
@@ -84,7 +87,11 @@ void SwapChain::swapBuffers() {
 }
 
 bool SwapChain::resize(int* width, int* height) {
-    return pl_swapchain_resize(impl_->sw, width, height);
+    int reqW = *width, reqH = *height;
+    bool ok = pl_swapchain_resize(impl_->sw, width, height);
+    LOG_INFO("SwapChain: resize request={}x{} actual={}x{} result={}",
+             reqW, reqH, *width, *height, ok ? "OK" : "FAIL");
+    return ok;
 }
 
 } // namespace render

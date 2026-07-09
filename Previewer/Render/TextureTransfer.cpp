@@ -19,7 +19,7 @@ extern "C" {
 #include <stdexcept>
 
 namespace heisenberg {
-namespace decoder {
+namespace render {
 
 struct PlaneMeta {
     int components = 0;
@@ -166,7 +166,7 @@ static pl_color_repr avToPlColorRepr(const AVFrame* f) {
 
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(
         static_cast<AVPixelFormat>(f->format));
-    
+
     if (desc) {
         r.bits.sample_depth = desc->comp[0].depth;
         r.bits.color_depth  = desc->comp[0].depth;
@@ -386,5 +386,5 @@ const pl_frame* TextureTransfer::uploadAVFrame(const AVFrame* avframe) {
     return &impl_->frame;
 }
 
-} // namespace decoder
+} // namespace render
 } // namespace heisenberg

@@ -5,14 +5,20 @@
 #include "PlayerController.hpp"
 
 #include <Controller/PlaybackController.hpp>
+#include <Render/VideoPreviewer.hpp>
+#include <Backend/VideoOutputItem.hpp>
 #include <Utiles/Logger.hpp>
+
+extern "C" {
+#include <libavutil/frame.h>
+}
 
 namespace heisenberg {
 namespace ui {
 
 PlayerController::PlayerController(QObject* parent)
-    : QObject(parent)
-{
+    : QObject(parent) {
+    previewer_ = std::make_unique<render::VideoPreviewer>();
 }
 
 PlayerController::~PlayerController() = default;
@@ -25,15 +31,9 @@ void PlayerController::setPlaybackController(ctrl::PlaybackController* ctrl) {
     ctrl_ = ctrl;
     if (!ctrl_) return;
 
-    // frameReady → 更新 FrameImageProvider + frameRevision
-    connect(ctrl_, &ctrl::PlaybackController::frameReady,
-            this, [this](const QImage& img) {
-        if (imageProvider_) {
-            imageProvider_->setFrame(img);
-        }
-        frameRevision_++;
-        emit frameDecoded();  // 驱动 QML Image 刷新
-    });
+    // frameDecoded → 渲染管线
+    connect(ctrl_, &ctrl::PlaybackController::frameDecoded,
+            this, &PlayerController::onFrameDecoded);
 
     // positionChanged → currentTime
     connect(ctrl_, &ctrl::PlaybackController::positionChanged,
@@ -69,8 +69,82 @@ void PlayerController::setPlaybackController(ctrl::PlaybackController* ctrl) {
     });
 }
 
-void PlayerController::setImageProvider(FrameImageProvider* provider) {
-    imageProvider_ = provider;
+// ============================================================
+// VideoOutputItem 绑定
+// ============================================================
+
+void PlayerController::bindVideoOutput(VideoOutputItem* item) {
+    if (!item) return;
+    LOG_INFO("PlayerController: bindVideoOutput called, nativeWindow={}",
+             reinterpret_cast<uintptr_t>(item->nativeWindow()));
+
+    // 子 HWND 就绪 → 初始化管线
+    connect(item, &VideoOutputItem::nativeWindowReady,
+            this, &PlayerController::onNativeWindowReady,
+            Qt::SingleShotConnection);
+
+    // 尺寸变化 → 重建 swapchain
+    auto syncSize = [this, item]() {
+        qreal w = item->width();
+        qreal h = item->height();
+        if (w > 0 && h > 0) {
+            previewer_->resize(static_cast<int>(w), static_cast<int>(h));
+        }
+    };
+    connect(item, &QQuickItem::widthChanged,  this, syncSize);
+    connect(item, &QQuickItem::heightChanged, this, syncSize);
+
+    // 如果已就绪
+    if (item->nativeWindow()) {
+        onNativeWindowReady(item->nativeWindow());
+    }
+}
+
+void PlayerController::onNativeWindowReady(HWND hwnd) {
+    LOG_INFO("PlayerController: onNativeWindowReady hwnd=0x{:x}", reinterpret_cast<uintptr_t>(hwnd));
+
+    // 延迟初始化，避免 Vulkan 设备创建干扰窗口启动的焦点
+    QMetaObject::invokeMethod(this, [this, hwnd]() {
+        int w = videoWidth_  > 0 ? videoWidth_  : 640;
+        int h = videoHeight_ > 0 ? videoHeight_ : 360;
+
+        bool ok = previewer_->initialize(hwnd, w, h);
+        if (!ok) {
+            LOG_ERROR("PlayerController: VideoPreviewer::initialize() failed");
+            return;
+        }
+
+        previewer_->setOnResize([this](int width, int height) {
+            videoWidth_  = width;
+            videoHeight_ = height;
+        });
+
+        LOG_INFO("PlayerController: Vulkan pipeline bound to HWND 0x{:x}",
+                 reinterpret_cast<uintptr_t>(hwnd));
+    }, Qt::QueuedConnection);
+}
+
+void PlayerController::disconnectPreviewer() {
+    // 预留：未来回收管线资源
+}
+
+// ============================================================
+// 帧回调
+// ============================================================
+
+void PlayerController::onFrameDecoded(std::shared_ptr<AVFrame> frame) {
+    if (!frame || !frame->data[0]) return;
+
+    if (videoWidth_ <= 0 || videoHeight_ <= 0) {
+        videoWidth_  = frame->width;
+        videoHeight_ = frame->height;
+        LOG_INFO("PlayerController: first frame decoded — {}x{}", videoWidth_, videoHeight_);
+    }
+
+    bool ok = previewer_->presentFrame(frame.get());
+    if (!ok) {
+        LOG_WARN("PlayerController: presentFrame failed");
+    }
 }
 
 // ============================================================
@@ -99,6 +173,8 @@ void PlayerController::closeFile() {
     duration_    = 0.0;
     isSeekable_  = false;
     isPlaying_   = false;
+    videoWidth_  = 0;
+    videoHeight_ = 0;
     emit currentFileChanged();
     emit currentTimeChanged();
     emit durationChanged();
@@ -107,7 +183,7 @@ void PlayerController::closeFile() {
 }
 
 // ============================================================
-// 播放控制 — 全部转发到 PlaybackController
+// 播放控制
 // ============================================================
 
 void PlayerController::play()             { if (ctrl_) ctrl_->play(); }

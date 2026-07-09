@@ -5,7 +5,6 @@
 #pragma once
 
 #include <QObject>
-#include <QImage>
 #include <memory>
 
 // 前向声明 FFmpeg C 结构体（完整定义在 .cpp 中）
@@ -63,7 +62,7 @@ public:
 
 signals:
     void stateChanged(heisenberg::ctrl::PlaybackController::State newState);
-    void frameReady(const QImage& image);
+    void frameDecoded(std::shared_ptr<AVFrame> frame);
     void positionChanged(double seconds);
     void durationChanged(double seconds);
     void endOfStream();
@@ -77,7 +76,6 @@ private:
 
     void setState(State s);
     std::shared_ptr<::AVFrame> decodeFrameForTarget(double targetPtsMs);
-    QImage avFrameToQImage(const ::AVFrame* frame);
     void scheduleNextTick(double targetPtsMs);
     void resetClock(double startPtsMs);
     void decodeFirstFrame();

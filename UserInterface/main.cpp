@@ -6,8 +6,6 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
-#include <QQuickImageProvider>
-#include <QImage>
 #include <QUrl>
 
 // Backend 注册
@@ -16,7 +14,7 @@
 #include <Backend/MediaInfoProvider.hpp>
 #include <Backend/ColorGradeModel.hpp>
 #include <Backend/ScopeDataProvider.hpp>
-#include <FrameImageProvider.hpp>
+#include <Backend/VideoOutputItem.hpp>
 
 // Core 播放引擎
 #include <Controller/PlaybackController.hpp>
@@ -42,13 +40,10 @@ int main(int argc, char* argv[])
     // ============================================================
     // 1. 创建核心对象
     // ============================================================
-    auto* imageProvider = new FrameImageProvider();
-
     heisenberg::ctrl::PlaybackController playbackCtrl;    // 播放引擎
     heisenberg::ui::PlayerController     playerCtrl;       // QML 胶水
 
     playerCtrl.setPlaybackController(&playbackCtrl);
-    playerCtrl.setImageProvider(imageProvider);
 
     // ============================================================
     // 2. 注册 C++ 类型到 QML
@@ -57,6 +52,7 @@ int main(int argc, char* argv[])
     qmlRegisterType<heisenberg::ui::MediaInfoProvider> ("Heisenberg", 1, 0, "MediaInfoProvider");
     qmlRegisterType<heisenberg::ui::ColorGradeModel>   ("Heisenberg", 1, 0, "ColorGradeModel");
     qmlRegisterType<heisenberg::ui::ScopeDataProvider> ("Heisenberg", 1, 0, "ScopeDataProvider");
+    qmlRegisterType<VideoOutputItem>     ("Heisenberg", 1, 0, "VideoOutputItem");
     // PlayerController 不再注册为 QML 类型 — 通过 context property 注入
 
     // ============================================================
@@ -64,7 +60,6 @@ int main(int argc, char* argv[])
     // ============================================================
     QQmlApplicationEngine engine;
 
-    engine.addImageProvider("frame", imageProvider);
     engine.rootContext()->setContextProperty("playerController", &playerCtrl);
 
     engine.load(QUrl("qrc:/Qml/Main.qml"));
@@ -72,6 +67,24 @@ int main(int argc, char* argv[])
     if (engine.rootObjects().isEmpty()) {
         heisenberg::Logger::Shutdown();
         return -1;
+    }
+
+    // 查找 VideoOutputItem 并绑定到 PlayerController
+    {
+        auto* rootObj = engine.rootObjects().first();
+        LOG_INFO("Main: root object type = {}", rootObj->metaObject()->className());
+        auto* videoOutput = rootObj->findChild<VideoOutputItem*>("videoOutput");
+        if (videoOutput) {
+            LOG_INFO("Main: found VideoOutputItem, binding...");
+            playerCtrl.bindVideoOutput(videoOutput);
+        } else {
+            LOG_ERROR("Main: VideoOutputItem NOT found! Searching all children...");
+            auto children = rootObj->findChildren<QObject*>();
+            for (auto* c : children) {
+                LOG_INFO("Main: child: {} [{}]",
+                         c->objectName().toStdString(), c->metaObject()->className());
+            }
+        }
     }
 
     // ============================================================

@@ -6,6 +6,7 @@ add_executable(MainApp
     Backend/MediaInfoProvider.hpp      Backend/MediaInfoProvider.cpp
     Backend/ColorGradeModel.hpp        Backend/ColorGradeModel.cpp
     Backend/ScopeDataProvider.hpp      Backend/ScopeDataProvider.cpp
+    Backend/VideoOutputItem.hpp        Backend/VideoOutputItem.cpp
     ../Previewer/Controller/PlaybackController.hpp
     ../Previewer/Controller/PlaybackController.cpp
 )

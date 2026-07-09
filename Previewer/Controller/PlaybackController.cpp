@@ -17,7 +17,6 @@
 extern "C" {
 #include <libavutil/frame.h>
 #include <libavutil/pixdesc.h>
-#include <libswscale/swscale.h>
 }
 
 #include <QTimer>
@@ -52,12 +51,6 @@ struct PlaybackController::Impl {
 
     // -- 解码缓冲 --
     std::shared_ptr<::AVFrame> pendingFrame;  // 超前解码的下一帧
-
-    // -- sws 颜色转换（缓存） --
-    SwsContext* swsCtx = nullptr;
-    int swsSrcW = 0;
-    int swsSrcH = 0;
-    AVPixelFormat swsSrcFmt = AV_PIX_FMT_NONE;
 };
 
 // ============================================================
@@ -75,10 +68,6 @@ PlaybackController::PlaybackController(QObject* parent)
 
 PlaybackController::~PlaybackController() {
     close();
-    if (impl_->swsCtx) {
-        sws_freeContext(impl_->swsCtx);
-        impl_->swsCtx = nullptr;
-    }
 }
 
 // ============================================================
@@ -179,11 +168,8 @@ void PlaybackController::decodeFirstFrame() {
     auto frame = decodeFrameForTarget(std::numeric_limits<double>::max());
     if (frame) {
         impl_->lastDisplayedPtsMs = static_cast<double>(frame->pts);
-        QImage img = avFrameToQImage(frame.get());
-        if (!img.isNull()) {
-            emit frameReady(img);
-            emit positionChanged(frame->pts / 1000.0);
-        }
+        emit frameDecoded(frame);
+        emit positionChanged(frame->pts / 1000.0);
     }
 }
 
@@ -241,11 +227,8 @@ void PlaybackController::seek(double seconds) {
     auto frame = decodeFrameForTarget(targetPtsMs);
     if (frame) {
         impl_->lastDisplayedPtsMs = static_cast<double>(frame->pts);
-        QImage img = avFrameToQImage(frame.get());
-        if (!img.isNull()) {
-            emit frameReady(img);
-            emit positionChanged(frame->pts / 1000.0);
-        }
+        emit frameDecoded(frame);
+        emit positionChanged(frame->pts / 1000.0);
     }
 
     // 4. 如果在播放，重设时钟
@@ -296,11 +279,8 @@ void PlaybackController::onTick() {
         double pts = static_cast<double>(frameToDisplay->pts);
         if (pts != impl_->lastDisplayedPtsMs) {
             impl_->lastDisplayedPtsMs = pts;
-            QImage img = avFrameToQImage(frameToDisplay.get());
-            if (!img.isNull()) {
-                emit frameReady(img);
-                emit positionChanged(pts / 1000.0);
-            }
+            emit frameDecoded(frameToDisplay);
+            emit positionChanged(pts / 1000.0);
         }
     }
 
@@ -392,62 +372,5 @@ void PlaybackController::scheduleNextTick(double targetPtsMs) {
 
     impl_->timer->setInterval(static_cast<int>(delayMs));
 }
-
-// ============================================================
-// 颜色转换 — AVFrame → QImage（缓存 SwsContext）
-// ============================================================
-
-QImage PlaybackController::avFrameToQImage(const ::AVFrame* frame) {
-    if (!frame || !frame->data[0]) return {};
-
-    int w = frame->width;
-    int h = frame->height;
-    AVPixelFormat srcFmt = static_cast<AVPixelFormat>(frame->format);
-
-    // 仅在分辨率或格式变化时重建 SwsContext
-    if (!impl_->swsCtx || impl_->swsSrcW != w || impl_->swsSrcH != h
-        || impl_->swsSrcFmt != srcFmt)
-    {
-        if (impl_->swsCtx) {
-            sws_freeContext(impl_->swsCtx);
-        }
-
-        impl_->swsCtx = sws_getContext(
-            w, h, srcFmt,
-            w, h, AV_PIX_FMT_RGB24,
-            SWS_BILINEAR, nullptr, nullptr, nullptr);
-
-        impl_->swsSrcW = w;
-        impl_->swsSrcH = h;
-        impl_->swsSrcFmt = srcFmt;
-
-        if (!impl_->swsCtx) {
-            LOG_ERROR("PlaybackController: sws_getContext() failed — {}x{} fmt={}",
-                      w, h, static_cast<int>(srcFmt));
-            return {};
-        }
-    }
-
-    // 分配 RGB 缓冲
-    int rgbStride = w * 3;
-    std::vector<uint8_t> rgbBuf(static_cast<size_t>(rgbStride) * h);
-
-    const uint8_t* srcData[4] = { frame->data[0], frame->data[1],
-                                   frame->data[2], frame->data[3] };
-    const int srcStride[4] = { frame->linesize[0], frame->linesize[1],
-                                frame->linesize[2], frame->linesize[3] };
-    uint8_t* dstData[1] = { rgbBuf.data() };
-    const int dstStride[1] = { rgbStride };
-
-    sws_scale(impl_->swsCtx,
-              srcData, srcStride,
-              0, h,
-              dstData, dstStride);
-
-    // .copy() 深拷贝脱离局部 buffer
-    return QImage(rgbBuf.data(), w, h, rgbStride,
-                  QImage::Format_RGB888).copy();
-}
-
 } // namespace ctrl
 } // namespace heisenberg

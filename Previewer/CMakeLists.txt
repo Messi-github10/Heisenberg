@@ -11,8 +11,10 @@ add_library(HeisenbergPreviewer STATIC
         Decoder/CudaDecoder.hpp
         Decoder/DecoderFactory.cpp
         Decoder/DecoderFactory.hpp
-        Decoder/TextureTransfer.cpp
-        Decoder/TextureTransfer.hpp
+        Render/TextureTransfer.cpp
+        Render/TextureTransfer.hpp
+        Render/VideoPreviewer.cpp
+        Render/VideoPreviewer.hpp
         Render/SwapChain.hpp
         Render/SwapChain.cpp
         Render/RenderEngine.hpp

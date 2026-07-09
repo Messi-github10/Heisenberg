@@ -14,7 +14,7 @@ extern "C" {
 }
 
 namespace heisenberg {
-namespace decoder {
+namespace render {
 
 class TextureTransfer {
 public:
@@ -33,5 +33,5 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace decoder
+} // namespace render
 } // namespace heisenberg
