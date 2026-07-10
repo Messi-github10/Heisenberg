@@ -1,5 +1,7 @@
+file(GLOB UTILES_SOURCES *.cpp *.hpp)
+
 add_library(HeisenbergUtiles STATIC
-    Logger.cpp
+    ${UTILES_SOURCES}
 )
 
 target_include_directories(HeisenbergUtiles PUBLIC

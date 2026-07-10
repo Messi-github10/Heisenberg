@@ -1,14 +1,8 @@
+file(GLOB_RECURSE UI_SOURCES *.cpp *.hpp)
+
 add_executable(MainApp
-    main.cpp
     qml.qrc
-    Backend/MediaPoolModel.hpp        Backend/MediaPoolModel.cpp
-    Backend/PlayerController.hpp      Backend/PlayerController.cpp
-    Backend/MediaInfoProvider.hpp      Backend/MediaInfoProvider.cpp
-    Backend/ColorGradeModel.hpp        Backend/ColorGradeModel.cpp
-    Backend/ScopeDataProvider.hpp      Backend/ScopeDataProvider.cpp
-    Backend/VideoOutputItem.hpp        Backend/VideoOutputItem.cpp
-    ../Previewer/Controller/PlaybackController.hpp
-    ../Previewer/Controller/PlaybackController.cpp
+    ${UI_SOURCES}
 )
 
 set_target_properties(MainApp PROPERTIES

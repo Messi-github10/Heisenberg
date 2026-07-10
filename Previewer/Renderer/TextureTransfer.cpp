@@ -19,7 +19,7 @@ extern "C" {
 #include <stdexcept>
 
 namespace heisenberg {
-namespace render {
+namespace renderer {
 
 struct PlaneMeta {
     int components = 0;
@@ -386,5 +386,5 @@ const pl_frame* TextureTransfer::uploadAVFrame(const AVFrame* avframe) {
     return &impl_->frame;
 }
 
-} // namespace render
+} // namespace renderer
 } // namespace heisenberg

@@ -5,146 +5,109 @@
 #include "VideoOutputItem.hpp"
 
 #include <QQuickWindow>
+#include <QSGSimpleTextureNode>
+#include <QSGTexture>
+#include <qsgtexture_platform.h>    // QNativeInterface::QSGVulkanTexture
+
 #include <Utiles/Logger.hpp>
-
-bool VideoOutputItem::classRegistered_ = false;
-
-const wchar_t* VideoOutputItem::windowClassName() {
-    return L"HeisenbergVideoOutput";
-}
-
-static LRESULT CALLBACK popupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (msg == WM_MOUSEACTIVATE) {
-        return MA_NOACTIVATE;  // 不让 popup 抢焦点
-    }
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
-}
 
 VideoOutputItem::VideoOutputItem(QQuickItem* parent)
     : QQuickItem(parent) {
+    setFlag(ItemHasContents, true);
     setAcceptHoverEvents(false);
-    setFlag(ItemHasContents, false);
 }
 
 VideoOutputItem::~VideoOutputItem() {
-    destroyPopupWindow();
-}
-
-void VideoOutputItem::componentComplete() {
-    QQuickItem::componentComplete();
-    LOG_INFO("VideoOutputItem: componentComplete, size={}x{}", width(), height());
-    if (width() > 0 && height() > 0) {
-        createPopupWindow();
-    } else {
-        LOG_WARN("VideoOutputItem: zero size at componentComplete, deferring");
+    // 销毁当前显示的 VkImage（如果有）
+    if (currentVkImage_ && destroyCb_) {
+        destroyCb_(currentVkImage_);
     }
-    trackMainWindow();
-}
-
-void VideoOutputItem::geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) {
-    QQuickItem::geometryChange(newGeometry, oldGeometry);
-
-    if (!initialized_ && newGeometry.width() > 0 && newGeometry.height() > 0) {
-        createPopupWindow();
-    }
-
-    if (hwnd_ && (newGeometry.width()  != oldGeometry.width()
-               || newGeometry.height() != oldGeometry.height()
-               || newGeometry.x()      != oldGeometry.x()
-               || newGeometry.y()      != oldGeometry.y())) {
-        syncPopupGeometry();
+    // 销毁待显示的 VkImage（如果有）
+    if (hasPending_ && pendingFrame_.image && destroyCb_) {
+        destroyCb_(pendingFrame_.image);
     }
 }
 
-void VideoOutputItem::createPopupWindow() {
-    if (hwnd_) return;
+void VideoOutputItem::presentVkImage(vk::Image image, vk::ImageLayout layout,
+                                      int width, int height) {
+    if (!image) return;
 
-    QQuickWindow* w = window();
-    if (!w) return;
-
-    int ww = static_cast<int>(width());
-    int hh = static_cast<int>(height());
-    if (ww <= 0 || hh <= 0) return;
-
-    if (!classRegistered_) {
-        WNDCLASSEXW wc = {};
-        wc.cbSize        = sizeof(wc);
-        wc.lpfnWndProc   = popupWndProc;
-        wc.hInstance     = GetModuleHandleW(nullptr);
-        wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
-        wc.lpszClassName = windowClassName();
-        wc.style         = CS_HREDRAW | CS_VREDRAW;
-        if (!RegisterClassExW(&wc)) return;
-        classRegistered_ = true;
-    }
-
-    // 先创建独立 popup（无 owner），避免启动时干扰主窗口焦点
-    HWND ownerHwnd = reinterpret_cast<HWND>(w->winId());
-    hwnd_ = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        windowClassName(),
-        L"",
-        WS_POPUP,
-        0, 0, ww, hh,
-        nullptr, nullptr,
-        GetModuleHandleW(nullptr), nullptr);
-
-    if (!hwnd_) return;
-
-    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-    syncPopupGeometry();
-
-    // 延迟绑定 owner：等主窗口完全就绪后再建立 owned 关系
-    QMetaObject::invokeMethod(this, [this, ownerHwnd]() {
-        if (hwnd_) {
-            SetWindowLongPtr(hwnd_, GWLP_HWNDPARENT,
-                             reinterpret_cast<LONG_PTR>(ownerHwnd));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // 上一帧 pending 未被消费（场景图来不及渲染），直接销毁
+        if (hasPending_ && pendingFrame_.image && destroyCb_) {
+            destroyCb_(pendingFrame_.image);
         }
-    }, Qt::QueuedConnection);
-
-    initialized_ = true;
-    LOG_INFO("VideoOutputItem: popup created, hwnd=0x{:x}, size={}x{}",
-             reinterpret_cast<uintptr_t>(hwnd_), ww, hh);
-    emit nativeWindowReady(hwnd_);
-}
-
-void VideoOutputItem::destroyPopupWindow() {
-    if (hwnd_) {
-        emit nativeWindowDestroyed();
-        DestroyWindow(hwnd_);
-        hwnd_ = nullptr;
+        pendingFrame_ = { image, layout, width, height };
+        hasPending_   = true;
     }
-    initialized_ = false;
+
+    update();  // 触发场景图重绘 → updatePaintNode
 }
 
-void VideoOutputItem::syncPopupGeometry() {
-    if (!hwnd_) return;
+QSGNode* VideoOutputItem::updatePaintNode(QSGNode* oldNode,
+                                           UpdatePaintNodeData*) {
+    Frame frame;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (hasPending_) {
+            frame       = pendingFrame_;
+            hasPending_ = false;
+        }
+    }
+
+    // 没有待显示帧 → 保留旧节点
+    if (!frame.image) {
+        return oldNode;
+    }
+
+    auto* node = static_cast<QSGSimpleTextureNode*>(oldNode);
+    if (!node) {
+        node = new QSGSimpleTextureNode();
+        node->setFiltering(QSGTexture::Linear);
+        node->setOwnsTexture(true);  // Qt 场景图接管 QSGTexture 生命周期
+    }
 
     QQuickWindow* w = window();
-    if (!w) return;
+    if (w) {
+        QSGTexture* tex = QNativeInterface::QSGVulkanTexture::fromNative(
+            static_cast<VkImage>(frame.image),
+            static_cast<VkImageLayout>(frame.layout),
+            w,
+            QSize(frame.width, frame.height),
+            QQuickWindow::TextureHasAlphaChannel);
 
-    QPointF scenePos = mapToScene(QPointF(0, 0));
-    QPoint globalPos = w->mapToGlobal(scenePos.toPoint());
+        if (tex) {
+            node->setTexture(tex);
+            // setOwnsTexture(true) 保证 setTexture 时旧 QSGTexture 被 node 自动 delete，
+            // 此时才能安全销毁旧 VkImage
+            if (currentVkImage_ && destroyCb_) {
+                destroyCb_(currentVkImage_);
+            }
+            currentVkImage_ = frame.image;
+        }
+    }
 
-    int x = globalPos.x();
-    int y = globalPos.y();
-    int ww = static_cast<int>(width());
-    int hh = static_cast<int>(height());
-    if (ww <= 0 || hh <= 0) return;
-
-    // 只移动/缩放，不改 Z-order（Z-order 在 activeChanged 显示时处理）
-    SetWindowPos(hwnd_, nullptr, x, y, ww, hh,
-                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+    node->setRect(boundingRect());
+    return node;
 }
 
-void VideoOutputItem::trackMainWindow() {
-    QQuickWindow* w = window();
-    if (!w) return;
+void VideoOutputItem::releaseTextureCache() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (currentVkImage_ && destroyCb_) {
+        destroyCb_(currentVkImage_);
+        currentVkImage_ = nullptr;
+    }
+    if (hasPending_ && pendingFrame_.image && destroyCb_) {
+        destroyCb_(pendingFrame_.image);
+        pendingFrame_ = {};
+        hasPending_   = false;
+    }
+}
 
-    connect(w, &QQuickWindow::xChanged, this, [this]() { syncPopupGeometry(); });
-    connect(w, &QQuickWindow::yChanged, this, [this]() { syncPopupGeometry(); });
-    connect(w, &QQuickWindow::widthChanged, this, [this]() { syncPopupGeometry(); });
-    connect(w, &QQuickWindow::heightChanged, this, [this]() { syncPopupGeometry(); });
-
+void VideoOutputItem::releaseResources() {
+    // 先让 Qt 销毁场景图 Node 树 → setOwnsTexture(true) 触发 QSGTexture delete
+    QQuickItem::releaseResources();
+    // 再清洗我们缓存的 VkImage 句柄
+    releaseTextureCache();
 }

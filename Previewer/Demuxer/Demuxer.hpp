@@ -6,6 +6,7 @@
 
 #include <Demuxer/IDemuxer.hpp>
 #include <Common/Codec.hpp>
+#include <Common/NonCopy.hpp>
 #include <Common/Packet.hpp>
 #include <Common/Stream.hpp>
 #include <memory>
@@ -20,13 +21,11 @@ enum AVCodecID;
 namespace heisenberg {
 namespace demuxer {
 
-class Demuxer final : public IDemuxer {
+class Demuxer final : public IDemuxer, public NonCopy {
 public:
     Demuxer();
     ~Demuxer() override;
 
-    Demuxer(const Demuxer &) = delete;
-    Demuxer &operator=(const Demuxer &) = delete;
     Demuxer(Demuxer &&) = delete;
     Demuxer &operator=(Demuxer &&) = delete;
 

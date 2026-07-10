@@ -5,7 +5,9 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQuickWindow>
 #include <QQuickStyle>
+#include <QSGRendererInterface>
 #include <QUrl>
 
 // Backend 注册
@@ -19,6 +21,9 @@
 // Core 播放引擎
 #include <Controller/PlaybackController.hpp>
 
+// Render（Volk 初始化）
+#include <Renderer/VulkanContext.hpp>
+
 #include <Utiles/Logger.hpp>
 
 #include <string>
@@ -28,8 +33,14 @@
 // ============================================================
 int main(int argc, char* argv[])
 {
+    // ---- Volk 加载器初始化（必须在 Qt 使用 Vulkan API 之前） ----
+    heisenberg::renderer::VulkanContext::instance().initVolkLoader();
+
     QGuiApplication app(argc, argv);
     app.setApplicationName("Heisenberg");
+
+    // ---- 使用 Vulkan 渲染后端 ----
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
 
     // 使用 Fusion 样式以支持 background/contentItem 自定义
     QQuickStyle::setStyle("Fusion");
@@ -61,7 +72,6 @@ int main(int argc, char* argv[])
     QQmlApplicationEngine engine;
 
     engine.rootContext()->setContextProperty("playerController", &playerCtrl);
-
     engine.load(QUrl("qrc:/Qml/Main.qml"));
 
     if (engine.rootObjects().isEmpty()) {
@@ -98,6 +108,9 @@ int main(int argc, char* argv[])
     LOG_INFO("Heisenberg started successfully");
 
     int ret = app.exec();
+
+    // ---- 显式释放 GPU 资源（兜底：正常路径由 sceneGraphInvalidated 触发） ----
+    playerCtrl.shutdown();
 
     heisenberg::Logger::Shutdown();
     return ret;

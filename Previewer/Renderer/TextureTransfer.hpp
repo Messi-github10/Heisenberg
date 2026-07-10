@@ -6,6 +6,8 @@
 
 #include <memory>
 
+#include <Common/NonCopy.hpp>
+
 struct AVFrame;
 struct pl_frame;
 
@@ -14,15 +16,12 @@ extern "C" {
 }
 
 namespace heisenberg {
-namespace render {
+namespace renderer {
 
-class TextureTransfer {
+class TextureTransfer : public NonCopy {
 public:
     explicit TextureTransfer(pl_gpu gpu);
     ~TextureTransfer();
-
-    TextureTransfer(const TextureTransfer&) = delete;
-    TextureTransfer& operator=(const TextureTransfer&) = delete;
 
     const pl_frame* uploadAVFrame(const AVFrame* avframe);
 
@@ -33,5 +32,5 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace render
+} // namespace renderer
 } // namespace heisenberg

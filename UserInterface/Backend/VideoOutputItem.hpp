@@ -6,45 +6,50 @@
 
 #include <QQuickItem>
 
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
+#include <vulkan/vulkan.hpp>
+
+#include <functional>
+#include <mutex>
 
 /// VideoOutputItem — QML 中的 Vulkan 渲染目标
 ///
-/// 创建 WS_POPUP 独立窗口覆盖在 QML 视频区域上，供 Vulkan 渲染。
+/// 通过 QSG 场景图直接显示 VkImage，不再使用 WS_POPUP 弹窗。
+/// VkImage 销毁通过回调委托给 Previewer 层（本类不直接调 Vulkan 函数）。
 class VideoOutputItem : public QQuickItem {
     Q_OBJECT
 
 public:
+    using VkImageDestroyCallback = std::function<void(vk::Image)>;
+
     explicit VideoOutputItem(QQuickItem* parent = nullptr);
     ~VideoOutputItem() override;
 
-    HWND nativeWindow() const { return hwnd_; }
+    /// 主线程调用：提交一帧新的 vk::Image 用于显示
+    Q_INVOKABLE void presentVkImage(vk::Image image, vk::ImageLayout layout,
+                                     int width, int height);
 
-signals:
-    void nativeWindowReady(HWND hwnd);
-    void nativeWindowDestroyed();
+    /// 设置 VkImage 销毁回调（由 PlayerController 在绑定时注入）
+    void setVkImageDestroyCallback(VkImageDestroyCallback cb) { destroyCb_ = std::move(cb); }
+
+    /// 主动释放缓存的 vk::Image（在场景图失效前由 PlayerController 调用）
+    void releaseTextureCache();
 
 protected:
-    void componentComplete() override;
-    void geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) override;
+    QSGNode* updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) override;
+    void releaseResources() override;
 
 private:
-    void createPopupWindow();
-    void destroyPopupWindow();
-    void syncPopupGeometry();
-    void trackMainWindow();
+    struct Frame {
+        vk::Image      image;
+        vk::ImageLayout layout = vk::ImageLayout::eUndefined;
+        int            width  = 0;
+        int            height = 0;
+    };
 
-    HWND hwnd_ = nullptr;
-    bool initialized_ = false;
+    std::mutex mutex_;
+    Frame      pendingFrame_;
+    bool       hasPending_   = false;
 
-    static const wchar_t* windowClassName();
-    static bool classRegistered_;
+    VkImageDestroyCallback destroyCb_;
+    vk::Image currentVkImage_;  // 当前正被 QSGTexture 包装的 vk::Image
 };

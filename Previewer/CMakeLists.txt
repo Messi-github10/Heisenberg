@@ -1,28 +1,11 @@
+file(GLOB_RECURSE PREVIEWER_SOURCES *.cpp *.hpp)
+
 add_library(HeisenbergPreviewer STATIC
-    Common/Packet.cpp
-    Demuxer/Demuxer.cpp
-    Demuxer/DemuxerFactory.cpp
-    Decoder/IDecoder.hpp
-    Decoder/SoftwareDecoder.hpp
-        Decoder/SoftwareDecoder.cpp
-        Decoder/D3D11Decoder.cpp
-        Decoder/D3D11Decoder.hpp
-        Decoder/CudaDecoder.cpp
-        Decoder/CudaDecoder.hpp
-        Decoder/DecoderFactory.cpp
-        Decoder/DecoderFactory.hpp
-        Render/TextureTransfer.cpp
-        Render/TextureTransfer.hpp
-        Render/VideoPreviewer.cpp
-        Render/VideoPreviewer.hpp
-        Render/SwapChain.hpp
-        Render/SwapChain.cpp
-        Render/RenderEngine.hpp
-        Render/RenderEngine.cpp
-        Render/GpuContext.hpp
-        Render/GpuContext.cpp
-        Render/VulkanContext.hpp
-        Render/VulkanContext.cpp
+    ${PREVIEWER_SOURCES}
+)
+
+set_target_properties(HeisenbergPreviewer PROPERTIES
+    AUTOMOC ON
 )
 
 target_include_directories(HeisenbergPreviewer PUBLIC
@@ -35,6 +18,7 @@ target_link_libraries(HeisenbergPreviewer PUBLIC
     libplacebo
     vulkan
     volk
+    Qt6::Core
 )
 
 target_compile_definitions(HeisenbergPreviewer PUBLIC

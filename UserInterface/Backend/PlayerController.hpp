@@ -8,21 +8,11 @@
 #include <QString>
 #include <memory>
 
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
-
 struct AVFrame;
 
 namespace heisenberg {
 namespace ctrl   { class PlaybackController; }
-namespace render { class VideoPreviewer; }
+namespace renderer { class IPreviewer; class GpuContext; }
 }
 
 class VideoOutputItem;
@@ -64,7 +54,11 @@ public slots:
     Q_INVOKABLE bool openFile(const QString& path);
     Q_INVOKABLE void closeFile();
 
-    /// QML 调用：绑定 VideoOutputItem（子 HWND 就绪后自动初始化管线）
+    /// 显式释放 GPU 资源（必须在 QML Engine 析构之前调用）
+    void shutdown();
+
+    /// QML 调用：绑定 VideoOutputItem。
+    /// 此处查询 Qt 的 Vulkan 资源，创建 GpuContext + IPreviewer 并初始化管线。
     Q_INVOKABLE void bindVideoOutput(VideoOutputItem* item);
 
 signals:
@@ -76,11 +70,8 @@ signals:
 
 private slots:
     void onFrameDecoded(std::shared_ptr<AVFrame> frame);
-    void onNativeWindowReady(HWND hwnd);
 
 private:
-    void disconnectPreviewer();
-
     bool    isPlaying_   = false;
     double  currentTime_ = 0.0;
     double  duration_    = 0.0;
@@ -88,10 +79,14 @@ private:
     QString currentFile_;
 
     heisenberg::ctrl::PlaybackController* ctrl_ = nullptr;
-    std::unique_ptr<heisenberg::render::VideoPreviewer> previewer_;
+
+    std::unique_ptr<heisenberg::renderer::GpuContext>     gpuCtx_;
+    std::unique_ptr<heisenberg::renderer::IPreviewer> previewer_;
+    VideoOutputItem* videoOutput_ = nullptr;
 
     int videoWidth_  = 0;
     int videoHeight_ = 0;
+    bool shutdownDone_ = false;
 };
 
 } // namespace ui
