@@ -91,6 +91,10 @@ void PlayerController::setPlaybackController(ctrl::PlaybackController* ctrl) {
             isPlaying_ = false;
             emit isPlayingChanged();
         }
+        if (currentTime_ != duration_) {
+            currentTime_ = duration_;
+            emit currentTimeChanged();
+        }
     });
 }
 

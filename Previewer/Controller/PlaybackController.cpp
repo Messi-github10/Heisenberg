@@ -154,11 +154,30 @@ void PlaybackController::close() {
 }
 
 void PlaybackController::decodeFirstFrame() {
-    auto frame = decodeFrameForTarget(std::numeric_limits<double>::max());
-    if (frame) {
-        impl_->lastDisplayedPtsMs = static_cast<double>(frame->pts);
-        emit frameDecoded(frame);
-        emit positionChanged(frame->pts / 1000.0);
+    while (true) {
+        auto frame = impl_->decoder->receiveFrame();
+        if (frame) {
+            impl_->lastDisplayedPtsMs = static_cast<double>(frame->pts);
+            emit frameDecoded(frame);
+            emit positionChanged(frame->pts / 1000.0);
+            return;
+        }
+
+        auto pkt = impl_->demuxer->readPacket();
+        if (pkt) {
+            if (pkt->streamIndex == impl_->videoStream->index) {
+                impl_->decoder->sendPacket(pkt);
+            }
+        } else {
+            impl_->decoder->sendPacket(nullptr);
+            auto drainFrame = impl_->decoder->receiveFrame();
+            if (drainFrame) {
+                impl_->lastDisplayedPtsMs = static_cast<double>(drainFrame->pts);
+                emit frameDecoded(drainFrame);
+                emit positionChanged(drainFrame->pts / 1000.0);
+            }
+            return;
+        }
     }
 }
 
