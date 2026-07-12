@@ -278,11 +278,8 @@ bool PlayerController::openFile(const QString& path) {
     bool ok = ctrl_->open(path.toStdString());
     if (ok) {
         currentFile_ = path;
-        duration_    = ctrl_->duration();
-        isSeekable_  = ctrl_->isSeekable();
         emit currentFileChanged();
-        emit durationChanged();
-        emit isSeekableChanged();
+        // duration_ / isSeekable_ 由异步回调链更新，不在此处读取
     }
     return ok;
 }

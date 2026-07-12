@@ -5,6 +5,8 @@
 #pragma once
 
 #include <QObject>
+#include <QElapsedTimer>
+#include <Common/RingBuffer.hpp>
 #include <memory>
 
 extern "C" {
@@ -12,6 +14,9 @@ struct AVFrame;
 }
 
 namespace heisenberg {
+
+class DecodeThread;
+
 namespace ctrl {
 
 class PlaybackController : public QObject {
@@ -19,10 +24,12 @@ class PlaybackController : public QObject {
 public:
     enum State {
         Idle,
+        Loading,
         Playing,
         Paused,
         Ended
     };
+    Q_ENUM(State)
 
     explicit PlaybackController(QObject* parent = nullptr);
     ~PlaybackController() override;
@@ -61,10 +68,8 @@ private:
     std::unique_ptr<Impl> impl_;
 
     void setState(State s);
-    std::shared_ptr<::AVFrame> decodeFrameForTarget(double targetPtsMs);
-    void scheduleNextTick(double targetPtsMs);
     void resetClock(double startPtsMs);
-    void decodeFirstFrame();
+    void scheduleNextTick(double targetPtsMs);
 };
 
 } // namespace ctrl
