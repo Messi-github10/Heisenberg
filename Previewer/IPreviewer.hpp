@@ -53,7 +53,7 @@ public:
     FrameOutput presentFrame(const AVFrame* frame);
 
     void resize(int width, int height);
-    void destroyVkImage(vk::Image image);
+    void recycleVkImage(vk::Image image);
 
     void setOnResize(ResizeCallback cb);
     void setOnPresent(PresentCallback cb);

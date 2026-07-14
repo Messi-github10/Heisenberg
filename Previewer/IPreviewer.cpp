@@ -4,8 +4,7 @@
 
 #include "IPreviewer.hpp"
 #include "Renderer/RenderEngine.hpp"
-#include "Renderer/RenderTarget.hpp"
-#include "Renderer/TextureTransfer.hpp"
+#include "TextureContext/TextureManager.hpp"
 #include <volk.h>
 #include <Utiles/Logger.hpp>
 
@@ -20,9 +19,8 @@ struct IPreviewer::Impl {
     pl_gpu     gpu    = nullptr;
     vk::Device device;
 
-    std::unique_ptr<RenderTarget>    renderTarget;
-    std::unique_ptr<RenderEngine>    renderEngine;
-    std::unique_ptr<TextureTransfer> textureTransfer;
+    std::unique_ptr<TextureManager> textureManager;
+    std::unique_ptr<RenderEngine>   renderEngine;
 
     ResizeCallback  onResize;
     PresentCallback onPresent;
@@ -49,11 +47,11 @@ bool IPreviewer::initialize(pl_gpu gpu, vk::Device device,
     impl_->outputWidth  = width;
     impl_->outputHeight = height;
 
-    // 1. RenderTarget
+    // 1. TextureManager（上传 + 目标管理 + 纹理池）
     try {
-        impl_->renderTarget = std::make_unique<RenderTarget>(gpu, queueFamily);
+        impl_->textureManager = std::make_unique<TextureManager>(gpu, device, queueFamily);
     } catch (const std::exception& e) {
-        LOG_ERROR("IPreviewer: RenderTarget creation failed — {}", e.what());
+        LOG_ERROR("IPreviewer: TextureManager creation failed — {}", e.what());
         return false;
     }
 
@@ -62,15 +60,7 @@ bool IPreviewer::initialize(pl_gpu gpu, vk::Device device,
         impl_->renderEngine = std::make_unique<RenderEngine>(gpu);
     } catch (const std::exception& e) {
         LOG_ERROR("IPreviewer: RenderEngine creation failed — {}", e.what());
-        return false;
-    }
-
-    // 3. TextureTransfer
-    try {
-        impl_->textureTransfer = std::make_unique<TextureTransfer>(gpu);
-    } catch (const std::exception& e) {
-        LOG_ERROR("IPreviewer: TextureTransfer creation failed — {}", e.what());
-        impl_->renderEngine.reset();
+        impl_->textureManager.reset();
         return false;
     }
 
@@ -93,26 +83,30 @@ FrameOutput IPreviewer::presentFrame(const AVFrame* avframe) {
     }
 
     // 1. 上传源帧
-    const pl_frame* srcFrame = impl_->textureTransfer->uploadAVFrame(avframe);
+    const pl_frame* srcFrame = impl_->textureManager->uploadAvFrame(avframe);
     if (!srcFrame) {
         return {};
     }
 
-    // 2. 确保目标纹理尺寸正确
-    impl_->renderTarget->resize(w, h);
-
-    // 3. 渲染
-    bool ok = impl_->renderEngine->render(srcFrame,
-                                           impl_->renderTarget->targetFrame());
-    if (!ok) {
-        LOG_WARN("IPreviewer: render failed");
+    // 2. 获取渲染目标
+    auto target = impl_->textureManager->acquireTarget(w, h);
+    if (!target.tex || !target.frame) {
+        LOG_WARN("IPreviewer: acquireTarget failed");
         return {};
     }
 
-    // 4. finalize
-    vk::Image vkImage = impl_->renderTarget->finalize();
+    // 3. 渲染
+    bool ok = impl_->renderEngine->render(srcFrame, target.frame);
+    if (!ok) {
+        LOG_WARN("IPreviewer: render failed");
+        impl_->textureManager->discardTarget(target.tex, w, h);
+        return {};
+    }
+
+    // 4. Finalize → VkImage
+    vk::Image vkImage = impl_->textureManager->finalizeAndExport(target.tex, w, h);
     if (!vkImage) {
-        LOG_ERROR("IPreviewer: RenderTarget::finalize() returned null");
+        LOG_ERROR("IPreviewer: finalizeAndExport failed");
         return {};
     }
 
@@ -139,9 +133,9 @@ void IPreviewer::setOnPresent(PresentCallback cb) {
     impl_->onPresent = std::move(cb);
 }
 
-void IPreviewer::destroyVkImage(vk::Image image) {
-    if (image && impl_->device) {
-        impl_->device.destroyImage(image);
+void IPreviewer::recycleVkImage(vk::Image image) {
+    if (image && impl_->textureManager) {
+        impl_->textureManager->recycleImage(image);
     }
 }
 

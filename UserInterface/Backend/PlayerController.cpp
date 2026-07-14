@@ -197,7 +197,7 @@ void PlayerController::bindVideoOutput(VideoOutputItem* item) {
         // ---- 注入 VkImage 销毁回调 ----
         // VideoOutputItem 在 QSGTexture 被替换后回调 IPreviewer 销毁旧 vk::Image
         videoOutput_->setVkImageDestroyCallback([this](vk::Image img) {
-            previewer_->destroyVkImage(img);
+            previewer_->recycleVkImage(img);
         });
 
         previewer_->setOnResize([this](int width, int height) {
