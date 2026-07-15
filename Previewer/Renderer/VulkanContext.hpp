@@ -7,6 +7,8 @@
 #include <vulkan/vulkan.hpp>
 #include <Common/NonCopy.hpp>
 #include <memory>
+#include <vector>
+#include <optional>
 
 namespace heisenberg {
 namespace renderer {
@@ -15,24 +17,35 @@ class VulkanContext : public NonCopy {
 public:
     static VulkanContext& instance();
 
-    ~VulkanContext() = default;
-    VulkanContext(VulkanContext&&) = delete;
+    ~VulkanContext();
+    VulkanContext(VulkanContext&&)      = delete;
     VulkanContext& operator=(VulkanContext&&) = delete;
 
-    // 初始化 Volk 加载器
-    void initVolkLoader();
+    /// 第一步：初始化 Volk 加载器
+    void initLoader();
 
-    // 加载 Qt 的 VkInstance 到 Volk 和 Vulkan Hpp
-    void initInstance(VkInstance qtInstance);
+    /// 第二步：创建 VkInstance
+    void createInstance(bool enableValidation = false);
 
-    // 加载 Qt 的 VkDevice 到 Volk + Hpp
-    void initDevice(VkDevice qtDevice);
+    /// 第三步：选择物理设备 + 创建 VkDevice
+    void createDevice();
 
-    // 查询 Instance 级函数地址
+    /// 查询 Instance 级函数地址
     PFN_vkGetInstanceProcAddr getInstanceProcAddr() const;
+
+    // -- 资源访问 --
+    vk::Instance       vkInstance()       const;
+    vk::PhysicalDevice physicalDevice()   const;
+    vk::Device         device()           const;
+    uint32_t           graphicsQueueFamily() const;
+    vk::Queue          graphicsQueue()    const;
 
 private:
     VulkanContext();
+
+    std::vector<const char*> requiredInstanceExtensions() const;
+    std::vector<const char*> requiredDeviceExtensions() const;
+    std::optional<uint32_t> findGraphicsQueueFamily(vk::PhysicalDevice physDev) const;
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

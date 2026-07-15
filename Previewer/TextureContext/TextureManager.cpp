@@ -3,11 +3,8 @@
 //
 
 #include "TextureManager.hpp"
-#include "ITexturePool.hpp"
-#include "VulkanTexturePool.hpp"
 
-#include <volk.h>
-#include <libplacebo/vulkan.h>
+#include <libplacebo/colorspace.h>
 #include <Utiles/Logger.hpp>
 
 extern "C" {
@@ -15,10 +12,6 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 }
-
-#include <cstring>
-#include <stdexcept>
-#include <algorithm>
 
 namespace heisenberg {
 namespace renderer {
@@ -38,8 +31,6 @@ struct FormatMeta {
     int           numPlanes = 0;
     PlaneMeta     planes[4];
 };
-
-// ---- 静态格式表 ----
 
 struct StaticFormatEntry {
     AVPixelFormat avFormat;
@@ -134,7 +125,6 @@ static FormatMeta deriveFromFFmpeg(const AVPixFmtDescriptor* desc, AVPixelFormat
 }
 
 static bool getFormatMeta(AVPixelFormat avfmt, FormatMeta& out) {
-    // Level 1: 静态表二分查找
     int lo = 0, hi = static_cast<int>(sizeof(kStaticFormats) / sizeof(kStaticFormats[0])) - 1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
@@ -148,24 +138,20 @@ static bool getFormatMeta(AVPixelFormat avfmt, FormatMeta& out) {
             hi = mid - 1;
     }
 
-    // Level 2: FFmpeg 回退
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(avfmt);
     if (desc) {
         out = deriveFromFFmpeg(desc, avfmt);
         return true;
     }
 
-    LOG_ERROR("TextureManager: unsupported pixel format {} ({})",
-              static_cast<int>(avfmt), av_get_pix_fmt_name(avfmt));
+    LOG_ERROR("TextureManager: unsupported pixel format {}", static_cast<int>(avfmt));
     return false;
 }
 
 static pl_color_repr avToPlColorRepr(const AVFrame* f) {
     pl_color_repr r = {};
-
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(
         static_cast<AVPixelFormat>(f->format));
-
     if (desc) {
         r.bits.sample_depth = desc->comp[0].depth;
         r.bits.color_depth  = desc->comp[0].depth;
@@ -174,11 +160,9 @@ static pl_color_repr avToPlColorRepr(const AVFrame* f) {
                 r.bits.color_depth = desc->comp[c].depth;
         }
     }
-
     r.levels = (f->color_range == AVCOL_RANGE_JPEG)
                    ? PL_COLOR_LEVELS_PC
                    : PL_COLOR_LEVELS_TV;
-
     switch (f->colorspace) {
         case AVCOL_SPC_BT709:       r.sys = PL_COLOR_SYSTEM_BT_709;      break;
         case AVCOL_SPC_BT470BG:
@@ -187,13 +171,11 @@ static pl_color_repr avToPlColorRepr(const AVFrame* f) {
         case AVCOL_SPC_BT2020_CL:   r.sys = PL_COLOR_SYSTEM_BT_2020_C;   break;
         default:                    r.sys = PL_COLOR_SYSTEM_BT_709;       break;
     }
-
     return r;
 }
 
 static pl_color_space avToPlColor(const AVFrame* f) {
     pl_color_space c = {};
-
     switch (f->color_trc) {
         case AVCOL_TRC_BT709:       c.transfer = PL_COLOR_TRC_BT_1886;   break;
         case AVCOL_TRC_GAMMA22:     c.transfer = PL_COLOR_TRC_GAMMA22;   break;
@@ -203,7 +185,6 @@ static pl_color_space avToPlColor(const AVFrame* f) {
         case AVCOL_TRC_LINEAR:      c.transfer = PL_COLOR_TRC_LINEAR;    break;
         default:                    c.transfer = PL_COLOR_TRC_BT_1886;   break;
     }
-
     switch (f->color_primaries) {
         case AVCOL_PRI_BT709:       c.primaries = PL_COLOR_PRIM_BT_709;     break;
         case AVCOL_PRI_BT470BG:     c.primaries = PL_COLOR_PRIM_BT_601_625; break;
@@ -211,64 +192,25 @@ static pl_color_space avToPlColor(const AVFrame* f) {
         case AVCOL_PRI_BT2020:      c.primaries = PL_COLOR_PRIM_BT_2020;    break;
         default:                    c.primaries = PL_COLOR_PRIM_BT_709;      break;
     }
-
     return c;
 }
 
-} // namespace (anonymous)
+} // anonymous namespace
 
 struct TextureManager::Impl {
-    pl_gpu     gpu          = nullptr;
-    vk::Device device;
-    uint32_t   queueFamily  = 0;
+    pl_gpu gpu = nullptr;
 
-    std::unique_ptr<ITexturePool> pool;
-
-    // Hold semaphore
-    VkSemaphore holdSemaphore = VK_NULL_HANDLE;
-
-    // ---- 上传状态 ----
-    pl_tex       uploadPlanes[4] = {};      // PL_MAX_PLANES == 4
+    pl_tex       uploadPlanes[4] = {};
     pl_frame     uploadFrame     = {};
     AVPixelFormat cachedUploadFormat = AV_PIX_FMT_NONE;
     int          cachedUploadWidth  = 0;
     int          cachedUploadHeight = 0;
-
-    // ---- 目标帧 ----
-    pl_frame targetFrame = {};
-
-    // ---- 目标格式 ----
-    pl_fmt    targetPlFmt   = nullptr;
-    vk::Format targetVkFormat = vk::Format::eUndefined;
 };
 
-TextureManager::TextureManager(pl_gpu gpu, vk::Device device, uint32_t queueFamily)
+TextureManager::TextureManager(pl_gpu gpu)
     : impl_(std::make_unique<Impl>()) {
-    impl_->gpu         = gpu;
-    impl_->device      = device;
-    impl_->queueFamily = queueFamily;
-
-    // 创建 VulkanTexturePool
-    impl_->pool = std::make_unique<VulkanTexturePool>(device, HEISENBERG_TEXTURE_POOL_SIZE);
-
-    // 创建 hold semaphore
-    pl_vulkan_sem_params semParams = {};
-    semParams.type = VK_SEMAPHORE_TYPE_BINARY;
-    impl_->holdSemaphore = pl_vulkan_sem_create(gpu, &semParams);
-    if (!impl_->holdSemaphore) {
-        throw std::runtime_error("TextureManager: failed to create hold semaphore");
-    }
-
-    // 查询目标格式
-    impl_->targetPlFmt = pl_find_named_fmt(gpu, "rgba8");
-    if (!impl_->targetPlFmt) {
-        throw std::runtime_error("TextureManager: GPU does not support rgba8 format");
-    }
-    impl_->targetVkFormat = vk::Format::eR8G8B8A8Unorm;
-
-    LOG_INFO("TextureManager: initialized — pool size={}, targetFmt=rgba8, semaphore={}",
-             impl_->pool->capacity(),
-             reinterpret_cast<void*>(impl_->holdSemaphore));
+    impl_->gpu = gpu;
+    LOG_INFO("TextureManager: initialized");
 }
 
 TextureManager::~TextureManager() {
@@ -276,18 +218,7 @@ TextureManager::~TextureManager() {
 }
 
 void TextureManager::shutdown() {
-    if (impl_->holdSemaphore && impl_->gpu) {
-        pl_vulkan_sem_destroy(impl_->gpu, &impl_->holdSemaphore);
-        impl_->holdSemaphore = VK_NULL_HANDLE;
-    }
-
     releaseUploadTextures();
-
-    if (impl_->pool) {
-        impl_->pool->drain();
-        impl_->pool.reset();
-    }
-
     LOG_INFO("TextureManager: shutdown complete");
 }
 
@@ -305,6 +236,11 @@ void TextureManager::releaseUploadTextures() {
 
 const pl_frame* TextureManager::uploadAvFrame(const AVFrame* avframe) {
     if (!avframe || !avframe->data[0]) {
+        return nullptr;
+    }
+
+    if (pl_gpu_is_failed(impl_->gpu)) {
+        LOG_ERROR("TextureManager: GPU is in failed state, cannot upload");
         return nullptr;
     }
 
@@ -407,155 +343,6 @@ const pl_frame* TextureManager::uploadAvFrame(const AVFrame* avframe) {
     impl_->uploadFrame.crop  = { 0, 0, static_cast<float>(w), static_cast<float>(h) };
 
     return &impl_->uploadFrame;
-}
-
-pl_tex TextureManager::createTargetTex(int width, int height) {
-    pl_tex_params tp = {};
-    tp.w          = width;
-    tp.h          = height;
-    tp.format     = impl_->targetPlFmt;
-    tp.sampleable = true;
-    tp.renderable = true;
-
-    pl_tex tex = pl_tex_create(impl_->gpu, &tp);
-    if (!tex) {
-        LOG_ERROR("TextureManager: failed to create target pl_tex ({}x{})", width, height);
-    }
-    return tex;
-}
-
-pl_tex TextureManager::wrapPoolImage(vk::Image image, int width, int height,
-                                       vk::ImageLayout currentLayout,
-                                       VkImageUsageFlags actualUsage) {
-    pl_vulkan_wrap_params wp = {};
-    wp.image  = static_cast<VkImage>(image);
-    wp.width  = width;
-    wp.height = height;
-    wp.format = static_cast<VkFormat>(impl_->targetVkFormat);
-    wp.usage  = actualUsage;
-
-    pl_tex tex = pl_vulkan_wrap(impl_->gpu, &wp);
-    if (!tex) {
-        LOG_ERROR("TextureManager: pl_vulkan_wrap() failed for pooled VkImage ({}x{}, usage=0x{:x})",
-                  width, height, actualUsage);
-        return nullptr;
-    }
-
-    pl_vulkan_release_params rp = {};
-    rp.tex    = tex;
-    rp.layout = static_cast<VkImageLayout>(currentLayout);
-    rp.qf     = impl_->queueFamily;
-
-    pl_vulkan_release_ex(impl_->gpu, &rp);
-
-    return tex;
-}
-
-void TextureManager::buildTargetFrame(pl_tex tex, int width, int height) {
-    std::memset(&impl_->targetFrame, 0, sizeof(impl_->targetFrame));
-    impl_->targetFrame.num_planes = 1;
-    impl_->targetFrame.planes[0].texture    = tex;
-    impl_->targetFrame.planes[0].components = 4;
-    impl_->targetFrame.planes[0].component_mapping[0] = 0;
-    impl_->targetFrame.planes[0].component_mapping[1] = 1;
-    impl_->targetFrame.planes[0].component_mapping[2] = 2;
-    impl_->targetFrame.planes[0].component_mapping[3] = 3;
-
-    impl_->targetFrame.repr.sys        = PL_COLOR_SYSTEM_RGB;
-    impl_->targetFrame.repr.levels     = PL_COLOR_LEVELS_PC;
-    impl_->targetFrame.color.primaries = PL_COLOR_PRIM_BT_709;
-    impl_->targetFrame.color.transfer  = PL_COLOR_TRC_SRGB;
-    impl_->targetFrame.crop            = { 0, 0, static_cast<float>(width), static_cast<float>(height) };
-}
-
-TextureManager::TargetAcquisition TextureManager::acquireTarget(int width, int height) {
-    TargetAcquisition result = {};
-
-    vk::ImageLayout   poolLayout = vk::ImageLayout::eUndefined;
-    VkImageUsageFlags poolUsage  = 0;
-    vk::Image poolImage = impl_->pool->tryAcquire(width, height, impl_->targetVkFormat,
-                                                   &poolLayout, &poolUsage);
-
-    if (poolImage) {
-        result.tex = wrapPoolImage(poolImage, width, height, poolLayout, poolUsage);
-        if (!result.tex) {
-            impl_->pool->release(poolImage);
-        }
-    }
-
-    if (!result.tex) {
-        result.tex = createTargetTex(width, height);
-    }
-
-    if (!result.tex) {
-        return {};
-    }
-
-    buildTargetFrame(result.tex, width, height);
-    result.frame = &impl_->targetFrame;
-
-    return result;
-}
-
-vk::Image TextureManager::finalizeAndExport(pl_tex tex, int width, int height) {
-    if (!tex) {
-        LOG_ERROR("TextureManager: finalizeAndExport called with null tex");
-        return nullptr;
-    }
-
-    pl_gpu_flush(impl_->gpu);
-
-    pl_vulkan_hold_params holdParams = {};
-    holdParams.tex       = tex;
-    holdParams.layout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    holdParams.qf        = impl_->queueFamily;
-    holdParams.semaphore = { impl_->holdSemaphore, 0 };
-    if (!pl_vulkan_hold_ex(impl_->gpu, &holdParams)) {
-        LOG_ERROR("TextureManager: pl_vulkan_hold_ex failed");
-        return nullptr;
-    }
-
-    VkFormat           outFmt   = VK_FORMAT_UNDEFINED;
-    VkImageUsageFlags  outUsage = 0;
-    vk::Image vkImage = pl_vulkan_unwrap(impl_->gpu, tex, &outFmt, &outUsage);
-
-    if (!vkImage) {
-        LOG_ERROR("TextureManager: pl_vulkan_unwrap failed");
-        return nullptr;
-    }
-
-    if (!impl_->pool->add(vkImage, width, height, impl_->targetVkFormat,
-                          vk::ImageLayout::eShaderReadOnlyOptimal, outUsage)) {
-        LOG_INFO("TextureManager: pool full, image will be destroyed on recycle");
-    }
-
-    return vkImage;
-}
-
-void TextureManager::discardTarget(pl_tex tex, int width, int height) {
-    if (!tex) return;
-
-    pl_vulkan_hold_params holdParams = {};
-    holdParams.tex       = tex;
-    holdParams.layout    = VK_IMAGE_LAYOUT_GENERAL;
-    holdParams.qf        = impl_->queueFamily;
-    holdParams.semaphore = { impl_->holdSemaphore, 0 };
-    pl_vulkan_hold_ex(impl_->gpu, &holdParams);
-
-    VkFormat          outFmt   = VK_FORMAT_UNDEFINED;
-    VkImageUsageFlags outUsage = 0;
-    vk::Image vkImage = pl_vulkan_unwrap(impl_->gpu, tex, &outFmt, &outUsage);
-
-    if (!vkImage) return;
-
-    impl_->pool->add(vkImage, width, height, impl_->targetVkFormat,
-                     vk::ImageLayout::eUndefined, outUsage);
-    impl_->pool->release(vkImage);
-}
-
-void TextureManager::recycleImage(vk::Image image) {
-    if (!image) return;
-    impl_->pool->release(image);
 }
 
 } // namespace renderer

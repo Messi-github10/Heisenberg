@@ -1,24 +1,24 @@
 file(GLOB_RECURSE UI_SOURCES *.cpp *.hpp)
 
 add_executable(MainApp
-    qml.qrc
     ${UI_SOURCES}
 )
 
 set_target_properties(MainApp PROPERTIES
     AUTOMOC ON
-    AUTORCC ON
 )
 
 target_include_directories(MainApp PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/Backend
+    ${CMAKE_CURRENT_LIST_DIR}/MainWidget
+    ${CMAKE_SOURCE_DIR}/Previewer
 )
 
 target_link_libraries(MainApp PRIVATE
     HeisenbergPreviewer HeisenbergUtiles
     spdlog ffmpeg libplacebo vulkan volk
-    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Quick Qt6::QuickControls2 Qt6::QuickLayouts Qt6::QuickDialogs2
+    Qt6::Core Qt6::Gui Qt6::Widgets
 )
 
 if(MSVC)
@@ -37,7 +37,6 @@ if(WIN32)
             "$<TARGET_FILE_DIR:MainApp>"
     )
 
-    # Copy FFmpeg DLLs to output directory
     add_custom_command(TARGET MainApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avcodec-62.dll"
@@ -50,33 +49,29 @@ if(WIN32)
             "$<TARGET_FILE_DIR:MainApp>"
     )
 
-    # Copy libplacebo DLL to output directory
     add_custom_command(TARGET MainApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/Dependence/LibPlacebo/windows/bin/libplacebo-365.dll"
             "$<TARGET_FILE_DIR:MainApp>"
     )
 
-    # Copy LCMS2 DLL (libplacebo runtime dependency) to output directory
     add_custom_command(TARGET MainApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/Lcms2/debug/bin/lcms2-2.dll,${CMAKE_SOURCE_DIR}/Dependence/Lcms2/bin/lcms2-2.dll>"
             "$<TARGET_FILE_DIR:MainApp>"
     )
 
-    # Copy Vulkan DLL to output directory
     add_custom_command(TARGET MainApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/Vulkan/windows/debug/bin/vulkan-1.dll,${CMAKE_SOURCE_DIR}/Dependence/Vulkan/windows/bin/vulkan-1.dll>"
             "$<TARGET_FILE_DIR:MainApp>"
     )
 
-    # 使用 windeployqt 自动部署 Qt6 DLL 与平台插件到构建输出目录
+    # windeployqt for QWidget (不需要 --qmldir)
     add_custom_command(TARGET MainApp POST_BUILD
         COMMAND "${QT_PATH}/bin/windeployqt.exe"
             "$<TARGET_FILE:MainApp>"
             --no-translations
-            --qmldir "${CMAKE_CURRENT_LIST_DIR}/Qml"
         COMMENT "Deploying Qt6 DLLs..."
     )
 endif()

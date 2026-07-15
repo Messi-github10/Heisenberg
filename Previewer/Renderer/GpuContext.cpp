@@ -89,15 +89,16 @@ void GpuContext::importVulkan(const VulkanResources& vkRes) {
 
     vkGetPhysicalDeviceFeatures2(vkRes.physDevice, &features2);
 
+    // 枚举设备扩展
+    uint32_t extCount = 0;
+    vkEnumerateDeviceExtensionProperties(vkRes.physDevice, nullptr, &extCount, nullptr);
+    std::vector<VkExtensionProperties> extProps(extCount);
+    vkEnumerateDeviceExtensionProperties(vkRes.physDevice, nullptr, &extCount, extProps.data());
+
     std::vector<const char*> extensions;
-    {
-        uint32_t count = 0;
-        vkEnumerateDeviceExtensionProperties(vkRes.physDevice, nullptr, &count, nullptr);
-        std::vector<VkExtensionProperties> props(count);
-        vkEnumerateDeviceExtensionProperties(vkRes.physDevice, nullptr, &count, props.data());
-        for (auto& p : props) {
-            extensions.push_back(p.extensionName);
-        }
+    extensions.reserve(extCount);
+    for (auto& p : extProps) {
+        extensions.push_back(p.extensionName);
     }
 
     struct pl_vulkan_import_params vp = {};
@@ -121,8 +122,12 @@ void GpuContext::importVulkan(const VulkanResources& vkRes) {
              impl_->pl_vk->gpu->limits.max_tex_2d_dim);
 }
 
-pl_gpu GpuContext::gpuContext() const {
+pl_gpu GpuContext::plGpu() const {
     return impl_->pl_vk->gpu;
+}
+
+pl_vulkan GpuContext::plVulkan() const {
+    return impl_->pl_vk;
 }
 
 } // namespace renderer

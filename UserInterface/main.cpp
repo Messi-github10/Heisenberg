@@ -2,116 +2,91 @@
 // Created by NiceFold on 2026/6/30.
 //
 
-#include <QGuiApplication>
-#include <QQmlApplicationEngine>
-#include <QQmlContext>
-#include <QQuickWindow>
-#include <QQuickStyle>
-#include <QSGRendererInterface>
-#include <QUrl>
+#include <QApplication>
 
-// Backend 注册
-#include <Backend/MediaPoolModel.hpp>
+#include <MainWidget/MainWindow.hpp>
+#include <MainWidget/VideoWidget.hpp>
 #include <Backend/PlayerController.hpp>
-#include <Backend/MediaInfoProvider.hpp>
-#include <Backend/ColorGradeModel.hpp>
-#include <Backend/ScopeDataProvider.hpp>
-#include <Backend/VideoOutputItem.hpp>
 
-// Core 播放引擎
 #include <Controller/PlaybackController.hpp>
-
-// Render（Volk 初始化）
 #include <Renderer/VulkanContext.hpp>
 
 #include <Utiles/Logger.hpp>
 
 #include <string>
 
-// ============================================================
-// Main
-// ============================================================
 int main(int argc, char* argv[])
 {
-    // ---- Volk 加载器初始化（必须在 Qt 使用 Vulkan API 之前） ----
-    heisenberg::renderer::VulkanContext::instance().initVolkLoader();
+    // ============================================================
+    // 0. Volk 加载器（必须在任何 Vulkan 调用之前）
+    // ============================================================
+    heisenberg::renderer::VulkanContext::instance().initLoader();
 
-    QGuiApplication app(argc, argv);
+    QApplication app(argc, argv);
     app.setApplicationName("Heisenberg");
 
-    // ---- 使用 Vulkan 渲染后端 ----
-    QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
-
-    // 使用 Fusion 样式以支持 background/contentItem 自定义
-    QQuickStyle::setStyle("Fusion");
-
-    // 初始化日志
     heisenberg::Logger::Init();
 
     // ============================================================
-    // 1. 创建核心对象
+    // 1. Vulkan 上下文（独立创建 Instance + Device）
     // ============================================================
-    heisenberg::ctrl::PlaybackController playbackCtrl;    // 播放引擎
-    heisenberg::ui::PlayerController     playerCtrl;       // QML 胶水
-
-    playerCtrl.setPlaybackController(&playbackCtrl);
-
-    // ============================================================
-    // 2. 注册 C++ 类型到 QML
-    // ============================================================
-    qmlRegisterType<heisenberg::ui::MediaPoolModel>   ("Heisenberg", 1, 0, "MediaPoolModel");
-    qmlRegisterType<heisenberg::ui::MediaInfoProvider> ("Heisenberg", 1, 0, "MediaInfoProvider");
-    qmlRegisterType<heisenberg::ui::ColorGradeModel>   ("Heisenberg", 1, 0, "ColorGradeModel");
-    qmlRegisterType<heisenberg::ui::ScopeDataProvider> ("Heisenberg", 1, 0, "ScopeDataProvider");
-    qmlRegisterType<VideoOutputItem>     ("Heisenberg", 1, 0, "VideoOutputItem");
-    // PlayerController 不再注册为 QML 类型 — 通过 context property 注入
-
-    // ============================================================
-    // 3. QML 引擎
-    // ============================================================
-    QQmlApplicationEngine engine;
-
-    engine.rootContext()->setContextProperty("playerController", &playerCtrl);
-    engine.load(QUrl("qrc:/Qml/Main.qml"));
-
-    if (engine.rootObjects().isEmpty()) {
+    try {
+        heisenberg::renderer::VulkanContext::instance().createInstance();
+        heisenberg::renderer::VulkanContext::instance().createDevice();
+    } catch (const std::exception& e) {
+        LOG_CRITICAL("Vulkan init failed: {}", e.what());
         heisenberg::Logger::Shutdown();
         return -1;
     }
 
-    // 查找 VideoOutputItem 并绑定到 PlayerController
-    {
-        auto* rootObj = engine.rootObjects().first();
-        LOG_INFO("Main: root object type = {}", rootObj->metaObject()->className());
-        auto* videoOutput = rootObj->findChild<VideoOutputItem*>("videoOutput");
-        if (videoOutput) {
-            LOG_INFO("Main: found VideoOutputItem, binding...");
-            playerCtrl.bindVideoOutput(videoOutput);
-        } else {
-            LOG_ERROR("Main: VideoOutputItem NOT found! Searching all children...");
-            auto children = rootObj->findChildren<QObject*>();
-            for (auto* c : children) {
-                LOG_INFO("Main: child: {} [{}]",
-                         c->objectName().toStdString(), c->metaObject()->className());
-            }
-        }
-    }
+    // ============================================================
+    // 2. 核心对象
+    // ============================================================
+    heisenberg::ctrl::PlaybackController playbackCtrl;
+    heisenberg::ui::PlayerController     playerCtrl;
+    playerCtrl.setPlaybackController(&playbackCtrl);
 
     // ============================================================
-    // 4. 命令行视频路径（可选）
+    // 3. UI
+    // ============================================================
+    MainWindow mainWindow;
+
+    // 绑定视频输出
+    playerCtrl.bindVideoOutput(mainWindow.videoWidget());
+
+    // 连接控制信号
+    QObject::connect(&mainWindow, &MainWindow::playPauseClicked,
+                     &playerCtrl, &heisenberg::ui::PlayerController::togglePlayPause);
+    QObject::connect(&mainWindow, &MainWindow::seekRequested,
+                     &playerCtrl, &heisenberg::ui::PlayerController::seek);
+    QObject::connect(&mainWindow, &MainWindow::openFileRequested,
+                     &playerCtrl, &heisenberg::ui::PlayerController::openFile);
+
+    // 回写 UI 状态
+    QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::isPlayingChanged,
+                     &mainWindow, [&]() { mainWindow.setPlayingState(playerCtrl.isPlaying()); });
+    QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::currentTimeChanged,
+                     &mainWindow, [&]() { mainWindow.setCurrentTime(playerCtrl.currentTime()); });
+    QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::durationChanged,
+                     &mainWindow, [&]() { mainWindow.setDuration(playerCtrl.duration()); });
+
+    mainWindow.show();
+
+    // ============================================================
+    // 4. 命令行视频
     // ============================================================
     if (argc >= 2) {
         playerCtrl.openFile(QString::fromStdString(argv[1]));
-        LOG_INFO("Loaded video from command line: {}", argv[1]);
     }
 
-    LOG_INFO("Heisenberg started successfully");
+    LOG_INFO("Heisenberg started");
 
     int ret = app.exec();
 
-    // ---- 显式释放 GPU 资源（兜底：正常路径由 sceneGraphInvalidated 触发） ----
+    // ============================================================
+    // 5. 清理
+    // ============================================================
     playerCtrl.shutdown();
-
     heisenberg::Logger::Shutdown();
     return ret;
 }

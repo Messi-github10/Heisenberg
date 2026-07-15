@@ -30,7 +30,8 @@ public:
     explicit GpuContext(const VulkanResources& vkRes);
     ~GpuContext();
 
-    pl_gpu gpuContext() const;
+    pl_gpu plGpu() const;
+    pl_vulkan plVulkan() const;
 
 private:
     void createLog();
