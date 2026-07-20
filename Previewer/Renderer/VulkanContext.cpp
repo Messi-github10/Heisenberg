@@ -25,6 +25,9 @@ struct VulkanContext::Impl {
     vk::Device         vkDevice;
     uint32_t           graphicsQF = 0;
     vk::Queue          graphicsQueue;
+    uint32_t           computeQF = 0;
+    vk::Queue          computeQueue;
+    bool               aloneCompute = false;
 
     VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
 };
@@ -130,6 +133,18 @@ std::optional<uint32_t> VulkanContext::findGraphicsQueueFamily(vk::PhysicalDevic
     return std::nullopt;
 }
 
+std::optional<uint32_t> VulkanContext::findAloneCompute(vk::PhysicalDevice physDev) const {
+    auto queueFamilies = physDev.getQueueFamilyProperties();
+    for (uint32_t i = 0; i < static_cast<uint32_t>(queueFamilies.size()); ++i) {
+        bool hasCompute  = static_cast<bool>(queueFamilies[i].queueFlags & vk::QueueFlagBits::eCompute);
+        bool hasGraphics = static_cast<bool>(queueFamilies[i].queueFlags & vk::QueueFlagBits::eGraphics);
+        if (hasCompute && !hasGraphics) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
 void VulkanContext::createDevice() {
     if (!impl_->vkInstance) {
         throw std::runtime_error("VulkanContext: createInstance() must be called first");
@@ -159,6 +174,13 @@ void VulkanContext::createDevice() {
     }
     impl_->graphicsQF = *qf;
 
+    auto computeQFOpt = findAloneCompute(impl_->vkPhysDevice);
+    impl_->aloneCompute = computeQFOpt.has_value();
+    impl_->computeQF    = impl_->aloneCompute ? *computeQFOpt : impl_->graphicsQF;
+
+    LOG_INFO("VulkanContext: graphicsQF={}, computeQF={}, aloneCompute={}",
+             impl_->graphicsQF, impl_->computeQF, impl_->aloneCompute);
+
     auto availableExts = impl_->vkPhysDevice.enumerateDeviceExtensionProperties();
     LOG_INFO("VulkanContext: {} device extensions available", availableExts.size());
 
@@ -178,10 +200,21 @@ void VulkanContext::createDevice() {
     LOG_INFO("VulkanContext: enabling {} device extensions", devExts.size());
 
     float queuePriority = 1.0f;
-    vk::DeviceQueueCreateInfo qCreateInfo;
-    qCreateInfo.queueFamilyIndex = impl_->graphicsQF;
-    qCreateInfo.queueCount       = 1;
-    qCreateInfo.pQueuePriorities = &queuePriority;
+    std::vector<vk::DeviceQueueCreateInfo> queueInfos;
+
+    vk::DeviceQueueCreateInfo gfxQInfo;
+    gfxQInfo.queueFamilyIndex = impl_->graphicsQF;
+    gfxQInfo.queueCount       = 1;
+    gfxQInfo.pQueuePriorities = &queuePriority;
+    queueInfos.push_back(gfxQInfo);
+
+    if (impl_->aloneCompute) {
+        vk::DeviceQueueCreateInfo compQInfo;
+        compQInfo.queueFamilyIndex = impl_->computeQF;
+        compQInfo.queueCount       = 1;
+        compQInfo.pQueuePriorities = &queuePriority;
+        queueInfos.push_back(compQInfo);
+    }
 
     vk::PhysicalDeviceVulkan11Features vk11Features;
     vk11Features.shaderDrawParameters = VK_TRUE;
@@ -190,8 +223,8 @@ void VulkanContext::createDevice() {
     vk12Features.timelineSemaphore = VK_TRUE;
 
     vk::DeviceCreateInfo deviceInfo;
-    deviceInfo.queueCreateInfoCount    = 1;
-    deviceInfo.pQueueCreateInfos       = &qCreateInfo;
+    deviceInfo.queueCreateInfoCount    = static_cast<uint32_t>(queueInfos.size());
+    deviceInfo.pQueueCreateInfos       = queueInfos.data();
     deviceInfo.enabledExtensionCount   = static_cast<uint32_t>(devExts.size());
     deviceInfo.ppEnabledExtensionNames = devExts.data();
     deviceInfo.pNext                   = &vk11Features;
@@ -203,8 +236,10 @@ void VulkanContext::createDevice() {
     VULKAN_HPP_DEFAULT_DISPATCHER.init(impl_->vkInstance, impl_->vkDevice);
 
     impl_->graphicsQueue = impl_->vkDevice.getQueue(impl_->graphicsQF, 0);
+    impl_->computeQueue  = impl_->vkDevice.getQueue(impl_->computeQF, 0);
 
-    LOG_INFO("VulkanContext: VkDevice created — QF={}", impl_->graphicsQF);
+    LOG_INFO("VulkanContext: VkDevice created — graphicsQF={}, computeQF={}",
+             impl_->graphicsQF, impl_->computeQF);
 }
 
 PFN_vkGetInstanceProcAddr VulkanContext::getInstanceProcAddr() const {
@@ -229,6 +264,18 @@ uint32_t VulkanContext::graphicsQueueFamily() const {
 
 vk::Queue VulkanContext::graphicsQueue() const {
     return impl_->graphicsQueue;
+}
+
+uint32_t VulkanContext::computeQueueFamily() const {
+    return impl_->computeQF;
+}
+
+vk::Queue VulkanContext::computeQueue() const {
+    return impl_->computeQueue;
+}
+
+bool VulkanContext::hasAloneCompute() const {
+    return impl_->aloneCompute;
 }
 
 } // namespace renderer

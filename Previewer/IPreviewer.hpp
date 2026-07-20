@@ -10,11 +10,20 @@
 
 extern "C" {
 #include <libplacebo/gpu.h>
+#include <libplacebo/renderer.h>
+#include <libplacebo/vulkan.h>
 }
 
 struct AVFrame;
 
 namespace heisenberg {
+
+namespace filtergraph {
+    class IInputLayer;
+    class IOutputLayer;
+    class IPipeGraph;
+}
+
 namespace renderer {
 
 class SwapChain;
@@ -29,16 +38,13 @@ public:
     IPreviewer();
     ~IPreviewer();
 
-    IPreviewer(IPreviewer&&)                 = delete;
-    IPreviewer& operator=(IPreviewer&&)      = delete;
+    IPreviewer(IPreviewer&&)            = delete;
+    IPreviewer& operator=(IPreviewer&&) = delete;
 
-    /// @param gpu        来自 GpuContext 的 pl_gpu
-    /// @param swapChain  已初始化好的 SwapChain（由外部创建并注入）
-    /// @param width, height 初始尺寸
-    bool initialize(pl_gpu gpu, std::unique_ptr<SwapChain> swapChain,
+    bool initialize(pl_gpu gpu, pl_vulkan vk,
+                    std::unique_ptr<SwapChain> swapChain,
                     int width, int height);
 
-    /// 渲染一帧 → swapchain 呈现
     bool presentFrame(const AVFrame* frame);
 
     void resize(int width, int height);
@@ -46,9 +52,19 @@ public:
     void setOnResize(ResizeCallback cb);
     void setOnPresent(PresentCallback cb);
 
+    void setFilterGraph(heisenberg::filtergraph::IPipeGraph* graph,
+                        heisenberg::filtergraph::IInputLayer*  input,
+                        heisenberg::filtergraph::IOutputLayer* output);
+
     void shutdown();
 
 private:
+    bool buildIntermediateTarget(int width, int height);
+    void releaseIntermediateTarget();
+    bool renderToIntermediateTarget(const pl_frame* src, int width, int height);
+
+    bool renderToSwapChain(VkImage image, int width, int height);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

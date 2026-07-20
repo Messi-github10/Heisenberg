@@ -34,18 +34,22 @@ public:
     PFN_vkGetInstanceProcAddr getInstanceProcAddr() const;
 
     // -- 资源访问 --
-    vk::Instance       vkInstance()       const;
-    vk::PhysicalDevice physicalDevice()   const;
-    vk::Device         device()           const;
+    vk::Instance       vkInstance()          const;
+    vk::PhysicalDevice physicalDevice()      const;
+    vk::Device         device()              const;
     uint32_t           graphicsQueueFamily() const;
-    vk::Queue          graphicsQueue()    const;
+    vk::Queue          graphicsQueue()       const;
 
+    uint32_t computeQueueFamily() const;
+    vk::Queue computeQueue()      const;
+    bool      hasAloneCompute()   const;
 private:
     VulkanContext();
 
     std::vector<const char*> requiredInstanceExtensions() const;
     std::vector<const char*> requiredDeviceExtensions() const;
     std::optional<uint32_t> findGraphicsQueueFamily(vk::PhysicalDevice physDev) const;
+    std::optional<uint32_t> findAloneCompute(vk::PhysicalDevice physDev) const;
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

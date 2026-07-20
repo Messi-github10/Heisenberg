@@ -139,7 +139,8 @@ void PlayerController::initPipeline(VideoWidget* widget) {
     }
 
     // ---- 初始化 IPreviewer ----
-    bool ok = previewer_->initialize(gpuCtx_->plGpu(), std::move(swapChain), w, h);
+    bool ok = previewer_->initialize(gpuCtx_->plGpu(), gpuCtx_->plVulkan(),
+                                      std::move(swapChain), w, h);
     if (!ok) {
         LOG_ERROR("PlayerController: IPreviewer::initialize() failed");
         gpuCtx_.reset();
