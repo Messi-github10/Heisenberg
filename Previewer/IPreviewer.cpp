@@ -216,10 +216,8 @@ bool IPreviewer::buildIntermediateTarget(int width, int height) {
         return false;
     }
     impl_->vkDevice.bindImageMemory(impl_->intermediateImg, impl_->intermediateMemory, 0);
-
     impl_->intermediateLayout = vk::ImageLayout::eUndefined;
 
-    LOG_INFO("IPreviewer: intermediate VkImage created — {}x{}", width, height);
     return true;
 }
 

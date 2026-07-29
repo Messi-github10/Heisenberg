@@ -16,6 +16,7 @@ target_link_libraries(HeisenbergPreviewer PUBLIC
     ffmpeg
     HeisenbergUtiles
     libplacebo
+    miniaudio
     vulkan
     volk
     Qt6::Core

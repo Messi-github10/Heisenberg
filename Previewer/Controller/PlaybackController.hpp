@@ -5,7 +5,7 @@
 #pragma once
 
 #include <QObject>
-#include <QElapsedTimer>
+#include <Common/AudioSpec.hpp>
 #include <Common/RingBuffer.hpp>
 #include <memory>
 
@@ -16,6 +16,9 @@ struct AVFrame;
 namespace heisenberg {
 
 class DecodeThread;
+
+namespace decoder { class AudioDecoder; }
+namespace renderer { class AudioDevice; }
 
 namespace ctrl {
 
@@ -60,16 +63,11 @@ signals:
     void durationChanged(double seconds);
     void endOfStream();
 
-private slots:
-    void onTick();
-
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 
     void setState(State s);
-    void resetClock(double startPtsMs);
-    void scheduleNextTick(double targetPtsMs);
 };
 
 } // namespace ctrl

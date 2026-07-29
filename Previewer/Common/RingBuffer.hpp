@@ -128,6 +128,12 @@ public:
         return shutdown_;
     }
 
+    std::optional<T> peekFront() const {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (buffer_.empty()) return std::nullopt;
+        return buffer_.front();
+    }
+
     bool empty() const {
         std::unique_lock<std::mutex> lock(mutex_);
         return buffer_.empty();
