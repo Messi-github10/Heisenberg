@@ -26,6 +26,8 @@ public:
 
     virtual std::shared_ptr<Packet> readPacket() = 0;
 
+    // Seeks to a zero-based media time. The implementation converts it to
+    // the selected stream's native time base.
     virtual int seek(double seconds, int streamIndex = -1, int flags = 1 /* AVSEEK_FLAG_BACKWARD */) = 0;
 
     virtual const std::vector<Stream> &streams() const = 0;

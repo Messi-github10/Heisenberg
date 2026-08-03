@@ -34,6 +34,8 @@ public:
     double pts = -1.0;
     double dts = -1.0;
     double duration = -1.0;
+    bool hasPts = false;
+    bool hasDts = false;
     int streamIndex = -1;
     bool keyframe = false;
     int64_t filePos = -1;

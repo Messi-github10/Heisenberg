@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include "Codec.hpp"
 
@@ -20,6 +21,7 @@ public:
 
     int index = -1;
     int demuxerId = -1;
+    int64_t startTime = 0; // In stream time-base units.
     Type type = VIDEO;
 
     CodecParams codec;

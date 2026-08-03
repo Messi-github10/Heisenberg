@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -38,7 +39,7 @@ public:
     void stop();
     void open(const std::string& path);
     void close();
-    void seek(double seconds);
+    void seek(double seconds, double currentSeconds);
 
 private:
     enum class Cmd : int {
@@ -52,7 +53,9 @@ private:
     Cmd         dequeueCommand();
     Cmd         waitForCommand();
     void        processCommand(Cmd cmd);
-    FramePtr    decodeKeyFrame(double targetPtsMs);
+    FramePtr    decodeFrameAt(double targetSeconds, double currentSeconds = -1.0);
+    FramePtr    receiveDecodedFrame();
+    void        resetDecodePosition();
 
     std::thread thread_;
 
@@ -63,6 +66,7 @@ private:
     Cmd                     pendingCmd_ = Cmd::None;
     std::string             openPath_;
     double                  seekTarget_ = 0.0;
+    double                  seekOrigin_ = -1.0;
 
     std::unique_ptr<demuxer::IDemuxer> demuxer_;
     std::unique_ptr<decoder::IDecoder> decoder_;
@@ -70,6 +74,9 @@ private:
     double                             durationSecs_ = 0.0;
     double                             fps_          = 0.0;
     bool                               eof_          = false;
+    int64_t                            lastDecodedFrameIndex_ = -1;
+    FramePtr                           lastDecodedFrame_;
+    bool                               lastDecodedFrameQueued_ = true;
 
     std::atomic<bool> running_{false};
 };

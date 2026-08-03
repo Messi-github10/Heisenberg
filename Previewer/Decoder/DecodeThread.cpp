@@ -6,11 +6,25 @@
 #include <Common/Stream.hpp>
 #include <Utiles/Logger.hpp>
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+
 extern "C" {
 #include <libavutil/frame.h>
 }
 
 namespace heisenberg {
+
+namespace {
+constexpr double kSeekPrerollSeconds = 2.0;
+constexpr int64_t kForwardDecodeThresholdFrames = 64;
+
+int64_t frameIndexFromPts(int64_t ptsMs, double fps) {
+    return static_cast<int64_t>(std::llround(
+        static_cast<double>(ptsMs) * fps / 1000.0));
+}
+} // namespace
 
 DecodeThread::DecodeThread(RingBuffer<FramePtr>& buffer)
     : buffer_(&buffer) {}
@@ -51,8 +65,8 @@ void DecodeThread::open(const std::string& path) {
         std::lock_guard<std::mutex> lock(cmdMutex_);
         pendingCmd_ = Cmd::Open;
         openPath_   = path;
+        buffer_->abort();
     }
-    buffer_->abort();
     cmdCv_.notify_all();
 }
 
@@ -60,16 +74,18 @@ void DecodeThread::close() {
     {
         std::lock_guard<std::mutex> lock(cmdMutex_);
         pendingCmd_ = Cmd::Close;
+        buffer_->abort();
     }
-    buffer_->abort();
     cmdCv_.notify_all();
 }
 
-void DecodeThread::seek(double seconds) {
+void DecodeThread::seek(double seconds, double currentSeconds) {
     {
         std::lock_guard<std::mutex> lock(cmdMutex_);
         pendingCmd_ = Cmd::Seek;
         seekTarget_ = seconds;
+        seekOrigin_ = currentSeconds;
+        buffer_->interrupt();
     }
     cmdCv_.notify_all();
 }
@@ -102,6 +118,7 @@ void DecodeThread::processCommand(Cmd cmd) {
         durationSecs_ = 0.0;
         fps_          = 0.0;
         eof_          = false;
+        resetDecodePosition();
 
         demuxer_ = demuxer::createDemuxer();
         if (demuxer_->open(openPath_) < 0) {
@@ -142,12 +159,15 @@ void DecodeThread::processCommand(Cmd cmd) {
             break;
         }
 
-        auto firstFrame = decodeKeyFrame(0.0);
+        auto firstFrame = decodeFrameAt(0.0);
 
         buffer_->resume();
 
         if (firstFrame) {
-            buffer_->push(firstFrame);
+            if (buffer_->push(firstFrame)
+                && firstFrame == lastDecodedFrame_) {
+                lastDecodedFrameQueued_ = true;
+            }
 
             LOG_INFO("DecodeThread: opened {} — {:.2f}s, {:.2f} fps",
                      openPath_, durationSecs_, fps_);
@@ -167,6 +187,7 @@ void DecodeThread::processCommand(Cmd cmd) {
         durationSecs_ = 0.0;
         fps_          = 0.0;
         eof_          = false;
+        resetDecodePosition();
         buffer_->flush();
         buffer_->resume();
         break;
@@ -174,18 +195,37 @@ void DecodeThread::processCommand(Cmd cmd) {
     case Cmd::Seek: {
         if (!demuxer_ || !decoder_ || !videoStream_) break;
 
-        decoder_->flush();
+        double targetSeconds;
+        double currentSeconds;
+        {
+            std::lock_guard<std::mutex> lock(cmdMutex_);
+            // A newer command supersedes this one before it starts doing work.
+            if (pendingCmd_ != Cmd::None) break;
+            targetSeconds = seekTarget_;
+            currentSeconds = seekOrigin_;
+        }
+
         eof_ = false;
-
-        auto keyFrame = decodeKeyFrame(seekTarget_);
-
         buffer_->resume();
 
-        if (keyFrame) {
-            buffer_->push(keyFrame);
-            LOG_DEBUG("DecodeThread: seek to {:.3f}s done", seekTarget_);
-            bool seekable = demuxer_->seekable();
-            if (onOpened) onOpened(durationSecs_, fps_, seekable, keyFrame);
+        auto targetFrame = decodeFrameAt(targetSeconds, currentSeconds);
+
+        if (targetFrame) {
+            std::lock_guard<std::mutex> lock(cmdMutex_);
+            if (pendingCmd_ == Cmd::None) {
+                buffer_->resume();
+                if (buffer_->pushFront(targetFrame)) {
+                    if (targetFrame == lastDecodedFrame_) {
+                        lastDecodedFrameQueued_ = true;
+                    }
+                    LOG_DEBUG("DecodeThread: seek to {:.3f}s selected frame at {:.3f}s",
+                              targetSeconds, targetFrame->pts / 1000.0);
+                    bool seekable = demuxer_->seekable();
+                    if (onOpened) {
+                        onOpened(durationSecs_, fps_, seekable, targetFrame);
+                    }
+                }
+            }
         }
         break;
     }
@@ -195,10 +235,109 @@ void DecodeThread::processCommand(Cmd cmd) {
     }
 }
 
-DecodeThread::FramePtr DecodeThread::decodeKeyFrame(double targetPtsMs) {
+DecodeThread::FramePtr DecodeThread::decodeFrameAt(double targetSeconds,
+                                                    double currentSeconds) {
     if (!demuxer_ || !decoder_ || !videoStream_) return nullptr;
 
-    demuxer_->seek(targetPtsMs, videoStream_->index, 1 /* AVSEEK_FLAG_BACKWARD */);
+    const double frameRate = fps_ > 0.0 ? fps_ : 25.0;
+    targetSeconds = std::max(0.0, targetSeconds);
+
+    // Like MLT, express the seek target on the source video's frame grid.
+    int64_t targetFrameIndex = static_cast<int64_t>(
+        std::llround(targetSeconds * frameRate));
+    if (durationSecs_ > 0.0) {
+        const int64_t lastFrameIndex = std::max<int64_t>(
+            0, static_cast<int64_t>(std::ceil(durationSecs_ * frameRate)) - 1);
+        targetFrameIndex = std::min(targetFrameIndex, lastFrameIndex);
+    }
+
+    const double snappedTargetSeconds = targetFrameIndex / frameRate;
+    const int64_t currentFrameIndex = currentSeconds >= 0.0
+        ? static_cast<int64_t>(std::llround(currentSeconds * frameRate))
+        : -1;
+    const int64_t forwardDistance = targetFrameIndex - currentFrameIndex;
+    bool decodeForward = currentFrameIndex >= 0
+        && forwardDistance >= 0
+        && forwardDistance <= kForwardDecodeThresholdFrames;
+
+    if (decodeForward) {
+        // The producer can be ahead of the displayed frame due to buffering.
+        // Reuse buffered frames first, then continue from the decoder cursor.
+        while (auto front = buffer_->peekFront()) {
+            if (!*front || (*front)->pts == AV_NOPTS_VALUE) {
+                decodeForward = false;
+                break;
+            }
+
+            const int64_t bufferedIndex = frameIndexFromPts((*front)->pts, frameRate);
+            if (bufferedIndex > targetFrameIndex) {
+                decodeForward = false;
+                break;
+            }
+
+            FramePtr bufferedFrame;
+            if (!buffer_->popWithTimeout(bufferedFrame,
+                                         std::chrono::milliseconds(0))) {
+                return nullptr;
+            }
+            if (bufferedIndex == targetFrameIndex) {
+                LOG_DEBUG("DecodeThread: reused buffered frame {} for seek",
+                          targetFrameIndex);
+                return bufferedFrame;
+            }
+        }
+
+        if (decodeForward && lastDecodedFrameIndex_ > targetFrameIndex) {
+            decodeForward = false;
+        } else if (decodeForward
+                   && lastDecodedFrameIndex_ == targetFrameIndex
+                   && lastDecodedFrame_) {
+            LOG_DEBUG("DecodeThread: reused decoded frame {} for seek",
+                      targetFrameIndex);
+            return lastDecodedFrame_;
+        }
+    }
+
+    if (decodeForward) {
+        LOG_DEBUG("DecodeThread: decoding forward {} frames without seek",
+                  forwardDistance);
+    } else {
+        buffer_->flush();
+
+        // Decode some preroll for inter-frame codecs and reordered B-frames.
+        const double seekSeconds = std::max(
+            0.0, snappedTargetSeconds - kSeekPrerollSeconds);
+        int seekResult = demuxer_->seek(
+            seekSeconds, videoStream_->index, 1 /* AVSEEK_FLAG_BACKWARD */);
+        if (seekResult < 0) {
+            LOG_ERROR("DecodeThread: seek to {:.3f}s failed with {}",
+                      seekSeconds, seekResult);
+            return nullptr;
+        }
+        decoder_->flush();
+        resetDecodePosition();
+    }
+
+    FramePtr lastFrame = decodeForward ? lastDecodedFrame_ : nullptr;
+
+    auto selectFrame = [&](FramePtr frame) -> FramePtr {
+        if (!frame) return nullptr;
+
+        lastFrame = frame;
+        if (frame->pts == AV_NOPTS_VALUE) {
+            if (targetFrameIndex == 0) {
+                frame->pts = 0;
+                return frame;
+            }
+            return nullptr;
+        }
+
+        const int64_t decodedFrameIndex = frameIndexFromPts(frame->pts, frameRate);
+        if (decodedFrameIndex >= targetFrameIndex) {
+            return frame;
+        }
+        return nullptr;
+    };
 
     while (running_) {
         {
@@ -208,9 +347,12 @@ DecodeThread::FramePtr DecodeThread::decodeKeyFrame(double targetPtsMs) {
             }
         }
 
-        auto frame = decoder_->receiveFrame();
+        auto frame = receiveDecodedFrame();
         if (frame) {
-            return frame;
+            if (auto selected = selectFrame(std::move(frame))) {
+                return selected;
+            }
+            continue;
         }
 
         auto pkt = demuxer_->readPacket();
@@ -220,7 +362,20 @@ DecodeThread::FramePtr DecodeThread::decodeKeyFrame(double targetPtsMs) {
             }
         } else {
             decoder_->sendPacket(nullptr);
-            return decoder_->receiveFrame();
+
+            while (running_) {
+                auto drainFrame = receiveDecodedFrame();
+                if (!drainFrame) break;
+                if (auto selected = selectFrame(std::move(drainFrame))) {
+                    return selected;
+                }
+            }
+            if (lastFrame && lastFrame->pts == AV_NOPTS_VALUE) {
+                LOG_WARN("DecodeThread: no usable frame timestamp; seek is approximate");
+                lastFrame->pts = static_cast<int64_t>(
+                    std::llround(snappedTargetSeconds * 1000.0));
+            }
+            return lastFrame;
         }
     }
 
@@ -247,10 +402,20 @@ void DecodeThread::runLoop() {
             continue;
         }
 
-        auto frame = decoder_->receiveFrame();
+        // A seek can interrupt a producer blocked on a full buffer after the
+        // decoder has already output the frame. Queue it before decoding more.
+        if (lastDecodedFrame_ && !lastDecodedFrameQueued_) {
+            if (buffer_->push(lastDecodedFrame_)) {
+                lastDecodedFrameQueued_ = true;
+            }
+            continue;
+        }
+
+        auto frame = receiveDecodedFrame();
         if (frame) {
             bool ok = buffer_->push(frame);
-            if (!ok) {
+            if (ok && frame == lastDecodedFrame_) {
+                lastDecodedFrameQueued_ = true;
             }
             continue;
         }
@@ -264,9 +429,12 @@ void DecodeThread::runLoop() {
             decoder_->sendPacket(nullptr);
 
             while (running_) {
-                auto drainFrame = decoder_->receiveFrame();
+                auto drainFrame = receiveDecodedFrame();
                 if (drainFrame) {
                     if (!buffer_->push(drainFrame)) break;
+                    if (drainFrame == lastDecodedFrame_) {
+                        lastDecodedFrameQueued_ = true;
+                    }
                 } else {
                     break;
                 }
@@ -286,6 +454,30 @@ void DecodeThread::runLoop() {
     videoStream_  = nullptr;
     durationSecs_ = 0.0;
     fps_          = 0.0;
+    resetDecodePosition();
+}
+
+DecodeThread::FramePtr DecodeThread::receiveDecodedFrame() {
+    if (!decoder_) return nullptr;
+
+    auto frame = decoder_->receiveFrame();
+    if (!frame) return nullptr;
+
+    lastDecodedFrame_ = frame;
+    lastDecodedFrameQueued_ = false;
+    if (frame->pts == AV_NOPTS_VALUE) {
+        lastDecodedFrameIndex_ = -1;
+    } else {
+        const double frameRate = fps_ > 0.0 ? fps_ : 25.0;
+        lastDecodedFrameIndex_ = frameIndexFromPts(frame->pts, frameRate);
+    }
+    return frame;
+}
+
+void DecodeThread::resetDecodePosition() {
+    lastDecodedFrameIndex_ = -1;
+    lastDecodedFrame_.reset();
+    lastDecodedFrameQueued_ = true;
 }
 
 } // namespace heisenberg

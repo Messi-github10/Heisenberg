@@ -16,6 +16,7 @@ extern "C" {
 
 #include <QMetaObject>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -474,13 +475,12 @@ void PlaybackController::seek(double seconds) {
         impl_->playing_ = false;
     }
     impl_->consumerCv.notify_all();
-    impl_->frameBuffer.abort();
 
     if (impl_->audioDevice) impl_->audioDevice->stop();
 
     if (impl_->audioDecoder && impl_->audioDecoder->isOpen()) {
         impl_->audioSamplePos.store(
-            static_cast<int64_t>(seconds) * impl_->audioSpec.sampleRate,
+            static_cast<int64_t>(seconds * impl_->audioSpec.sampleRate),
             std::memory_order_relaxed);
     }
 
@@ -495,6 +495,13 @@ void PlaybackController::seek(double seconds) {
 
             if (keyFrame) {
                 impl_->lastDisplayedPtsMs = static_cast<double>(keyFrame->pts);
+                if (impl_->audioDecoder && impl_->audioDecoder->isOpen()) {
+                    const double selectedSeconds = std::max(
+                        0.0, impl_->lastDisplayedPtsMs / 1000.0);
+                    impl_->audioSamplePos.store(
+                        static_cast<int64_t>(selectedSeconds * impl_->audioSpec.sampleRate),
+                        std::memory_order_relaxed);
+                }
                 emit frameDecoded(keyFrame);
                 emit positionChanged(keyFrame->pts / 1000.0);
             }
@@ -513,7 +520,7 @@ void PlaybackController::seek(double seconds) {
     };
 
     setState(Loading);
-    impl_->decodeThread.seek(seconds);
+    impl_->decodeThread.seek(seconds, std::max(0.0, currentTime()));
 }
 
 void PlaybackController::stepForward(int frames) {

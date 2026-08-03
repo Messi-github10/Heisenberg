@@ -13,6 +13,7 @@ extern "C" {
 #include <Common/Packet.hpp>
 #include <Common/Stream.hpp>
 
+#include <cmath>
 #include <memory>
 
 namespace heisenberg {
@@ -44,6 +45,7 @@ struct SoftwareDecoder::Impl {
     AVCodecContext* ctx = nullptr;
     bool isOpen_ = false;
     int pixelFormat_ = AV_PIX_FMT_NONE;
+    int64_t startTime_ = 0;
 
     void close() {
         if (ctx) {
@@ -53,6 +55,7 @@ struct SoftwareDecoder::Impl {
         codec = nullptr;
         isOpen_ = false;
         pixelFormat_ = AV_PIX_FMT_NONE;
+        startTime_ = 0;
     }
 };
 
@@ -87,7 +90,9 @@ int SoftwareDecoder::open(const Stream& stream) {
     impl_->ctx->pix_fmt = AV_PIX_FMT_NONE;
 
     impl_->ctx->time_base = {stream.codec.tbNum, stream.codec.tbDen};
+    impl_->ctx->pkt_timebase = impl_->ctx->time_base;
     impl_->ctx->framerate = {stream.codec.fpsNum, stream.codec.fpsDen};
+    impl_->startTime_ = stream.startTime;
 
     if (stream.codec.extradata() && stream.codec.extradataSize() > 0) {
         impl_->ctx->extradata = static_cast<uint8_t*>(
@@ -133,14 +138,16 @@ int SoftwareDecoder::sendPacket(std::shared_ptr<const Packet> packet) {
     avpkt.data = const_cast<uint8_t*>(packet->data());
     avpkt.size = packet->size();
 
-    if (packet->pts >= 0.0) {
-        avpkt.pts = static_cast<int64_t>(packet->pts / av_q2d(impl_->ctx->time_base));
+    if (packet->hasPts) {
+        avpkt.pts = static_cast<int64_t>(std::llround(
+            packet->pts / av_q2d(impl_->ctx->time_base)));
     } else {
         avpkt.pts = AV_NOPTS_VALUE;
     }
 
-    if (packet->dts >= 0.0) {
-        avpkt.dts = static_cast<int64_t>(packet->dts / av_q2d(impl_->ctx->time_base));
+    if (packet->hasDts) {
+        avpkt.dts = static_cast<int64_t>(std::llround(
+            packet->dts / av_q2d(impl_->ctx->time_base)));
     } else {
         avpkt.dts = AV_NOPTS_VALUE;
     }
@@ -172,8 +179,14 @@ std::shared_ptr<AVFrame> SoftwareDecoder::receiveFrame() {
         impl_->pixelFormat_ = raw->format;
     }
 
-    if (raw->pts != AV_NOPTS_VALUE) {
-        raw->pts = av_rescale_q(raw->pts, impl_->ctx->time_base, {1, 1000});
+    int64_t displayPts = raw->best_effort_timestamp;
+    if (displayPts == AV_NOPTS_VALUE) {
+        displayPts = raw->pts;
+    }
+    if (displayPts != AV_NOPTS_VALUE) {
+        raw->pts = av_rescale_q(displayPts - impl_->startTime_,
+                                impl_->ctx->time_base,
+                                {1, 1000});
     }
 
     return std::shared_ptr<AVFrame>(raw, avframeDeleter);

@@ -37,6 +37,17 @@ public:
         return true;
     }
 
+    bool pushFront(const T& item) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        notFullCond_.wait(lock, [this] {
+            return buffer_.size() < capacity_ || abort_ || shutdown_;
+        });
+        if (abort_ || shutdown_) return false;
+        buffer_.push_front(item);
+        notEmptyCond_.notify_all();
+        return true;
+    }
+
     bool pushWithTimeout(const T& item, Milliseconds timeout) {
         std::unique_lock<std::mutex> lock(mutex_);
         bool ok = notFullCond_.wait_for(lock, timeout, [this] {
@@ -95,6 +106,14 @@ public:
         std::unique_lock<std::mutex> lock(mutex_);
         abort_ = true;
         buffer_.clear();
+        notEmptyCond_.notify_all();
+        notFullCond_.notify_all();
+    }
+
+    // Wake blocked producers/consumers without discarding buffered items.
+    void interrupt() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        abort_ = true;
         notEmptyCond_.notify_all();
         notFullCond_.notify_all();
     }

@@ -11,6 +11,8 @@ extern "C" {
 
 #include <Demuxer/Demuxer.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace heisenberg {
@@ -64,22 +66,23 @@ std::shared_ptr<Packet> Demuxer::readPacket() {
         return nullptr;
     }
 
-    AVPacket avpkt = {};
-    int ret = av_read_frame(formatCtx_, &avpkt);
-    if (ret < 0) {
+    while (true) {
+        AVPacket avpkt = {};
+        int ret = av_read_frame(formatCtx_, &avpkt);
+        if (ret < 0) {
+            av_packet_unref(&avpkt);
+            return nullptr;
+        }
+
+        if (findStream(avpkt.stream_index)) {
+            auto packet = avpacketToPacket(&avpkt);
+            av_packet_unref(&avpkt);
+            return packet;
+        }
+
+        // Subtitle, attachment, and data streams are not playback EOF.
         av_packet_unref(&avpkt);
-        return nullptr;
     }
-
-    if (!findStream(avpkt.stream_index)) {
-        av_packet_unref(&avpkt);
-        return nullptr;
-    }
-
-    auto packet = avpacketToPacket(&avpkt);
-    av_packet_unref(&avpkt);
-
-    return packet;
 }
 
 int Demuxer::seek(double seconds, int streamIndex, int flags) {
@@ -87,7 +90,29 @@ int Demuxer::seek(double seconds, int streamIndex, int flags) {
         return -1;
     }
 
-    int64_t seekTarget = static_cast<int64_t>(seconds * AV_TIME_BASE);
+    seconds = std::max(0.0, seconds);
+    int64_t offset = static_cast<int64_t>(std::llround(seconds * AV_TIME_BASE));
+    int64_t seekTarget = offset;
+
+    if (streamIndex >= 0) {
+        if (streamIndex >= static_cast<int>(formatCtx_->nb_streams)) {
+            return -1;
+        }
+
+        AVStream* stream = formatCtx_->streams[streamIndex];
+        seekTarget = av_rescale_q(offset, AV_TIME_BASE_Q, stream->time_base);
+
+        if (stream->start_time != AV_NOPTS_VALUE) {
+            seekTarget += stream->start_time;
+        } else if (formatCtx_->start_time != AV_NOPTS_VALUE) {
+            seekTarget += av_rescale_q(formatCtx_->start_time,
+                                       AV_TIME_BASE_Q,
+                                       stream->time_base);
+        }
+    } else if (formatCtx_->start_time != AV_NOPTS_VALUE) {
+        seekTarget += formatCtx_->start_time;
+    }
+
     return av_seek_frame(formatCtx_, streamIndex, seekTarget, flags);
 }
 
@@ -196,6 +221,13 @@ int Demuxer::buildStreams() {
         s.demuxerId = avs->id;
         s.type = (avType == AVMEDIA_TYPE_VIDEO) ? Stream::VIDEO : Stream::AUDIO;
         s.codec = avstreamToCodecparams(avs);
+        if (avs->start_time != AV_NOPTS_VALUE) {
+            s.startTime = avs->start_time;
+        } else if (formatCtx_->start_time != AV_NOPTS_VALUE) {
+            s.startTime = av_rescale_q(formatCtx_->start_time,
+                                       AV_TIME_BASE_Q,
+                                       avs->time_base);
+        }
 
         AVDictionaryEntry *langEntry =
             av_dict_get(avs->metadata, "language", nullptr, 0);
@@ -228,10 +260,10 @@ std::shared_ptr<Packet> Demuxer::avpacketToPacket(const AVPacket *avpkt) {
     AVStream *avs = formatCtx_->streams[avpkt->stream_index];
     double timeBase = av_q2d(avs->time_base);
 
-    packet->pts =
-        (avpkt->pts == AV_NOPTS_VALUE) ? -1.0 : avpkt->pts * timeBase;
-    packet->dts =
-        (avpkt->dts == AV_NOPTS_VALUE) ? -1.0 : avpkt->dts * timeBase;
+    packet->hasPts = avpkt->pts != AV_NOPTS_VALUE;
+    packet->hasDts = avpkt->dts != AV_NOPTS_VALUE;
+    packet->pts = packet->hasPts ? avpkt->pts * timeBase : -1.0;
+    packet->dts = packet->hasDts ? avpkt->dts * timeBase : -1.0;
     packet->duration = avpkt->duration * timeBase;
 
     packet->streamIndex = avpkt->stream_index;
