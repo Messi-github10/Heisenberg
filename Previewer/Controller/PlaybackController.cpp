@@ -19,7 +19,9 @@ extern "C" {
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <mutex>
 #include <thread>
 
 namespace heisenberg {
@@ -41,15 +43,17 @@ struct PlaybackController::Impl {
     std::shared_ptr<bool> alive{std::make_shared<bool>(true)};
 
     // ── Consumer thread (MLT-style: dedicated thread + audio-clock master) ──
-    std::thread         consumerThread;
-    std::atomic<bool>   consumerRunning_{false};
-    std::atomic<bool>   playing_{false};
+    std::thread             consumerThread;
+    std::atomic<bool>       consumerRunning_{false};
+    std::atomic<bool>       playing_{false};
+    std::mutex              consumerMutex;
+    std::condition_variable consumerCv;
 
     bool pendingPlayAfterSeek = false;
 
     // ── Graceful EOF ───────────────────────────────────────
-    // Set by onEndOfStream; consumer drains remaining frames
-    // and only signals Ended when both buffer and audio are done.
+    // Set by onEndOfStream; consumer drains the remaining video frames
+    // before transitioning to Ended and waiting for replay.
     std::atomic<bool> decoderEof_{false};
 
     // Diagnostics
@@ -96,6 +100,37 @@ struct PlaybackController::Impl {
     }
 
     // ── Consumer loop: MLT-style dedicated thread ────────────
+    void finishPlayback(PlaybackController* ctrl) {
+        {
+            std::lock_guard<std::mutex> lock(consumerMutex);
+            playing_.store(false, std::memory_order_release);
+        }
+
+        double audioEndMs = (audioTotalSamples > 0)
+            ? static_cast<double>(audioTotalSamples)
+                / static_cast<double>(audioSpec.sampleRate) * 1000.0
+            : lastDisplayedPtsMs;
+        double finalPosMs = std::max(lastDisplayedPtsMs, audioEndMs);
+
+        LOG_INFO("consumer: reached EOF - video={:.0f}ms audio={:.0f}ms "
+                 "final={:.0f}ms containerDuration={:.1f}ms",
+                 lastDisplayedPtsMs, audioEndMs, finalPosMs,
+                 durationSecs * 1000.0);
+
+        double finalSecs = finalPosMs / 1000.0;
+        auto keepAlive = alive;
+
+        QMetaObject::invokeMethod(ctrl, [ctrl, finalSecs, keepAlive] {
+            if (!*keepAlive) return;
+            if (ctrl->impl_->audioDevice) ctrl->impl_->audioDevice->stop();
+            ctrl->impl_->durationSecs = finalSecs;
+            emit ctrl->durationChanged(finalSecs);
+            emit ctrl->positionChanged(finalSecs);
+            ctrl->setState(PlaybackController::Ended);
+            emit ctrl->endOfStream();
+        }, Qt::QueuedConnection);
+    }
+
     void runConsumer(PlaybackController* ctrl) {
         using Clock     = std::chrono::steady_clock;
         using MilliSec  = std::chrono::duration<double, std::milli>;
@@ -110,10 +145,15 @@ struct PlaybackController::Impl {
 
             // ── Handle paused state ──────────────────────────
             if (!playing_.load(std::memory_order_acquire)) {
+                std::unique_lock<std::mutex> lock(consumerMutex);
+                consumerCv.wait(lock, [this] {
+                    return !consumerRunning_.load(std::memory_order_acquire)
+                        || playing_.load(std::memory_order_acquire);
+                });
+                if (!consumerRunning_.load(std::memory_order_acquire)) break;
+
                 pauseOffset = lastDisplayedPtsMs;
                 startTime   = Clock::now();
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                continue;
             }
 
             // ── Master clock ─────────────────────────────────
@@ -135,10 +175,11 @@ struct PlaybackController::Impl {
             auto front = frameBuffer.peekFront();
             if (!front.has_value()) {
                 if (decoderEof_.load(std::memory_order_acquire)) {
-                    LOG_INFO("consumer: buffer empty + decoder EOF — breaking. "
+                    LOG_INFO("consumer: buffer empty + decoder EOF - waiting. "
                              "lastVideoPts={:.0f}ms audioTotal={} samples",
                              lastDisplayedPtsMs, audioTotalSamples);
-                    break;
+                    finishPlayback(ctrl);
+                    continue;
                 }
                 consumerEmpty.fetch_add(1, std::memory_order_relaxed);
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -152,7 +193,11 @@ struct PlaybackController::Impl {
             if (delay > 2.0) {
                 auto sleepUs = static_cast<int64_t>((delay - 2.0) * 1000.0);
                 if (sleepUs > 0) {
-                    std::this_thread::sleep_for(std::chrono::microseconds(sleepUs));
+                    std::unique_lock<std::mutex> lock(consumerMutex);
+                    consumerCv.wait_for(lock, std::chrono::microseconds(sleepUs), [this] {
+                        return !consumerRunning_.load(std::memory_order_acquire)
+                            || !playing_.load(std::memory_order_acquire);
+                    });
                 }
                 continue;
             }
@@ -184,32 +229,7 @@ struct PlaybackController::Impl {
             }
         }
 
-        // ── Graceful exit: update duration to actual content end
-        //     so the progress bar naturally reaches 100%.
-        {
-            double audioEndMs = (audioTotalSamples > 0)
-                ? static_cast<double>(audioTotalSamples)
-                    / static_cast<double>(audioSpec.sampleRate) * 1000.0
-                : lastDisplayedPtsMs;
-            double finalPosMs = std::max(lastDisplayedPtsMs, audioEndMs);
-
-            LOG_INFO("consumer: graceful exit — video={:.0f}ms audio={:.0f}ms "
-                     "final={:.0f}ms containerDuration={:.1f}ms",
-                     lastDisplayedPtsMs, audioEndMs, finalPosMs,
-                     durationSecs * 1000.0);
-
-            double finalSecs = finalPosMs / 1000.0;
-
-            QMetaObject::invokeMethod(ctrl, [ctrl, finalSecs] {
-                ctrl->impl_->playing_ = false;
-                if (ctrl->impl_->audioDevice) ctrl->impl_->audioDevice->stop();
-                ctrl->impl_->durationSecs = finalSecs;
-                emit ctrl->durationChanged(finalSecs);
-                emit ctrl->positionChanged(finalSecs);
-                ctrl->setState(PlaybackController::Ended);
-                emit ctrl->endOfStream();
-            }, Qt::QueuedConnection);
-        }
+        LOG_INFO("consumer: thread stopped");
     }
 };
 
@@ -333,14 +353,19 @@ void PlaybackController::close() {
     *impl_->alive = false;
 
     // Stop consumer thread
-    impl_->consumerRunning_ = false;
-    impl_->playing_         = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->consumerMutex);
+        impl_->consumerRunning_ = false;
+        impl_->playing_         = false;
+    }
+    impl_->consumerCv.notify_all();
     if (impl_->consumerThread.joinable()) {
         impl_->consumerThread.join();
     }
     impl_->consumerFrames.store(0, std::memory_order_relaxed);
     impl_->consumerEmpty.store(0, std::memory_order_relaxed);
     impl_->decoderEof_.store(false, std::memory_order_relaxed);
+    impl_->pendingPlayAfterSeek = false;
 
     impl_->decodeThread.stop();
 
@@ -394,15 +419,24 @@ void PlaybackController::play() {
         }
     }
 
-    // ── Start consumer thread on first play ───────────────
-    if (!impl_->consumerRunning_.load(std::memory_order_acquire)) {
-        impl_->consumerRunning_ = true;
+    // One consumer thread per open file; EOF only puts it back to sleep.
+    bool startConsumer = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->consumerMutex);
+        impl_->playing_ = true;
+        if (!impl_->consumerRunning_.load(std::memory_order_acquire)) {
+            impl_->consumerRunning_ = true;
+            startConsumer = true;
+        }
+    }
+
+    if (startConsumer) {
         impl_->consumerThread = std::thread([this] {
             impl_->runConsumer(this);
         });
     }
 
-    impl_->playing_ = true;
+    impl_->consumerCv.notify_all();
     setState(Playing);
 
     LOG_INFO("PlaybackController: play — fps={:.2f} audio={}",
@@ -411,7 +445,11 @@ void PlaybackController::play() {
 
 void PlaybackController::pause() {
     if (impl_->state != Playing) return;
-    impl_->playing_ = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->consumerMutex);
+        impl_->playing_ = false;
+    }
+    impl_->consumerCv.notify_all();
 
     if (impl_->audioDevice) impl_->audioDevice->stop();
 
@@ -431,7 +469,11 @@ void PlaybackController::seek(double seconds) {
     bool wasPlaying = (impl_->state == Playing);
 
     impl_->decoderEof_.store(false, std::memory_order_relaxed);
-    impl_->playing_ = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->consumerMutex);
+        impl_->playing_ = false;
+    }
+    impl_->consumerCv.notify_all();
     impl_->frameBuffer.abort();
 
     if (impl_->audioDevice) impl_->audioDevice->stop();
@@ -457,11 +499,13 @@ void PlaybackController::seek(double seconds) {
                 emit positionChanged(keyFrame->pts / 1000.0);
             }
 
-            if (wasPlaying || impl_->pendingPlayAfterSeek) {
-                impl_->pendingPlayAfterSeek = false;
-                if (impl_->audioDevice) impl_->audioDevice->start();
-                impl_->playing_ = true;
-                setState(Playing);
+            const bool shouldResume = wasPlaying || impl_->pendingPlayAfterSeek;
+            impl_->pendingPlayAfterSeek = false;
+
+            if (shouldResume) {
+                // Wake the persistent consumer after seek completes.
+                setState(Paused);
+                play();
             } else {
                 setState(Paused);
             }
