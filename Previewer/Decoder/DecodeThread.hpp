@@ -29,6 +29,7 @@ public:
 
     std::function<void(double durationSecs, double fps, bool seekable,
                        FramePtr firstFrame)> onOpened;
+    std::function<void(uint64_t requestId, FramePtr frame)>                   onScrubFrame;
     std::function<void(const std::string& reason)>                            onOpenFailed;
     std::function<void()>                                                     onEndOfStream;
 
@@ -40,13 +41,17 @@ public:
     void open(const std::string& path);
     void close();
     void seek(double seconds, double currentSeconds);
+    void beginScrub();
+    void scrubToFrame(int64_t targetFrame, int64_t currentFrame,
+                      uint64_t requestId, bool resumePrefetch);
 
 private:
     enum class Cmd : int {
         None = 0, 
         Open, 
         Close, 
-        Seek 
+        Seek,
+        Scrub
     };
 
     void        runLoop();
@@ -54,6 +59,8 @@ private:
     Cmd         waitForCommand();
     void        processCommand(Cmd cmd);
     FramePtr    decodeFrameAt(double targetSeconds, double currentSeconds = -1.0);
+    FramePtr    decodeFrameAtFrame(int64_t targetFrameIndex,
+                                   int64_t currentFrameIndex = -1);
     FramePtr    receiveDecodedFrame();
     void        resetDecodePosition();
 
@@ -67,6 +74,10 @@ private:
     std::string             openPath_;
     double                  seekTarget_ = 0.0;
     double                  seekOrigin_ = -1.0;
+    int64_t                 scrubTargetFrame_ = 0;
+    int64_t                 scrubOriginFrame_ = -1;
+    uint64_t                scrubRequestId_ = 0;
+    bool                    resumePrefetchAfterScrub_ = false;
 
     std::unique_ptr<demuxer::IDemuxer> demuxer_;
     std::unique_ptr<decoder::IDecoder> decoder_;
@@ -79,6 +90,7 @@ private:
     bool                               lastDecodedFrameQueued_ = true;
 
     std::atomic<bool> running_{false};
+    std::atomic<bool> scrubbing_{false};
 };
 
 } // namespace heisenberg

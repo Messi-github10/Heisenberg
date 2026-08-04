@@ -52,6 +52,11 @@ struct PlaybackController::Impl {
     std::condition_variable consumerCv;
 
     bool pendingPlayAfterSeek = false;
+    bool wasPlayingBeforeScrub = false;
+    bool scrubEnding = false;
+    uint64_t latestScrubRequestId = 0;
+    uint64_t endingScrubRequestId = 0;
+    int64_t lastRequestedScrubFrame = 0;
 
     // ── Graceful EOF ───────────────────────────────────────
     // Set by onEndOfStream; consumer drains the remaining video frames
@@ -271,6 +276,12 @@ double PlaybackController::fps() const {
     return impl_->fps;
 }
 
+int64_t PlaybackController::frameCount() const {
+    if (impl_->durationSecs <= 0.0 || impl_->fps <= 0.0) return 0;
+    return std::max<int64_t>(
+        1, static_cast<int64_t>(std::ceil(impl_->durationSecs * impl_->fps)));
+}
+
 void PlaybackController::setState(State s) {
     if (impl_->state == s) return;
     impl_->state = s;
@@ -345,6 +356,40 @@ bool PlaybackController::open(const std::string& filePath) {
         LOG_INFO("PlaybackController: decoder EOF");
     };
 
+    impl_->decodeThread.onScrubFrame = [this, alive](uint64_t requestId,
+                                                      FramePtr frame) {
+        QMetaObject::invokeMethod(this, [this, alive, requestId,
+                                         frame = std::move(frame)]() mutable {
+            if (!*alive || impl_->state != Scrubbing) return;
+            if (requestId != impl_->latestScrubRequestId) return;
+
+            if (frame) {
+                impl_->lastDisplayedPtsMs = frameTimeMilliseconds(*frame);
+                const double selectedSeconds = std::max(
+                    0.0, impl_->lastDisplayedPtsMs / 1000.0);
+                if (impl_->audioDecoder && impl_->audioDecoder->isOpen()) {
+                    impl_->audioSamplePos.store(
+                        static_cast<int64_t>(selectedSeconds
+                                             * impl_->audioSpec.sampleRate),
+                        std::memory_order_relaxed);
+                }
+                emit frameDecoded(std::move(frame));
+                emit positionChanged(selectedSeconds);
+            }
+
+            if (!impl_->scrubEnding
+                || requestId != impl_->endingScrubRequestId) {
+                return;
+            }
+
+            const bool shouldResume = impl_->wasPlayingBeforeScrub;
+            impl_->scrubEnding = false;
+            impl_->wasPlayingBeforeScrub = false;
+            setState(Paused);
+            if (shouldResume) play();
+        }, Qt::QueuedConnection);
+    };
+
     impl_->decodeThread.start();
     impl_->decodeThread.open(filePath);
     setState(Loading);
@@ -368,6 +413,11 @@ void PlaybackController::close() {
     impl_->consumerEmpty.store(0, std::memory_order_relaxed);
     impl_->decoderEof_.store(false, std::memory_order_relaxed);
     impl_->pendingPlayAfterSeek = false;
+    impl_->wasPlayingBeforeScrub = false;
+    impl_->scrubEnding = false;
+    impl_->latestScrubRequestId = 0;
+    impl_->endingScrubRequestId = 0;
+    impl_->lastRequestedScrubFrame = 0;
 
     impl_->decodeThread.stop();
 
@@ -393,6 +443,7 @@ void PlaybackController::play() {
     if (impl_->state == Playing) return;
     if (impl_->state == Idle) return;
     if (impl_->state == Loading) return;
+    if (impl_->state == Scrubbing) return;
 
     if (impl_->state == Ended) {
         impl_->pendingPlayAfterSeek = true;
@@ -465,6 +516,7 @@ void PlaybackController::togglePlayPause() {
 
 void PlaybackController::seek(double seconds) {
     if (!impl_->seekable) return;
+    if (impl_->state == Scrubbing) return;
 
     seconds = std::max(0.0, std::min(seconds, impl_->durationSecs));
 
@@ -522,6 +574,58 @@ void PlaybackController::seek(double seconds) {
 
     setState(Loading);
     impl_->decodeThread.seek(seconds, std::max(0.0, currentTime()));
+}
+
+void PlaybackController::beginScrub() {
+    if (!impl_->seekable) return;
+    if (impl_->state == Idle || impl_->state == Loading
+        || impl_->state == Scrubbing) {
+        return;
+    }
+
+    impl_->wasPlayingBeforeScrub = (impl_->state == Playing);
+    impl_->scrubEnding = false;
+    impl_->endingScrubRequestId = 0;
+    impl_->lastRequestedScrubFrame = std::clamp<int64_t>(
+        static_cast<int64_t>(std::llround(
+            std::max(0.0, currentTime()) * std::max(impl_->fps, 1.0))),
+        0, std::max<int64_t>(0, frameCount() - 1));
+
+    impl_->decoderEof_.store(false, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(impl_->consumerMutex);
+        impl_->playing_ = false;
+    }
+    impl_->consumerCv.notify_all();
+    if (impl_->audioDevice) impl_->audioDevice->stop();
+
+    impl_->decodeThread.beginScrub();
+    setState(Scrubbing);
+}
+
+void PlaybackController::scrubToFrame(int64_t frameIndex) {
+    if (impl_->state != Scrubbing || impl_->scrubEnding) return;
+
+    frameIndex = std::clamp<int64_t>(
+        frameIndex, 0, std::max<int64_t>(0, frameCount() - 1));
+    const int64_t originFrame = impl_->lastRequestedScrubFrame;
+    impl_->lastRequestedScrubFrame = frameIndex;
+    const uint64_t requestId = ++impl_->latestScrubRequestId;
+    impl_->decodeThread.scrubToFrame(frameIndex, originFrame,
+                                     requestId, false);
+}
+
+void PlaybackController::endScrub(int64_t frameIndex) {
+    if (impl_->state != Scrubbing || impl_->scrubEnding) return;
+
+    frameIndex = std::clamp<int64_t>(
+        frameIndex, 0, std::max<int64_t>(0, frameCount() - 1));
+    const int64_t originFrame = impl_->lastRequestedScrubFrame;
+    impl_->lastRequestedScrubFrame = frameIndex;
+    impl_->scrubEnding = true;
+    impl_->endingScrubRequestId = ++impl_->latestScrubRequestId;
+    impl_->decodeThread.scrubToFrame(frameIndex, originFrame,
+                                     impl_->endingScrubRequestId, true);
 }
 
 void PlaybackController::stepForward(int frames) {

@@ -40,6 +40,7 @@ void DecodeThread::stop() {
     if (!running_) return;
 
     running_ = false;
+    scrubbing_ = false;
 
     {
         std::lock_guard<std::mutex> lock(cmdMutex_);
@@ -87,6 +88,29 @@ void DecodeThread::seek(double seconds, double currentSeconds) {
     cmdCv_.notify_all();
 }
 
+void DecodeThread::beginScrub() {
+    {
+        std::lock_guard<std::mutex> lock(cmdMutex_);
+        scrubbing_.store(true, std::memory_order_release);
+        buffer_->interrupt();
+    }
+    cmdCv_.notify_all();
+}
+
+void DecodeThread::scrubToFrame(int64_t targetFrame, int64_t currentFrame,
+                                uint64_t requestId, bool resumePrefetch) {
+    {
+        std::lock_guard<std::mutex> lock(cmdMutex_);
+        pendingCmd_ = Cmd::Scrub;
+        scrubTargetFrame_ = targetFrame;
+        scrubOriginFrame_ = currentFrame;
+        scrubRequestId_ = requestId;
+        resumePrefetchAfterScrub_ = resumePrefetch;
+        buffer_->interrupt();
+    }
+    cmdCv_.notify_all();
+}
+
 DecodeThread::Cmd DecodeThread::dequeueCommand() {
     std::lock_guard<std::mutex> lock(cmdMutex_);
     Cmd cmd = pendingCmd_;
@@ -115,6 +139,7 @@ void DecodeThread::processCommand(Cmd cmd) {
         durationSecs_ = 0.0;
         fps_          = 0.0;
         eof_          = false;
+        scrubbing_    = false;
         resetDecodePosition();
 
         demuxer_ = demuxer::createDemuxer();
@@ -184,6 +209,7 @@ void DecodeThread::processCommand(Cmd cmd) {
         durationSecs_ = 0.0;
         fps_          = 0.0;
         eof_          = false;
+        scrubbing_    = false;
         resetDecodePosition();
         buffer_->flush();
         buffer_->resume();
@@ -227,6 +253,48 @@ void DecodeThread::processCommand(Cmd cmd) {
         break;
     }
 
+    case Cmd::Scrub: {
+        if (!demuxer_ || !decoder_ || !videoStream_) break;
+
+        int64_t targetFrame;
+        int64_t currentFrame;
+        uint64_t requestId;
+        bool resumePrefetch;
+        {
+            std::lock_guard<std::mutex> lock(cmdMutex_);
+            if (pendingCmd_ != Cmd::None) break;
+            targetFrame = scrubTargetFrame_;
+            currentFrame = scrubOriginFrame_;
+            requestId = scrubRequestId_;
+            resumePrefetch = resumePrefetchAfterScrub_;
+        }
+
+        eof_ = false;
+        buffer_->resume();
+
+        auto frame = decodeFrameAtFrame(targetFrame, currentFrame);
+
+        std::lock_guard<std::mutex> lock(cmdMutex_);
+        if (pendingCmd_ != Cmd::None || requestId != scrubRequestId_) break;
+
+        if (resumePrefetch) {
+            buffer_->resume();
+            if (frame) {
+                if (!buffer_->pushFront(frame)) break;
+                if (frame == lastDecodedFrame_) {
+                    lastDecodedFrameQueued_ = true;
+                }
+            }
+            scrubbing_.store(false, std::memory_order_release);
+        }
+
+        // A null final result still lets the controller leave Scrubbing.
+        if ((frame || resumePrefetch) && onScrubFrame) {
+            onScrubFrame(requestId, frame);
+        }
+        break;
+    }
+
     default:
         break;
     }
@@ -255,10 +323,34 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAt(double targetSeconds,
         targetFrameIndex = std::min(targetFrameIndex, lastFrameIndex);
     }
 
-    const double snappedTargetSeconds = targetFrameIndex / frameRate;
     const int64_t currentFrameIndex = currentSeconds >= 0.0
         ? static_cast<int64_t>(std::llround(currentSeconds * frameRate))
         : -1;
+
+    return decodeFrameAtFrame(targetFrameIndex, currentFrameIndex);
+}
+
+DecodeThread::FramePtr DecodeThread::decodeFrameAtFrame(
+    int64_t targetFrameIndex, int64_t currentFrameIndex) {
+    if (!demuxer_ || !decoder_ || !videoStream_) return nullptr;
+
+    AVRational sourceFrameRate = {
+        videoStream_->codec.fpsNum,
+        videoStream_->codec.fpsDen
+    };
+    if (sourceFrameRate.num <= 0 || sourceFrameRate.den <= 0) {
+        sourceFrameRate = {25, 1};
+    }
+    const double frameRate = av_q2d(sourceFrameRate);
+
+    targetFrameIndex = std::max<int64_t>(0, targetFrameIndex);
+    if (durationSecs_ > 0.0) {
+        const int64_t lastFrameIndex = std::max<int64_t>(
+            0, static_cast<int64_t>(std::ceil(durationSecs_ * frameRate)) - 1);
+        targetFrameIndex = std::min(targetFrameIndex, lastFrameIndex);
+    }
+
+    const double snappedTargetSeconds = targetFrameIndex / frameRate;
     const int64_t forwardDistance = targetFrameIndex - currentFrameIndex;
     bool decodeForward = currentFrameIndex >= 0
         && forwardDistance >= 0
@@ -402,6 +494,12 @@ void DecodeThread::runLoop() {
             continue;
         }
 
+        if (scrubbing_.load(std::memory_order_acquire)) {
+            cmd = waitForCommand();
+            if (cmd != Cmd::None) processCommand(cmd);
+            continue;
+        }
+
         if (eof_) {
             cmd = waitForCommand();
             if (cmd != Cmd::None) processCommand(cmd);
@@ -460,6 +558,7 @@ void DecodeThread::runLoop() {
     videoStream_  = nullptr;
     durationSecs_ = 0.0;
     fps_          = 0.0;
+    scrubbing_    = false;
     resetDecodePosition();
 }
 

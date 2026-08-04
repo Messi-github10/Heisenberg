@@ -22,11 +22,14 @@ public:
 
 signals:
     void playPauseClicked();
-    void seekRequested(double seconds);
+    void scrubStarted();
+    void scrubFrameRequested(qint64 frameIndex);
+    void scrubFinished(qint64 frameIndex);
     void openFileRequested(const QString& path);
 
 public slots:
     void setDuration(double seconds);
+    void setFrameCount(qint64 frameCount);
     void setCurrentTime(double seconds);
     void setPlayingState(bool playing);
 
@@ -44,6 +47,7 @@ private:
     QLabel*      timeLabel_    = nullptr;
 
     double duration_ = 0.0;
+    qint64 frameCount_ = 0;
     bool isPlaying_  = false;
     bool sliderDragging_ = false;
 };

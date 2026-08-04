@@ -12,6 +12,10 @@
 #include <QVBoxLayout>
 #include <QFileDialog>
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
     setWindowTitle("Heisenberg");
@@ -42,7 +46,7 @@ void MainWindow::setupUi() {
     playPauseBtn_->setFixedWidth(36);
 
     progressBar_ = new QSlider(Qt::Horizontal, controlBar);
-    progressBar_->setRange(0, 1000);
+    progressBar_->setRange(0, 0);
 
     timeLabel_ = new QLabel("00:00 / 00:00", controlBar);
 
@@ -62,11 +66,14 @@ void MainWindow::setupConnections() {
 
     connect(progressBar_, &QSlider::sliderPressed, this, [this]() {
         sliderDragging_ = true;
+        emit scrubStarted();
+    });
+    connect(progressBar_, &QSlider::sliderMoved, this, [this](int value) {
+        emit scrubFrameRequested(static_cast<qint64>(value));
     });
     connect(progressBar_, &QSlider::sliderReleased, this, [this]() {
         sliderDragging_ = false;
-        double pos = static_cast<double>(progressBar_->value()) / 1000.0 * duration_;
-        emit seekRequested(pos);
+        emit scrubFinished(static_cast<qint64>(progressBar_->value()));
     });
 
     connect(openFileBtn_, &QPushButton::clicked, this, [this]() {
@@ -82,10 +89,23 @@ void MainWindow::setDuration(double seconds) {
     duration_ = seconds;
 }
 
+void MainWindow::setFrameCount(qint64 frameCount) {
+    frameCount_ = std::max<qint64>(0, frameCount);
+    const qint64 lastFrame = std::max<qint64>(0, frameCount_ - 1);
+    progressBar_->setRange(
+        0, static_cast<int>(std::min<qint64>(
+               lastFrame, std::numeric_limits<int>::max())));
+}
+
 void MainWindow::setCurrentTime(double seconds) {
-    if (sliderDragging_) return;
-    if (duration_ > 0) {
-        progressBar_->setValue(static_cast<int>(seconds / duration_ * 1000.0));
+    if (!sliderDragging_ && duration_ > 0.0 && frameCount_ > 0) {
+        const double normalized = std::clamp(seconds / duration_, 0.0, 1.0);
+        const qint64 frame = std::clamp<qint64>(
+            static_cast<qint64>(
+                std::llround(normalized * static_cast<double>(frameCount_))),
+            0, frameCount_ - 1);
+        progressBar_->setValue(static_cast<int>(std::min<qint64>(
+            frame, std::numeric_limits<int>::max())));
     }
 
     auto fmt = [](double s) -> QString {

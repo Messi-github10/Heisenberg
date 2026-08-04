@@ -7,6 +7,7 @@
 #include <QObject>
 #include <Common/AudioSpec.hpp>
 #include <Common/RingBuffer.hpp>
+#include <cstdint>
 #include <memory>
 
 extern "C" {
@@ -30,6 +31,7 @@ public:
         Loading,
         Playing,
         Paused,
+        Scrubbing,
         Ended
     };
     Q_ENUM(State)
@@ -44,6 +46,9 @@ public:
     void pause();
     void togglePlayPause();
     void seek(double seconds);
+    void beginScrub();
+    void scrubToFrame(int64_t frameIndex);
+    void endScrub(int64_t frameIndex);
     void stepForward(int frames = 1);
     void stepBackward(int frames = 1);
     void goToStart();
@@ -55,6 +60,7 @@ public:
     double duration() const;
     bool isSeekable() const;
     double fps() const;
+    int64_t frameCount() const;
 
 signals:
     void stateChanged(heisenberg::ctrl::PlaybackController::State newState);

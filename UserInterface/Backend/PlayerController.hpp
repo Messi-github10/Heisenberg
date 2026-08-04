@@ -26,6 +26,7 @@ class PlayerController : public QObject {
     Q_PROPERTY(bool    isPlaying   READ isPlaying   NOTIFY isPlayingChanged)
     Q_PROPERTY(double  currentTime READ currentTime NOTIFY currentTimeChanged)
     Q_PROPERTY(double  duration    READ duration    NOTIFY durationChanged)
+    Q_PROPERTY(qint64  frameCount  READ frameCount  NOTIFY frameCountChanged)
     Q_PROPERTY(bool    isSeekable  READ isSeekable  NOTIFY isSeekableChanged)
     Q_PROPERTY(QString currentFile READ currentFile NOTIFY currentFileChanged)
 
@@ -36,6 +37,7 @@ public:
     bool    isPlaying()   const { return isPlaying_; }
     double  currentTime() const { return currentTime_; }
     double  duration()    const { return duration_; }
+    qint64  frameCount()  const { return frameCount_; }
     bool    isSeekable()  const { return isSeekable_; }
     QString currentFile() const { return currentFile_; }
 
@@ -46,6 +48,9 @@ public slots:
     void pause();
     void togglePlayPause();
     void seek(double seconds);
+    void beginScrub();
+    void scrubToFrame(qint64 frameIndex);
+    void endScrub(qint64 frameIndex);
     void stepForward(int frames = 1);
     void stepBackward(int frames = 1);
     void goToStart();
@@ -64,6 +69,7 @@ signals:
     void isPlayingChanged();
     void currentTimeChanged();
     void durationChanged();
+    void frameCountChanged();
     void isSeekableChanged();
     void currentFileChanged();
 
@@ -76,6 +82,7 @@ private:
     bool    isPlaying_   = false;
     double  currentTime_ = 0.0;
     double  duration_    = 0.0;
+    qint64  frameCount_  = 0;
     bool    isSeekable_  = false;
     QString currentFile_;
 

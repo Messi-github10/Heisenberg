@@ -70,7 +70,9 @@ void PlayerController::setPlaybackController(ctrl::PlaybackController* ctrl) {
     connect(ctrl_, &ctrl::PlaybackController::durationChanged,
             this, [this](double d) {
         duration_ = d;
+        frameCount_ = ctrl_ ? ctrl_->frameCount() : 0;
         emit durationChanged();
+        emit frameCountChanged();
     });
 
     connect(ctrl_, &ctrl::PlaybackController::endOfStream,
@@ -204,6 +206,7 @@ void PlayerController::closeFile() {
     currentFile_.clear();
     currentTime_ = 0.0;
     duration_    = 0.0;
+    frameCount_  = 0;
     isSeekable_  = false;
     isPlaying_   = false;
     videoWidth_  = 0;
@@ -211,6 +214,7 @@ void PlayerController::closeFile() {
     emit currentFileChanged();
     emit currentTimeChanged();
     emit durationChanged();
+    emit frameCountChanged();
     emit isSeekableChanged();
     emit isPlayingChanged();
 }
@@ -223,6 +227,13 @@ void PlayerController::play()             { if (ctrl_) ctrl_->play(); }
 void PlayerController::pause()            { if (ctrl_) ctrl_->pause(); }
 void PlayerController::togglePlayPause()  { if (ctrl_) ctrl_->togglePlayPause(); }
 void PlayerController::seek(double s)     { if (ctrl_) ctrl_->seek(s); }
+void PlayerController::beginScrub()       { if (ctrl_) ctrl_->beginScrub(); }
+void PlayerController::scrubToFrame(qint64 frame) {
+    if (ctrl_) ctrl_->scrubToFrame(frame);
+}
+void PlayerController::endScrub(qint64 frame) {
+    if (ctrl_) ctrl_->endScrub(frame);
+}
 void PlayerController::stepForward(int n) { if (ctrl_) ctrl_->stepForward(n); }
 void PlayerController::stepBackward(int n){ if (ctrl_) ctrl_->stepBackward(n); }
 void PlayerController::goToStart()        { if (ctrl_) ctrl_->goToStart(); }
