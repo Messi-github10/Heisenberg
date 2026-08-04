@@ -3,6 +3,7 @@
 #include <Decoder/SoftwareDecoder.hpp>
 #include <Demuxer/DemuxerFactory.hpp>
 #include <Common/Packet.hpp>
+#include <Common/FrameTime.hpp>
 #include <Common/Stream.hpp>
 #include <Utiles/Logger.hpp>
 
@@ -20,10 +21,6 @@ namespace {
 constexpr double kSeekPrerollSeconds = 2.0;
 constexpr int64_t kForwardDecodeThresholdFrames = 64;
 
-int64_t frameIndexFromPts(int64_t ptsMs, double fps) {
-    return static_cast<int64_t>(std::llround(
-        static_cast<double>(ptsMs) * fps / 1000.0));
-}
 } // namespace
 
 DecodeThread::DecodeThread(RingBuffer<FramePtr>& buffer)
@@ -219,7 +216,7 @@ void DecodeThread::processCommand(Cmd cmd) {
                         lastDecodedFrameQueued_ = true;
                     }
                     LOG_DEBUG("DecodeThread: seek to {:.3f}s selected frame at {:.3f}s",
-                              targetSeconds, targetFrame->pts / 1000.0);
+                              targetSeconds, frameTimeSeconds(*targetFrame));
                     bool seekable = demuxer_->seekable();
                     if (onOpened) {
                         onOpened(durationSecs_, fps_, seekable, targetFrame);
@@ -239,7 +236,14 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAt(double targetSeconds,
                                                     double currentSeconds) {
     if (!demuxer_ || !decoder_ || !videoStream_) return nullptr;
 
-    const double frameRate = fps_ > 0.0 ? fps_ : 25.0;
+    AVRational sourceFrameRate = {
+        videoStream_->codec.fpsNum,
+        videoStream_->codec.fpsDen
+    };
+    if (sourceFrameRate.num <= 0 || sourceFrameRate.den <= 0) {
+        sourceFrameRate = {25, 1};
+    }
+    const double frameRate = av_q2d(sourceFrameRate);
     targetSeconds = std::max(0.0, targetSeconds);
 
     // Like MLT, express the seek target on the source video's frame grid.
@@ -264,12 +268,13 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAt(double targetSeconds,
         // The producer can be ahead of the displayed frame due to buffering.
         // Reuse buffered frames first, then continue from the decoder cursor.
         while (auto front = buffer_->peekFront()) {
-            if (!*front || (*front)->pts == AV_NOPTS_VALUE) {
+            if (!*front || !hasFrameTimestamp(**front)) {
                 decodeForward = false;
                 break;
             }
 
-            const int64_t bufferedIndex = frameIndexFromPts((*front)->pts, frameRate);
+            const int64_t bufferedIndex = frameIndexFromTimestamp(
+                **front, sourceFrameRate);
             if (bufferedIndex > targetFrameIndex) {
                 decodeForward = false;
                 break;
@@ -324,7 +329,7 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAt(double targetSeconds,
         if (!frame) return nullptr;
 
         lastFrame = frame;
-        if (frame->pts == AV_NOPTS_VALUE) {
+        if (!hasFrameTimestamp(*frame)) {
             if (targetFrameIndex == 0) {
                 frame->pts = 0;
                 return frame;
@@ -332,7 +337,8 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAt(double targetSeconds,
             return nullptr;
         }
 
-        const int64_t decodedFrameIndex = frameIndexFromPts(frame->pts, frameRate);
+        const int64_t decodedFrameIndex = frameIndexFromTimestamp(
+            *frame, sourceFrameRate);
         if (decodedFrameIndex >= targetFrameIndex) {
             return frame;
         }
@@ -370,10 +376,10 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAt(double targetSeconds,
                     return selected;
                 }
             }
-            if (lastFrame && lastFrame->pts == AV_NOPTS_VALUE) {
+            if (lastFrame && !hasFrameTimestamp(*lastFrame)) {
                 LOG_WARN("DecodeThread: no usable frame timestamp; seek is approximate");
-                lastFrame->pts = static_cast<int64_t>(
-                    std::llround(snappedTargetSeconds * 1000.0));
+                lastFrame->pts = timestampFromSeconds(snappedTargetSeconds,
+                                                      lastFrame->time_base);
             }
             return lastFrame;
         }
@@ -465,11 +471,18 @@ DecodeThread::FramePtr DecodeThread::receiveDecodedFrame() {
 
     lastDecodedFrame_ = frame;
     lastDecodedFrameQueued_ = false;
-    if (frame->pts == AV_NOPTS_VALUE) {
+    if (!hasFrameTimestamp(*frame)) {
         lastDecodedFrameIndex_ = -1;
     } else {
-        const double frameRate = fps_ > 0.0 ? fps_ : 25.0;
-        lastDecodedFrameIndex_ = frameIndexFromPts(frame->pts, frameRate);
+        AVRational sourceFrameRate = {
+            videoStream_->codec.fpsNum,
+            videoStream_->codec.fpsDen
+        };
+        if (sourceFrameRate.num <= 0 || sourceFrameRate.den <= 0) {
+            sourceFrameRate = {25, 1};
+        }
+        lastDecodedFrameIndex_ = frameIndexFromTimestamp(
+            *frame, sourceFrameRate);
     }
     return frame;
 }

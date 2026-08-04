@@ -13,7 +13,6 @@ extern "C" {
 #include <Common/Packet.hpp>
 #include <Common/Stream.hpp>
 
-#include <cmath>
 #include <memory>
 
 namespace heisenberg {
@@ -138,19 +137,33 @@ int SoftwareDecoder::sendPacket(std::shared_ptr<const Packet> packet) {
     avpkt.data = const_cast<uint8_t*>(packet->data());
     avpkt.size = packet->size();
 
+    AVRational packetTimeBase = {
+        packet->timeBaseNum,
+        packet->timeBaseDen
+    };
+    if (packetTimeBase.num <= 0 || packetTimeBase.den <= 0) {
+        packetTimeBase = impl_->ctx->pkt_timebase;
+    }
+
     if (packet->hasPts) {
-        avpkt.pts = static_cast<int64_t>(std::llround(
-            packet->pts / av_q2d(impl_->ctx->time_base)));
+        avpkt.pts = av_rescale_q(packet->pts,
+                                packetTimeBase,
+                                impl_->ctx->pkt_timebase);
     } else {
         avpkt.pts = AV_NOPTS_VALUE;
     }
 
     if (packet->hasDts) {
-        avpkt.dts = static_cast<int64_t>(std::llround(
-            packet->dts / av_q2d(impl_->ctx->time_base)));
+        avpkt.dts = av_rescale_q(packet->dts,
+                                packetTimeBase,
+                                impl_->ctx->pkt_timebase);
     } else {
         avpkt.dts = AV_NOPTS_VALUE;
     }
+    avpkt.duration = av_rescale_q(packet->duration,
+                                  packetTimeBase,
+                                  impl_->ctx->pkt_timebase);
+    avpkt.pos = packet->filePos;
 
     if (packet->keyframe) {
         avpkt.flags |= AV_PKT_FLAG_KEY;
@@ -183,10 +196,11 @@ std::shared_ptr<AVFrame> SoftwareDecoder::receiveFrame() {
     if (displayPts == AV_NOPTS_VALUE) {
         displayPts = raw->pts;
     }
+    raw->time_base = impl_->ctx->pkt_timebase;
     if (displayPts != AV_NOPTS_VALUE) {
-        raw->pts = av_rescale_q(displayPts - impl_->startTime_,
-                                impl_->ctx->time_base,
-                                {1, 1000});
+        // Keep the zero-based display timestamp in the stream's native units.
+        // best_effort_timestamp retains FFmpeg's original absolute timestamp.
+        raw->pts = displayPts - impl_->startTime_;
     }
 
     return std::shared_ptr<AVFrame>(raw, avframeDeleter);

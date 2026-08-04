@@ -7,6 +7,7 @@
 #include <Decoder/AudioDecoder.hpp>
 #include <Decoder/DecodeThread.hpp>
 #include <Decoder/FFmpegAudioDecoder.hpp>
+#include <Common/FrameTime.hpp>
 #include <Renderer/AudioDevice.hpp>
 #include <Utiles/Logger.hpp>
 
@@ -187,7 +188,7 @@ struct PlaybackController::Impl {
                 continue;
             }
 
-            const double pts   = static_cast<double>((*front)->pts);
+            const double pts   = frameTimeMilliseconds(**front);
             const double delay = pts - masterTimeMs;
 
             // ── Frame in the future → sleep until just before it's due ──
@@ -291,9 +292,9 @@ bool PlaybackController::open(const std::string& filePath) {
             emit durationChanged(dur);
 
             if (firstFrame) {
-                impl_->lastDisplayedPtsMs = static_cast<double>(firstFrame->pts);
+                impl_->lastDisplayedPtsMs = frameTimeMilliseconds(*firstFrame);
                 emit frameDecoded(firstFrame);
-                emit positionChanged(firstFrame->pts / 1000.0);
+                emit positionChanged(frameTimeSeconds(*firstFrame));
             }
 
             // ── Open audio decoder ────────────────────────────
@@ -494,7 +495,7 @@ void PlaybackController::seek(double seconds) {
             impl_->fps          = fps;
 
             if (keyFrame) {
-                impl_->lastDisplayedPtsMs = static_cast<double>(keyFrame->pts);
+                impl_->lastDisplayedPtsMs = frameTimeMilliseconds(*keyFrame);
                 if (impl_->audioDecoder && impl_->audioDecoder->isOpen()) {
                     const double selectedSeconds = std::max(
                         0.0, impl_->lastDisplayedPtsMs / 1000.0);
@@ -503,7 +504,7 @@ void PlaybackController::seek(double seconds) {
                         std::memory_order_relaxed);
                 }
                 emit frameDecoded(keyFrame);
-                emit positionChanged(keyFrame->pts / 1000.0);
+                emit positionChanged(frameTimeSeconds(*keyFrame));
             }
 
             const bool shouldResume = wasPlaying || impl_->pendingPlayAfterSeek;

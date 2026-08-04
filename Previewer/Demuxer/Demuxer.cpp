@@ -258,13 +258,14 @@ std::shared_ptr<Packet> Demuxer::avpacketToPacket(const AVPacket *avpkt) {
     }
 
     AVStream *avs = formatCtx_->streams[avpkt->stream_index];
-    double timeBase = av_q2d(avs->time_base);
 
     packet->hasPts = avpkt->pts != AV_NOPTS_VALUE;
     packet->hasDts = avpkt->dts != AV_NOPTS_VALUE;
-    packet->pts = packet->hasPts ? avpkt->pts * timeBase : -1.0;
-    packet->dts = packet->hasDts ? avpkt->dts * timeBase : -1.0;
-    packet->duration = avpkt->duration * timeBase;
+    packet->pts = packet->hasPts ? avpkt->pts : 0;
+    packet->dts = packet->hasDts ? avpkt->dts : 0;
+    packet->duration = avpkt->duration;
+    packet->timeBaseNum = avs->time_base.num;
+    packet->timeBaseDen = avs->time_base.den;
 
     packet->streamIndex = avpkt->stream_index;
     packet->keyframe = (avpkt->flags & AV_PKT_FLAG_KEY) != 0;

@@ -31,9 +31,12 @@ public:
     void reserve(size_t n) { data_.reserve(n); }
     void clear() { data_.clear(); }
 
-    double pts = -1.0;
-    double dts = -1.0;
-    double duration = -1.0;
+    // Native demuxer timestamps. Interpret them with timeBaseNum/timeBaseDen.
+    int64_t pts = 0;
+    int64_t dts = 0;
+    int64_t duration = 0;
+    int timeBaseNum = 0;
+    int timeBaseDen = 1;
     bool hasPts = false;
     bool hasDts = false;
     int streamIndex = -1;
