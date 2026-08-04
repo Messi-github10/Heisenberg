@@ -57,8 +57,12 @@ int main(int argc, char* argv[])
     // 连接控制信号
     QObject::connect(&mainWindow, &MainWindow::playPauseClicked,
                      &playerCtrl, &heisenberg::ui::PlayerController::togglePlayPause);
-    QObject::connect(&mainWindow, &MainWindow::seekRequested,
-                     &playerCtrl, &heisenberg::ui::PlayerController::seek);
+    QObject::connect(&mainWindow, &MainWindow::scrubStarted,
+                     &playerCtrl, &heisenberg::ui::PlayerController::beginScrub);
+    QObject::connect(&mainWindow, &MainWindow::scrubFrameRequested,
+                     &playerCtrl, &heisenberg::ui::PlayerController::scrubToFrame);
+    QObject::connect(&mainWindow, &MainWindow::scrubFinished,
+                     &playerCtrl, &heisenberg::ui::PlayerController::endScrub);
     QObject::connect(&mainWindow, &MainWindow::openFileRequested,
                      &playerCtrl, &heisenberg::ui::PlayerController::openFile);
 
@@ -69,6 +73,8 @@ int main(int argc, char* argv[])
                      &mainWindow, [&]() { mainWindow.setCurrentTime(playerCtrl.currentTime()); });
     QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::durationChanged,
                      &mainWindow, [&]() { mainWindow.setDuration(playerCtrl.duration()); });
+    QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::frameCountChanged,
+                     &mainWindow, [&]() { mainWindow.setFrameCount(playerCtrl.frameCount()); });
 
     mainWindow.show();
 

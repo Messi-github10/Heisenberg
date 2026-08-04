@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -63,6 +64,14 @@ private:
                                    int64_t currentFrameIndex = -1);
     FramePtr    receiveDecodedFrame();
     void        resetDecodePosition();
+    FramePtr    findCachedScrubFrame(int64_t frameIndex);
+    void        cacheScrubFrame(int64_t frameIndex, const FramePtr& frame);
+    void        clearScrubFrameCache();
+
+    struct ScrubCacheEntry {
+        int64_t  frameIndex = 0;
+        FramePtr frame;
+    };
 
     std::thread thread_;
 
@@ -88,6 +97,8 @@ private:
     int64_t                            lastDecodedFrameIndex_ = -1;
     FramePtr                           lastDecodedFrame_;
     bool                               lastDecodedFrameQueued_ = true;
+    std::list<ScrubCacheEntry>         scrubFrameCache_;
+    bool                               scrubDecoderDetached_ = false;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> scrubbing_{false};

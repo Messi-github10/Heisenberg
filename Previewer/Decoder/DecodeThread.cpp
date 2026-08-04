@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 
 extern "C" {
 #include <libavutil/frame.h>
@@ -20,6 +21,7 @@ namespace heisenberg {
 namespace {
 constexpr double kSeekPrerollSeconds = 2.0;
 constexpr int64_t kForwardDecodeThresholdFrames = 64;
+constexpr std::size_t kScrubFrameCacheCapacity = 16;
 
 } // namespace
 
@@ -56,6 +58,7 @@ void DecodeThread::stop() {
     demuxer_.reset();
     decoder_.reset();
     videoStream_ = nullptr;
+    clearScrubFrameCache();
 }
 
 void DecodeThread::open(const std::string& path) {
@@ -92,6 +95,7 @@ void DecodeThread::beginScrub() {
     {
         std::lock_guard<std::mutex> lock(cmdMutex_);
         scrubbing_.store(true, std::memory_order_release);
+        scrubDecoderDetached_ = false;
         buffer_->interrupt();
     }
     cmdCv_.notify_all();
@@ -140,7 +144,9 @@ void DecodeThread::processCommand(Cmd cmd) {
         fps_          = 0.0;
         eof_          = false;
         scrubbing_    = false;
+        scrubDecoderDetached_ = false;
         resetDecodePosition();
+        clearScrubFrameCache();
 
         demuxer_ = demuxer::createDemuxer();
         if (demuxer_->open(openPath_) < 0) {
@@ -210,7 +216,9 @@ void DecodeThread::processCommand(Cmd cmd) {
         fps_          = 0.0;
         eof_          = false;
         scrubbing_    = false;
+        scrubDecoderDetached_ = false;
         resetDecodePosition();
+        clearScrubFrameCache();
         buffer_->flush();
         buffer_->resume();
         break;
@@ -272,10 +280,37 @@ void DecodeThread::processCommand(Cmd cmd) {
         eof_ = false;
         buffer_->resume();
 
-        auto frame = decodeFrameAtFrame(targetFrame, currentFrame);
+        FramePtr frame;
+        bool cacheHit = false;
+
+        // A cached preview can be shown immediately while dragging. The final
+        // request still decodes so playback resumes from the correct position.
+        if (!resumePrefetch) {
+            frame = findCachedScrubFrame(targetFrame);
+            cacheHit = static_cast<bool>(frame);
+        }
+
+        if (!frame) {
+            const int64_t decodeOrigin = scrubDecoderDetached_
+                ? -1
+                : currentFrame;
+            frame = decodeFrameAtFrame(targetFrame, decodeOrigin);
+        }
 
         std::lock_guard<std::mutex> lock(cmdMutex_);
         if (pendingCmd_ != Cmd::None || requestId != scrubRequestId_) break;
+
+        if (frame) {
+            if (cacheHit) {
+                // The displayed position changed without moving the decoder.
+                scrubDecoderDetached_ = true;
+                LOG_DEBUG("DecodeThread: LRU hit for scrub frame {}",
+                          targetFrame);
+            } else {
+                scrubDecoderDetached_ = false;
+                cacheScrubFrame(targetFrame, frame);
+            }
+        }
 
         if (resumePrefetch) {
             buffer_->resume();
@@ -559,7 +594,9 @@ void DecodeThread::runLoop() {
     durationSecs_ = 0.0;
     fps_          = 0.0;
     scrubbing_    = false;
+    scrubDecoderDetached_ = false;
     resetDecodePosition();
+    clearScrubFrameCache();
 }
 
 DecodeThread::FramePtr DecodeThread::receiveDecodedFrame() {
@@ -590,6 +627,47 @@ void DecodeThread::resetDecodePosition() {
     lastDecodedFrameIndex_ = -1;
     lastDecodedFrame_.reset();
     lastDecodedFrameQueued_ = true;
+}
+
+DecodeThread::FramePtr DecodeThread::findCachedScrubFrame(
+    int64_t frameIndex) {
+    auto it = std::find_if(
+        scrubFrameCache_.begin(), scrubFrameCache_.end(),
+        [frameIndex](const ScrubCacheEntry& entry) {
+            return entry.frameIndex == frameIndex;
+        });
+    if (it == scrubFrameCache_.end()) return nullptr;
+
+    FramePtr frame = it->frame;
+    scrubFrameCache_.splice(scrubFrameCache_.begin(),
+                            scrubFrameCache_, it);
+    return frame;
+}
+
+void DecodeThread::cacheScrubFrame(int64_t frameIndex,
+                                   const FramePtr& frame) {
+    if (!frame) return;
+
+    auto it = std::find_if(
+        scrubFrameCache_.begin(), scrubFrameCache_.end(),
+        [frameIndex](const ScrubCacheEntry& entry) {
+            return entry.frameIndex == frameIndex;
+        });
+    if (it != scrubFrameCache_.end()) {
+        it->frame = frame;
+        scrubFrameCache_.splice(scrubFrameCache_.begin(),
+                                scrubFrameCache_, it);
+        return;
+    }
+
+    scrubFrameCache_.push_front({frameIndex, frame});
+    if (scrubFrameCache_.size() > kScrubFrameCacheCapacity) {
+        scrubFrameCache_.pop_back();
+    }
+}
+
+void DecodeThread::clearScrubFrameCache() {
+    scrubFrameCache_.clear();
 }
 
 } // namespace heisenberg
