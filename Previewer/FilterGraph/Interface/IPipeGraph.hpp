@@ -47,8 +47,8 @@ public:
     /// 清除全部节点 + 连线
     virtual void clear() = 0;
 
-    /// 执行一帧
-    virtual bool run() = 0;
+    /// 执行一帧。结构变化时可在这里重建执行计划，参数变化不应重建图。
+    virtual bool run(const FrameContext& frame) = 0;
 };
 
 // ============================================================
@@ -58,7 +58,7 @@ public:
 class PipeGraphFactory {
 public:
     virtual ~PipeGraphFactory() = default;
-    virtual IPipeGraph* createGraph() = 0;
+    virtual IPipeGraph* createGraph(const VulkanGraphContext& context) = 0;
 };
 
 } // namespace filtergraph

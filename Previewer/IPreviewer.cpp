@@ -1,426 +1,463 @@
-//
-// Created by NiceFold on 2026/7/9.
-//
-
 #include "IPreviewer.hpp"
+
 #include "Renderer/RenderEngine.hpp"
 #include "Renderer/SwapChain.hpp"
 #include "TextureContext/TextureManager.hpp"
 
+#include <Common/FrameTime.hpp>
 #include <FilterGraph/Interface/ILayerFactory.hpp>
 #include <FilterGraph/Interface/IPipeGraph.hpp>
 #include <Utiles/Logger.hpp>
 
 #include <vulkan/vulkan.hpp>
 
+#include <exception>
+#include <utility>
+
 extern "C" {
 #include <libavutil/frame.h>
 #include <libplacebo/renderer.h>
 }
 
-namespace heisenberg {
-namespace renderer {
+namespace heisenberg::renderer {
+namespace {
 
-// ============================================================
-// Impl
-// ============================================================
+VkImage toC(vk::Image image) {
+    return static_cast<VkImage>(image);
+}
+
+VkImageView toC(vk::ImageView view) {
+    return static_cast<VkImageView>(view);
+}
+
+VkSemaphore toC(vk::Semaphore semaphore) {
+    return static_cast<VkSemaphore>(semaphore);
+}
+
+VkFormat toC(vk::Format format) {
+    return static_cast<VkFormat>(format);
+}
+
+VkImageLayout toC(vk::ImageLayout layout) {
+    return static_cast<VkImageLayout>(layout);
+}
+
+VkImageUsageFlags toCUsage(vk::ImageUsageFlags usage) {
+    return static_cast<VkImageUsageFlags>(usage);
+}
+
+pl_frame makeRgbFrame(pl_tex texture, int width, int height,
+                      enum pl_color_transfer transfer) {
+    pl_frame frame = {};
+    frame.num_planes = 1;
+    frame.planes[0].texture = texture;
+    frame.planes[0].components = 4;
+    frame.planes[0].component_mapping[0] = 0;
+    frame.planes[0].component_mapping[1] = 1;
+    frame.planes[0].component_mapping[2] = 2;
+    frame.planes[0].component_mapping[3] = 3;
+    frame.repr.sys = PL_COLOR_SYSTEM_RGB;
+    frame.repr.levels = PL_COLOR_LEVELS_PC;
+    frame.color.primaries = PL_COLOR_PRIM_BT_709;
+    frame.color.transfer = transfer;
+    frame.crop = {0, 0, static_cast<float>(width), static_cast<float>(height)};
+    return frame;
+}
+
+} // namespace
 
 struct IPreviewer::Impl {
-    pl_gpu    gpu    = nullptr;
+    pl_gpu gpu = nullptr;
     pl_vulkan vulkan = nullptr;
 
-    vk::Device         vkDevice;
+    vk::Device vkDevice;
     vk::PhysicalDevice vkPhysDevice;
 
     std::unique_ptr<TextureManager> textureManager;
-    std::unique_ptr<RenderEngine>   renderEngine;
-    std::unique_ptr<SwapChain>      swapChain;
+    std::unique_ptr<RenderEngine> renderEngine;
+    std::unique_ptr<SwapChain> swapChain;
 
-    ResizeCallback  onResize;
+    ResizeCallback onResize;
     PresentCallback onPresent;
 
-    int outputWidth  = 0;
+    int outputWidth = 0;
     int outputHeight = 0;
     bool initialized = false;
 
-    vk::Image        intermediateImg    = nullptr;
+    vk::Image intermediateImg = nullptr;
+    vk::ImageView intermediateView = nullptr;
     vk::DeviceMemory intermediateMemory = nullptr;
-    vk::ImageLayout  intermediateLayout = vk::ImageLayout::eUndefined;
+    vk::ImageLayout intermediateLayout = vk::ImageLayout::eUndefined;
+    int intermediateWidth = 0;
+    int intermediateHeight = 0;
 
-    vk::Semaphore holdSemaphore;
-    vk::Semaphore releaseSemaphore;
+    vk::Semaphore interopSemaphore;
+    uint64_t interopValue = 0;
+    filtergraph::VulkanSyncPoint intermediateReleaseWait = {};
 
-    heisenberg::filtergraph::IPipeGraph*  filterGraph = nullptr;
-    heisenberg::filtergraph::IInputLayer* dagInput    = nullptr;
-    heisenberg::filtergraph::IOutputLayer* dagOutput  = nullptr;
+    filtergraph::IPipeGraph* filterGraph = nullptr;
+    filtergraph::IInputLayer* dagInput = nullptr;
+    filtergraph::IOutputLayer* dagOutput = nullptr;
 };
 
-IPreviewer::IPreviewer()
-    : impl_(std::make_unique<Impl>()) {}
+IPreviewer::IPreviewer() : impl_(std::make_unique<Impl>()) {}
 
 IPreviewer::~IPreviewer() {
     shutdown();
 }
 
-bool IPreviewer::initialize(pl_gpu gpu, pl_vulkan vk,
+bool IPreviewer::initialize(pl_gpu gpu, pl_vulkan vulkan,
                             std::unique_ptr<SwapChain> swapChain,
                             int width, int height) {
-    if (!gpu || !vk || !swapChain || !swapChain->isValid()) {
-        LOG_ERROR("IPreviewer: invalid parameters");
+    if (!gpu || !vulkan || !swapChain || !swapChain->isValid()) {
+        LOG_ERROR("IPreviewer: invalid initialization parameters");
         return false;
     }
 
-    impl_->gpu    = gpu;
-    impl_->vulkan = vk;
-    impl_->vkDevice     = vk::Device(vk->device);
-    impl_->vkPhysDevice = vk::PhysicalDevice(vk->phys_device);
+    impl_->gpu = gpu;
+    impl_->vulkan = vulkan;
+    impl_->vkDevice = vk::Device(vulkan->device);
+    impl_->vkPhysDevice = vk::PhysicalDevice(vulkan->phys_device);
     impl_->swapChain = std::move(swapChain);
-    impl_->outputWidth  = width;
+    impl_->outputWidth = width;
     impl_->outputHeight = height;
 
-    vk::SemaphoreCreateInfo semInfo;
-    impl_->holdSemaphore    = impl_->vkDevice.createSemaphore(semInfo);
-    impl_->releaseSemaphore = impl_->vkDevice.createSemaphore(semInfo);
+    vk::SemaphoreTypeCreateInfo timelineInfo;
+    timelineInfo.semaphoreType = vk::SemaphoreType::eTimeline;
+    timelineInfo.initialValue = 0;
+    vk::SemaphoreCreateInfo semaphoreInfo;
+    semaphoreInfo.pNext = &timelineInfo;
+    impl_->interopSemaphore = impl_->vkDevice.createSemaphore(semaphoreInfo);
 
     try {
         impl_->textureManager = std::make_unique<TextureManager>(gpu);
-    } catch (const std::exception& e) {
-        LOG_ERROR("IPreviewer: TextureManager failed — {}", e.what());
-        return false;
-    }
-
-    try {
         impl_->renderEngine = std::make_unique<RenderEngine>(gpu);
-    } catch (const std::exception& e) {
-        LOG_ERROR("IPreviewer: RenderEngine failed — {}", e.what());
-        impl_->textureManager.reset();
-        return false;
-    }
-
-    if (!buildIntermediateTarget(width, height)) {
-        impl_->textureManager.reset();
-        impl_->renderEngine.reset();
+    } catch (const std::exception& error) {
+        LOG_ERROR("IPreviewer: renderer initialization failed: {}", error.what());
+        shutdown();
         return false;
     }
 
     impl_->initialized = true;
-    LOG_INFO("IPreviewer: initialized — {}x{}", width, height);
+    LOG_INFO("IPreviewer: initialized {}x{}", width, height);
     return true;
 }
 
 void IPreviewer::shutdown() {
+    if (!impl_) return;
+
     releaseIntermediateTarget();
-
-    if (impl_->holdSemaphore) {
-        impl_->vkDevice.destroySemaphore(impl_->holdSemaphore);
-        impl_->holdSemaphore = nullptr;
+    if (impl_->interopSemaphore) {
+        impl_->vkDevice.destroySemaphore(impl_->interopSemaphore);
+        impl_->interopSemaphore = nullptr;
     }
-    if (impl_->releaseSemaphore) {
-        impl_->vkDevice.destroySemaphore(impl_->releaseSemaphore);
-        impl_->releaseSemaphore = nullptr;
-    }
-
-    if (impl_->swapChain) {
-        impl_->swapChain->shutdown();
-    }
-    if (impl_->textureManager) {
-        impl_->textureManager->shutdown();
-    }
+    if (impl_->swapChain) impl_->swapChain->shutdown();
+    if (impl_->textureManager) impl_->textureManager->shutdown();
     impl_->renderEngine.reset();
     impl_->initialized = false;
 }
 
 void IPreviewer::resize(int width, int height) {
-    impl_->outputWidth  = width;
+    impl_->outputWidth = width;
     impl_->outputHeight = height;
     if (impl_->swapChain) {
-        int w = width, h = height;
-        impl_->swapChain->resize(&w, &h);
+        int actualWidth = width;
+        int actualHeight = height;
+        impl_->swapChain->resize(&actualWidth, &actualHeight);
     }
-    releaseIntermediateTarget();
-    buildIntermediateTarget(width, height);
-    if (impl_->onResize) {
-        impl_->onResize(width, height);
-    }
+    if (impl_->onResize) impl_->onResize(width, height);
 }
 
-void IPreviewer::setOnResize(ResizeCallback cb) {
-    impl_->onResize = std::move(cb);
+void IPreviewer::setOnResize(ResizeCallback callback) {
+    impl_->onResize = std::move(callback);
 }
 
-void IPreviewer::setOnPresent(PresentCallback cb) {
-    impl_->onPresent = std::move(cb);
+void IPreviewer::setOnPresent(PresentCallback callback) {
+    impl_->onPresent = std::move(callback);
 }
 
-void IPreviewer::setFilterGraph(
-    heisenberg::filtergraph::IPipeGraph* graph,
-    heisenberg::filtergraph::IInputLayer* input,
-    heisenberg::filtergraph::IOutputLayer* output) {
+void IPreviewer::setFilterGraph(filtergraph::IPipeGraph* graph,
+                                filtergraph::IInputLayer* input,
+                                filtergraph::IOutputLayer* output) {
     impl_->filterGraph = graph;
-    impl_->dagInput    = input;
-    impl_->dagOutput   = output;
+    impl_->dagInput = input;
+    impl_->dagOutput = output;
+    impl_->intermediateReleaseWait = {};
 }
 
 bool IPreviewer::buildIntermediateTarget(int width, int height) {
     if (width <= 0 || height <= 0) return false;
 
-    vk::ImageCreateInfo imgInfo;
-    imgInfo.imageType     = vk::ImageType::e2D;
-    imgInfo.format        = vk::Format::eR8G8B8A8Unorm;
-    imgInfo.extent        = vk::Extent3D{ static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
-    imgInfo.mipLevels     = 1;
-    imgInfo.arrayLayers   = 1;
-    imgInfo.samples       = vk::SampleCountFlagBits::e1;
-    imgInfo.tiling        = vk::ImageTiling::eOptimal;
-    imgInfo.usage         = vk::ImageUsageFlagBits::eStorage
-                          | vk::ImageUsageFlagBits::eSampled
-                          | vk::ImageUsageFlagBits::eColorAttachment
-                          | vk::ImageUsageFlagBits::eTransferSrc
-                          | vk::ImageUsageFlagBits::eTransferDst;
-    imgInfo.sharingMode   = vk::SharingMode::eExclusive;
-    imgInfo.initialLayout = vk::ImageLayout::eUndefined;
+    vk::ImageCreateInfo imageInfo;
+    imageInfo.imageType = vk::ImageType::e2D;
+    imageInfo.format = vk::Format::eR16G16B16A16Sfloat;
+    imageInfo.extent = vk::Extent3D{
+        static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = vk::SampleCountFlagBits::e1;
+    imageInfo.tiling = vk::ImageTiling::eOptimal;
+    imageInfo.usage = vk::ImageUsageFlagBits::eStorage
+        | vk::ImageUsageFlagBits::eSampled
+        | vk::ImageUsageFlagBits::eColorAttachment
+        | vk::ImageUsageFlagBits::eTransferSrc
+        | vk::ImageUsageFlagBits::eTransferDst;
+    imageInfo.sharingMode = vk::SharingMode::eExclusive;
+    imageInfo.initialLayout = vk::ImageLayout::eUndefined;
 
-    impl_->intermediateImg = impl_->vkDevice.createImage(imgInfo);
-    if (!impl_->intermediateImg) {
-        LOG_ERROR("IPreviewer: vkCreateImage() for intermediate target failed");
-        return false;
-    }
+    impl_->intermediateImg = impl_->vkDevice.createImage(imageInfo);
+    if (!impl_->intermediateImg) return false;
 
-    vk::MemoryRequirements memReq = impl_->vkDevice.getImageMemoryRequirements(impl_->intermediateImg);
+    const vk::MemoryRequirements requirements =
+        impl_->vkDevice.getImageMemoryRequirements(impl_->intermediateImg);
+    const vk::PhysicalDeviceMemoryProperties properties =
+        impl_->vkPhysDevice.getMemoryProperties();
 
-    vk::MemoryAllocateInfo allocInfo;
-    allocInfo.allocationSize = memReq.size;
-
-    vk::PhysicalDeviceMemoryProperties memProps = impl_->vkPhysDevice.getMemoryProperties();
-    bool found = false;
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
-        if ((memReq.memoryTypeBits & (1u << i))
-            && (memProps.memoryTypes[i].propertyFlags & vk::MemoryPropertyFlagBits::eDeviceLocal)) {
-            allocInfo.memoryTypeIndex = i;
-            found = true;
+    uint32_t memoryType = properties.memoryTypeCount;
+    for (uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
+        if ((requirements.memoryTypeBits & (1u << i))
+            && (properties.memoryTypes[i].propertyFlags
+                & vk::MemoryPropertyFlagBits::eDeviceLocal)) {
+            memoryType = i;
             break;
         }
     }
-    if (!found) {
-        LOG_ERROR("IPreviewer: no suitable device-local memory type");
-        impl_->vkDevice.destroyImage(impl_->intermediateImg);
-        impl_->intermediateImg = nullptr;
+    if (memoryType == properties.memoryTypeCount) {
+        releaseIntermediateTarget();
         return false;
     }
 
-    impl_->intermediateMemory = impl_->vkDevice.allocateMemory(allocInfo);
+    vk::MemoryAllocateInfo allocation;
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = memoryType;
+    impl_->intermediateMemory = impl_->vkDevice.allocateMemory(allocation);
     if (!impl_->intermediateMemory) {
-        LOG_ERROR("IPreviewer: vkAllocateMemory() for intermediate target failed");
-        impl_->vkDevice.destroyImage(impl_->intermediateImg);
-        impl_->intermediateImg = nullptr;
+        releaseIntermediateTarget();
         return false;
     }
-    impl_->vkDevice.bindImageMemory(impl_->intermediateImg, impl_->intermediateMemory, 0);
-    impl_->intermediateLayout = vk::ImageLayout::eUndefined;
+    impl_->vkDevice.bindImageMemory(
+        impl_->intermediateImg, impl_->intermediateMemory, 0);
 
+    vk::ImageViewCreateInfo viewInfo;
+    viewInfo.image = impl_->intermediateImg;
+    viewInfo.viewType = vk::ImageViewType::e2D;
+    viewInfo.format = vk::Format::eR16G16B16A16Sfloat;
+    viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.layerCount = 1;
+    impl_->intermediateView = impl_->vkDevice.createImageView(viewInfo);
+    if (!impl_->intermediateView) {
+        releaseIntermediateTarget();
+        return false;
+    }
+
+    impl_->intermediateLayout = vk::ImageLayout::eUndefined;
+    impl_->intermediateWidth = width;
+    impl_->intermediateHeight = height;
     return true;
 }
 
 void IPreviewer::releaseIntermediateTarget() {
-    if (impl_->intermediateMemory) {
-        impl_->vkDevice.freeMemory(impl_->intermediateMemory);
-        impl_->intermediateMemory = nullptr;
+    if (!impl_->vkDevice) return;
+    if (impl_->intermediateView || impl_->intermediateImg) {
+        impl_->vkDevice.waitIdle();
+    }
+    if (impl_->intermediateView) {
+        impl_->vkDevice.destroyImageView(impl_->intermediateView);
+        impl_->intermediateView = nullptr;
     }
     if (impl_->intermediateImg) {
         impl_->vkDevice.destroyImage(impl_->intermediateImg);
         impl_->intermediateImg = nullptr;
     }
+    if (impl_->intermediateMemory) {
+        impl_->vkDevice.freeMemory(impl_->intermediateMemory);
+        impl_->intermediateMemory = nullptr;
+    }
     impl_->intermediateLayout = vk::ImageLayout::eUndefined;
-}
-
-static inline VkImage      toC(vk::Image img)       { return static_cast<VkImage>(img); }
-static inline VkSemaphore  toC(vk::Semaphore sem)   { return static_cast<VkSemaphore>(sem); }
-static inline VkFormat     toC(vk::Format fmt)      { return static_cast<VkFormat>(fmt); }
-static inline VkImageLayout toC(vk::ImageLayout l)  { return static_cast<VkImageLayout>(l); }
-
-static inline VkImageUsageFlags toCUsage(vk::ImageUsageFlags u) {
-    return static_cast<VkImageUsageFlags>(u);
+    impl_->intermediateWidth = 0;
+    impl_->intermediateHeight = 0;
+    impl_->intermediateReleaseWait = {};
 }
 
 bool IPreviewer::presentFrame(const AVFrame* avframe) {
-    if (!impl_->initialized || !impl_->swapChain->isValid()) {
+    if (!avframe || !impl_->initialized || !impl_->swapChain->isValid()) {
         return false;
     }
+    const int outputWidth = impl_->outputWidth;
+    const int outputHeight = impl_->outputHeight;
+    if (outputWidth <= 0 || outputHeight <= 0) return false;
 
-    int w = impl_->outputWidth;
-    int h = impl_->outputHeight;
-    if (w <= 0 || h <= 0) return false;
+    const pl_frame* source = impl_->textureManager->uploadAvFrame(avframe);
+    if (!source) return false;
 
-    const pl_frame* srcFrame = impl_->textureManager->uploadAvFrame(avframe);
-    if (!srcFrame) return false;
-
-    struct pl_vulkan_wrap_params wrapParams = {};
-    wrapParams.image  = toC(impl_->intermediateImg);
-    wrapParams.width  = w;
-    wrapParams.height = h;
-    wrapParams.format = toC(vk::Format::eR8G8B8A8Unorm);
-    wrapParams.usage  = toCUsage(vk::ImageUsageFlagBits::eStorage
-                               | vk::ImageUsageFlagBits::eSampled
-                               | vk::ImageUsageFlagBits::eColorAttachment);
-
-    pl_tex targetTex = pl_vulkan_wrap(impl_->gpu, &wrapParams);
-    if (!targetTex) {
-        LOG_ERROR("IPreviewer: pl_vulkan_wrap() failed");
-        return false;
+    if (!impl_->filterGraph || !impl_->dagInput || !impl_->dagOutput) {
+        const bool result =
+            renderToSwapChain(source, outputWidth, outputHeight);
+        if (result && impl_->onPresent) impl_->onPresent();
+        return result;
     }
 
-    pl_vulkan_release_params releaseP = {};
-    releaseP.tex                = targetTex;
-    releaseP.layout             = toC(impl_->intermediateLayout);
-    releaseP.qf                 = VK_QUEUE_FAMILY_IGNORED;
-    releaseP.semaphore.sem      = toC(impl_->releaseSemaphore);
-    releaseP.semaphore.value    = 0;
+    const int workWidth = avframe->width;
+    const int workHeight = avframe->height;
+    if (workWidth <= 0 || workHeight <= 0) return false;
+    if (!impl_->intermediateImg || impl_->intermediateWidth != workWidth
+        || impl_->intermediateHeight != workHeight) {
+        releaseIntermediateTarget();
+        if (!buildIntermediateTarget(workWidth, workHeight)) return false;
+    }
 
-    pl_vulkan_release_ex(impl_->gpu, &releaseP);
+    const vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eStorage
+        | vk::ImageUsageFlagBits::eSampled
+        | vk::ImageUsageFlagBits::eColorAttachment
+        | vk::ImageUsageFlagBits::eTransferSrc
+        | vk::ImageUsageFlagBits::eTransferDst;
+    pl_vulkan_wrap_params wrapParams = {};
+    wrapParams.image = toC(impl_->intermediateImg);
+    wrapParams.width = workWidth;
+    wrapParams.height = workHeight;
+    wrapParams.format = toC(vk::Format::eR16G16B16A16Sfloat);
+    wrapParams.usage = toCUsage(usage);
 
-    pl_frame targetFrame = {};
-    targetFrame.num_planes = 1;
-    targetFrame.planes[0].texture    = targetTex;
-    targetFrame.planes[0].components = 4;
-    targetFrame.planes[0].component_mapping[0] = 0;
-    targetFrame.planes[0].component_mapping[1] = 1;
-    targetFrame.planes[0].component_mapping[2] = 2;
-    targetFrame.planes[0].component_mapping[3] = 3;
-    targetFrame.repr.sys        = PL_COLOR_SYSTEM_RGB;
-    targetFrame.repr.levels     = PL_COLOR_LEVELS_PC;
-    targetFrame.color.primaries = PL_COLOR_PRIM_BT_709;
-    targetFrame.color.transfer  = PL_COLOR_TRC_SRGB;
-    targetFrame.crop = { 0, 0, static_cast<float>(w), static_cast<float>(h) };
+    pl_tex targetTexture = pl_vulkan_wrap(impl_->gpu, &wrapParams);
+    if (!targetTexture) return false;
 
-    if (!impl_->renderEngine->render(srcFrame, &targetFrame)) {
-        LOG_WARN("IPreviewer: YUV→RGB render failed");
-        pl_tex_destroy(impl_->gpu, &targetTex);
+    pl_vulkan_release_params releaseParams = {};
+    releaseParams.tex = targetTexture;
+    releaseParams.layout = toC(impl_->intermediateLayout);
+    releaseParams.qf = impl_->vulkan->queue_graphics.index;
+    releaseParams.semaphore.sem = impl_->intermediateReleaseWait.semaphore;
+    releaseParams.semaphore.value = impl_->intermediateReleaseWait.value;
+    pl_vulkan_release_ex(impl_->gpu, &releaseParams);
+
+    pl_frame workingFrame = makeRgbFrame(
+        targetTexture, workWidth, workHeight, PL_COLOR_TRC_LINEAR);
+    if (!impl_->renderEngine->render(source, &workingFrame)) {
+        pl_tex_destroy(impl_->gpu, &targetTexture);
         return false;
     }
 
     pl_gpu_flush(impl_->gpu);
-
-    pl_vulkan_hold_params holdP = {};
-    holdP.tex                = targetTex;
-    holdP.layout             = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    holdP.qf                 = VK_QUEUE_FAMILY_IGNORED;
-    holdP.semaphore.sem      = toC(impl_->holdSemaphore);
-    holdP.semaphore.value    = 0;
-
-    if (!pl_vulkan_hold_ex(impl_->gpu, &holdP)) {
-        LOG_ERROR("IPreviewer: hold after YUV→RGB failed");
-        pl_tex_destroy(impl_->gpu, &targetTex);
+    pl_vulkan_hold_params holdParams = {};
+    holdParams.tex = targetTexture;
+    holdParams.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    holdParams.qf = impl_->vulkan->queue_graphics.index;
+    holdParams.semaphore.sem = toC(impl_->interopSemaphore);
+    holdParams.semaphore.value = ++impl_->interopValue;
+    if (!pl_vulkan_hold_ex(impl_->gpu, &holdParams)) {
+        pl_tex_destroy(impl_->gpu, &targetTexture);
         return false;
     }
-
-    pl_tex_destroy(impl_->gpu, &targetTex);
+    pl_tex_destroy(impl_->gpu, &targetTexture);
     impl_->intermediateLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-    VkImage dagOutputVk = toC(impl_->intermediateImg);
-    int dagOutputW = w;
-    int dagOutputH = h;
+    filtergraph::VulkanImageRef graphInput;
+    graphInput.image = toC(impl_->intermediateImg);
+    graphInput.view = toC(impl_->intermediateView);
+    graphInput.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    graphInput.extent = {
+        static_cast<uint32_t>(workWidth), static_cast<uint32_t>(workHeight)};
+    graphInput.usage = toCUsage(usage);
+    graphInput.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    graphInput.queueFamilyIndex = impl_->vulkan->queue_graphics.index;
+    graphInput.ready = {toC(impl_->interopSemaphore), impl_->interopValue};
+    if (!impl_->dagInput->setVulkanInput(graphInput)) return false;
 
-    if (impl_->filterGraph && impl_->dagInput && impl_->dagOutput) {
-        impl_->dagInput->inputGpuData(nullptr, dagOutputVk);
-        if (!impl_->filterGraph->run()) {
-            LOG_WARN("IPreviewer: DAG filter graph run() failed — passthrough");
-        } else {
-            filtergraph::VkOutGpuTex outTex;
-            impl_->dagOutput->outVkGpuTex(outTex, 0);
-            if (outTex.image) {
-                dagOutputVk = static_cast<VkImage>(outTex.image);
-                dagOutputW  = outTex.width;
-                dagOutputH  = outTex.height;
-            }
-        }
+    filtergraph::FrameContext frameContext;
+    frameContext.pts = avframe->pts;
+    frameContext.timeBaseNum = avframe->time_base.num;
+    frameContext.timeBaseDen = avframe->time_base.den;
+    frameContext.timeSeconds = frameTimeSeconds(*avframe);
+    if (!impl_->filterGraph->run(frameContext)) return false;
+
+    filtergraph::VulkanImageRef graphOutput;
+    if (!impl_->dagOutput->getVulkanOutput(graphOutput)
+        || !graphOutput.valid()) {
+        impl_->vkDevice.waitIdle();
+        return false;
     }
+    impl_->intermediateReleaseWait = graphOutput.ready;
 
-    bool result = renderToSwapChain(dagOutputVk, dagOutputW, dagOutputH);
-
-    if (impl_->onPresent) {
-        impl_->onPresent();
-    }
-
+    const bool result = renderToSwapChain(graphOutput);
+    if (result && impl_->onPresent) impl_->onPresent();
     return result;
 }
 
-bool IPreviewer::renderToSwapChain(VkImage image, int width, int height) {
-    if (!image) return false;
+bool IPreviewer::renderToSwapChain(
+    const pl_frame* source, int width, int height) {
+    if (!source) return false;
+    pl_tex framebuffer = impl_->swapChain->startFrame(width, height);
+    if (!framebuffer) return false;
 
-    struct pl_vulkan_wrap_params wrapParams = {};
-    wrapParams.image  = image;
-    wrapParams.width  = width;
-    wrapParams.height = height;
-    wrapParams.format = VK_FORMAT_R8G8B8A8_UNORM;
-    wrapParams.usage  = VK_IMAGE_USAGE_STORAGE_BIT
-                      | VK_IMAGE_USAGE_SAMPLED_BIT
-                      | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-
-    pl_tex srcTex = pl_vulkan_wrap(impl_->gpu, &wrapParams);
-    if (!srcTex) {
-        LOG_ERROR("IPreviewer: pl_vulkan_wrap() failed for DAG output");
-        return false;
-    }
-
-    pl_vulkan_release_params releaseP = {};
-    releaseP.tex                = srcTex;
-    releaseP.layout             = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    releaseP.qf                 = VK_QUEUE_FAMILY_IGNORED;
-    releaseP.semaphore.sem      = toC(impl_->releaseSemaphore);
-    releaseP.semaphore.value    = 0;
-
-    pl_vulkan_release_ex(impl_->gpu, &releaseP);
-
-    pl_tex fbo = impl_->swapChain->startFrame(width, height);
-    if (!fbo) {
-        pl_tex_destroy(impl_->gpu, &srcTex);
-        return false;
-    }
-
-    pl_frame srcPlFrame = {};
-    srcPlFrame.num_planes = 1;
-    srcPlFrame.planes[0].texture    = srcTex;
-    srcPlFrame.planes[0].components = 4;
-    srcPlFrame.planes[0].component_mapping[0] = 0;
-    srcPlFrame.planes[0].component_mapping[1] = 1;
-    srcPlFrame.planes[0].component_mapping[2] = 2;
-    srcPlFrame.planes[0].component_mapping[3] = 3;
-    srcPlFrame.repr.sys        = PL_COLOR_SYSTEM_RGB;
-    srcPlFrame.repr.levels     = PL_COLOR_LEVELS_PC;
-    srcPlFrame.color.primaries = PL_COLOR_PRIM_BT_709;
-    srcPlFrame.color.transfer  = PL_COLOR_TRC_SRGB;
-    srcPlFrame.crop = { 0, 0, static_cast<float>(width), static_cast<float>(height) };
-
-    pl_frame targetPlFrame = {};
-    targetPlFrame.num_planes = 1;
-    targetPlFrame.planes[0].texture    = fbo;
-    targetPlFrame.planes[0].components = 4;
-    targetPlFrame.planes[0].component_mapping[0] = 0;
-    targetPlFrame.planes[0].component_mapping[1] = 1;
-    targetPlFrame.planes[0].component_mapping[2] = 2;
-    targetPlFrame.planes[0].component_mapping[3] = 3;
-    targetPlFrame.repr.sys        = PL_COLOR_SYSTEM_RGB;
-    targetPlFrame.repr.levels     = PL_COLOR_LEVELS_PC;
-    targetPlFrame.color.primaries = PL_COLOR_PRIM_BT_709;
-    targetPlFrame.color.transfer  = PL_COLOR_TRC_SRGB;
-    targetPlFrame.crop = { 0, 0, static_cast<float>(width), static_cast<float>(height) };
-
-    if (!impl_->renderEngine->render(&srcPlFrame, &targetPlFrame)) {
-        LOG_WARN("IPreviewer: final render (DAG→FBO) failed");
-        pl_tex_destroy(impl_->gpu, &srcTex);
-        return false;
-    }
-
-    pl_tex_destroy(impl_->gpu, &srcTex);
-
-    if (!impl_->swapChain->submitFrame()) {
-        LOG_WARN("IPreviewer: swapchain submitFrame failed");
-        return false;
-    }
+    pl_frame target = makeRgbFrame(
+        framebuffer, width, height, PL_COLOR_TRC_SRGB);
+    if (!impl_->renderEngine->render(source, &target)) return false;
+    if (!impl_->swapChain->submitFrame()) return false;
     impl_->swapChain->swapBuffers();
-
     return true;
 }
 
-} // namespace renderer
-} // namespace heisenberg
+bool IPreviewer::renderToSwapChain(
+    const filtergraph::VulkanImageRef& image) {
+    if (!image.valid()) return false;
+
+    pl_vulkan_wrap_params wrapParams = {};
+    wrapParams.image = image.image;
+    wrapParams.width = static_cast<int>(image.extent.width);
+    wrapParams.height = static_cast<int>(image.extent.height);
+    wrapParams.format = image.format;
+    wrapParams.usage = image.usage;
+    pl_tex sourceTexture = pl_vulkan_wrap(impl_->gpu, &wrapParams);
+    if (!sourceTexture) return false;
+
+    pl_vulkan_release_params releaseParams = {};
+    releaseParams.tex = sourceTexture;
+    releaseParams.layout = image.layout;
+    releaseParams.qf = image.queueFamilyIndex;
+    releaseParams.semaphore.sem = image.ready.semaphore;
+    releaseParams.semaphore.value = image.ready.value;
+    pl_vulkan_release_ex(impl_->gpu, &releaseParams);
+
+    pl_tex framebuffer = impl_->swapChain->startFrame(
+        impl_->outputWidth, impl_->outputHeight);
+    bool rendered = framebuffer != nullptr;
+    if (rendered) {
+        const enum pl_color_transfer transfer =
+            image.format == VK_FORMAT_R16G16B16A16_SFLOAT
+                ? PL_COLOR_TRC_LINEAR : PL_COLOR_TRC_SRGB;
+        pl_frame source = makeRgbFrame(
+            sourceTexture, static_cast<int>(image.extent.width),
+            static_cast<int>(image.extent.height), transfer);
+        pl_frame target = makeRgbFrame(
+            framebuffer, impl_->outputWidth, impl_->outputHeight,
+            PL_COLOR_TRC_SRGB);
+        rendered = impl_->renderEngine->render(&source, &target);
+    }
+
+    pl_gpu_flush(impl_->gpu);
+    pl_vulkan_hold_params holdParams = {};
+    holdParams.tex = sourceTexture;
+    holdParams.layout = image.layout;
+    holdParams.qf = image.queueFamilyIndex;
+    holdParams.semaphore.sem = toC(impl_->interopSemaphore);
+    holdParams.semaphore.value = ++impl_->interopValue;
+    if (!pl_vulkan_hold_ex(impl_->gpu, &holdParams)) {
+        pl_tex_destroy(impl_->gpu, &sourceTexture);
+        return false;
+    }
+    pl_tex_destroy(impl_->gpu, &sourceTexture);
+
+    filtergraph::VulkanImageRef returnedImage = image;
+    returnedImage.ready = {
+        toC(impl_->interopSemaphore), impl_->interopValue};
+    impl_->dagOutput->releaseVulkanOutput(returnedImage);
+    if (image.image == toC(impl_->intermediateImg)) {
+        impl_->intermediateReleaseWait = returnedImage.ready;
+    }
+
+    if (!rendered || !impl_->swapChain->submitFrame()) return false;
+    impl_->swapChain->swapBuffers();
+    return true;
+}
+
+} // namespace heisenberg::renderer

@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vulkan/vulkan.h>
 
 namespace heisenberg {
 namespace filtergraph {
@@ -35,6 +36,7 @@ enum class ImageType : int32_t {
     bgr8     = 8,   // 三通道 8-bit (BGR)
     rgba32   = 9,   // 四通道 32-bit 整数
     r32      = 10,  // 单通道 32-bit 整数
+    rgba16f  = 11,  // 四通道 16-bit 浮点
 };
 
 // ============================================================
@@ -96,14 +98,52 @@ struct VideoFormat {
 };
 
 // ============================================================
-// 输出纹理句柄（给 libplacebo 的 VkImage 导出）
+// Vulkan 共享资源
 // ============================================================
 
-struct VkOutGpuTex {
-    void*  commandBuffer = nullptr;
-    void*  image         = nullptr;   // VkImage
-    int32_t width        = 0;
-    int32_t height       = 0;
+struct VulkanSyncPoint {
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    uint64_t    value     = 0;
+
+    bool valid() const { return semaphore != VK_NULL_HANDLE; }
+};
+
+/// A borrowed Vulkan image. The receiver must not destroy image or view.
+/// `ready` is signaled when `layout` and `queueFamilyIndex` become valid.
+struct VulkanImageRef {
+    VkImage           image            = VK_NULL_HANDLE;
+    VkImageView       view             = VK_NULL_HANDLE;
+    VkFormat          format           = VK_FORMAT_UNDEFINED;
+    VkExtent2D        extent           = {};
+    VkImageUsageFlags usage            = 0;
+    VkImageLayout     layout           = VK_IMAGE_LAYOUT_UNDEFINED;
+    uint32_t          queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    VulkanSyncPoint   ready            = {};
+    uint64_t          generation       = 0;
+
+    bool valid() const {
+        return image != VK_NULL_HANDLE
+            && format != VK_FORMAT_UNDEFINED
+            && extent.width > 0
+            && extent.height > 0;
+    }
+};
+
+/// Vulkan objects are borrowed from the renderer and outlive the graph.
+struct VulkanGraphContext {
+    VkInstance       instance          = VK_NULL_HANDLE;
+    VkPhysicalDevice physicalDevice    = VK_NULL_HANDLE;
+    VkDevice         device            = VK_NULL_HANDLE;
+    VkQueue          queue             = VK_NULL_HANDLE;
+    uint32_t         queueFamilyIndex  = VK_QUEUE_FAMILY_IGNORED;
+};
+
+struct FrameContext {
+    int64_t pts          = 0;
+    int32_t timeBaseNum  = 0;
+    int32_t timeBaseDen  = 1;
+    int64_t frameIndex   = -1;
+    double  timeSeconds  = 0.0;
 };
 
 // ============================================================

@@ -22,6 +22,7 @@ namespace filtergraph {
     class IInputLayer;
     class IOutputLayer;
     class IPipeGraph;
+    struct VulkanImageRef;
 }
 
 namespace renderer {
@@ -61,9 +62,8 @@ public:
 private:
     bool buildIntermediateTarget(int width, int height);
     void releaseIntermediateTarget();
-    bool renderToIntermediateTarget(const pl_frame* src, int width, int height);
-
-    bool renderToSwapChain(VkImage image, int width, int height);
+    bool renderToSwapChain(const pl_frame* source, int width, int height);
+    bool renderToSwapChain(const filtergraph::VulkanImageRef& image);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

@@ -9,6 +9,7 @@
 #include <Renderer/GpuContext.hpp>
 #include <Renderer/VulkanContext.hpp>
 #include <Renderer/SwapChain.hpp>
+#include <FilterGraph/Vulkan/VulkanFilterGraph.hpp>
 #include <MainWidget/VideoWidget.hpp>
 #include <Utiles/Logger.hpp>
 
@@ -32,6 +33,10 @@ void PlayerController::shutdown() {
     if (shutdownDone_) return;
     shutdownDone_ = true;
 
+    if (previewer_) {
+        previewer_->setFilterGraph(nullptr, nullptr, nullptr);
+    }
+    filterGraph_.reset();
     if (previewer_) {
         previewer_->shutdown();
         previewer_.reset();
@@ -147,6 +152,23 @@ void PlayerController::initPipeline(VideoWidget* widget) {
         LOG_ERROR("PlayerController: IPreviewer::initialize() failed");
         gpuCtx_.reset();
         return;
+    }
+
+    filtergraph::VulkanGraphContext graphContext;
+    graphContext.instance = static_cast<VkInstance>(vkInst);
+    graphContext.physicalDevice = static_cast<VkPhysicalDevice>(vkPhysDev);
+    graphContext.device = static_cast<VkDevice>(vkDev);
+    graphContext.queue = static_cast<VkQueue>(vkQueue);
+    graphContext.queueFamilyIndex = qf;
+    try {
+        filterGraph_ = std::make_unique<filtergraph::VulkanFilterGraph>(
+            graphContext);
+        previewer_->setFilterGraph(filterGraph_->graph(), filterGraph_->input(),
+                                   filterGraph_->output());
+    } catch (const std::exception& error) {
+        LOG_ERROR("PlayerController: filter graph initialization failed: {}",
+                  error.what());
+        filterGraph_.reset();
     }
 
     // ---- 尺寸跟随 ----

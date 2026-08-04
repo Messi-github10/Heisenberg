@@ -13,6 +13,7 @@ struct AVFrame;
 namespace heisenberg {
 namespace ctrl   { class PlaybackController; }
 namespace renderer { class IPreviewer; class GpuContext; class SwapChain; }
+namespace filtergraph { class VulkanFilterGraph; }
 }
 
 class VideoWidget;
@@ -89,6 +90,7 @@ private:
     heisenberg::ctrl::PlaybackController* ctrl_ = nullptr;
 
     std::unique_ptr<heisenberg::renderer::GpuContext> gpuCtx_;
+    std::unique_ptr<heisenberg::filtergraph::VulkanFilterGraph> filterGraph_;
     std::unique_ptr<heisenberg::renderer::IPreviewer> previewer_;
     VideoWidget* videoOutput_ = nullptr;
 

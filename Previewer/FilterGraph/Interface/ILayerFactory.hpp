@@ -45,8 +45,9 @@ public:
                               const ImageFormat& format,
                               bool bSeparateRun = false) = 0;
 
-    /// 输入 GPU 数据（外部 VkImage 等）
-    virtual void inputGpuData(void* device, void* tex) = 0;
+    /// Borrow a renderer-owned Vulkan image as this frame's graph input.
+    virtual bool setVulkanInput(const VulkanImageRef& image,
+                                int32_t inputIndex = 0) = 0;
 };
 
 // ============================================================
@@ -59,9 +60,13 @@ public:
 
     virtual void setObserver(IOutputLayerObserver* observer) = 0;
 
-    /// 输出 Vulkan GPU 纹理
-    virtual void outVkGpuTex(const VkOutGpuTex& outTex,
-                             int32_t outIndex = 0) = 0;
+    /// Borrow the graph-owned output image after run() has submitted the frame.
+    virtual bool getVulkanOutput(VulkanImageRef& image,
+                                 int32_t outputIndex = 0) const = 0;
+
+    /// Return an output image after the external consumer has finished reading it.
+    virtual void releaseVulkanOutput(const VulkanImageRef& image,
+                                     int32_t outputIndex = 0) = 0;
 };
 
 // ============================================================
@@ -74,12 +79,8 @@ public:
 
     virtual IInputLayer*  createInput()      = 0;
     virtual IOutputLayer* createOutput()     = 0;
-    virtual ILayer*       createYUV2RGBA()   = 0;
-    virtual ILayer*       createRGBA2YUV()   = 0;
-    virtual ILayer*       createMapChannel() = 0;
-    virtual ILayer*       createFlip()       = 0;
-    virtual ILayer*       createResize()     = 0;
-    virtual ILayer*       createBlend()      = 0;
+    virtual ILayer*       createPassthrough() = 0;
+    virtual ILayer*       createColorInvert() = 0;
 };
 
 } // namespace filtergraph
