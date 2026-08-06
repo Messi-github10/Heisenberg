@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <Common/MediaFrame.hpp>
+#include <Common/AudioSpec.hpp>
 #include <Common/RingBuffer.hpp>
 
 #include <atomic>
@@ -20,8 +22,10 @@ struct AVFrame;
 
 namespace heisenberg {
 
-namespace demuxer { class IDemuxer; }
-namespace decoder { class IDecoder; }
+namespace pipeline {
+class DecoderNode;
+class DemuxSource;
+}
 class Stream;
 
 class DecodeThread {
@@ -29,12 +33,13 @@ public:
     using FramePtr = std::shared_ptr<AVFrame>;
 
     std::function<void(double durationSecs, double fps, bool seekable,
-                       FramePtr firstFrame)> onOpened;
+                       FramePtr firstFrame, uint64_t generation,
+                       AudioSpec audioSpec, bool hasAudio)> onOpened;
     std::function<void(uint64_t requestId, FramePtr frame)>                   onScrubFrame;
     std::function<void(const std::string& reason)>                            onOpenFailed;
-    std::function<void()>                                                     onEndOfStream;
 
-    explicit DecodeThread(RingBuffer<FramePtr>& buffer);
+    DecodeThread(RingBuffer<MediaFrame>& videoBuffer,
+                 RingBuffer<MediaFrame>& audioBuffer);
     ~DecodeThread();
 
     void start();
@@ -62,11 +67,15 @@ private:
     FramePtr    decodeFrameAt(double targetSeconds, double currentSeconds = -1.0);
     FramePtr    decodeFrameAtFrame(int64_t targetFrameIndex,
                                    int64_t currentFrameIndex = -1);
-    FramePtr    receiveDecodedFrame();
+    FramePtr    receiveDecodedFrame(MediaFrame* signal = nullptr);
     void        resetDecodePosition();
     FramePtr    findCachedScrubFrame(int64_t frameIndex);
     void        cacheScrubFrame(int64_t frameIndex, const FramePtr& frame);
     void        clearScrubFrameCache();
+    bool        pushVideo(const FramePtr& frame);
+    bool        pushVideoFront(const FramePtr& frame);
+    bool        drainAudioOutput(bool queueOutput);
+    void        queuePendingEof();
 
     struct ScrubCacheEntry {
         int64_t  frameIndex = 0;
@@ -75,7 +84,8 @@ private:
 
     std::thread thread_;
 
-    RingBuffer<FramePtr>* buffer_ = nullptr;
+    RingBuffer<MediaFrame>* buffer_ = nullptr;
+    RingBuffer<MediaFrame>* audioBuffer_ = nullptr;
 
     std::mutex              cmdMutex_;
     std::condition_variable cmdCv_;
@@ -88,17 +98,22 @@ private:
     uint64_t                scrubRequestId_ = 0;
     bool                    resumePrefetchAfterScrub_ = false;
 
-    std::unique_ptr<demuxer::IDemuxer> demuxer_;
-    std::unique_ptr<decoder::IDecoder> decoder_;
+    std::unique_ptr<pipeline::DemuxSource> demuxSource_;
+    std::unique_ptr<pipeline::DecoderNode> decoderNode_;
+    std::unique_ptr<pipeline::DecoderNode> audioDecoderNode_;
     const Stream*                      videoStream_  = nullptr;
+    const Stream*                      audioStream_  = nullptr;
+    AudioSpec                          audioSpec_;
     double                             durationSecs_ = 0.0;
     double                             fps_          = 0.0;
     bool                               eof_          = false;
+    bool                               pendingEof_   = false;
     int64_t                            lastDecodedFrameIndex_ = -1;
     FramePtr                           lastDecodedFrame_;
     bool                               lastDecodedFrameQueued_ = true;
     std::list<ScrubCacheEntry>         scrubFrameCache_;
     bool                               scrubDecoderDetached_ = false;
+    uint64_t                           generation_ = 0;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> scrubbing_{false};

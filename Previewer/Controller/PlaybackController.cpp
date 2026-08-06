@@ -4,10 +4,10 @@
 
 #include "PlaybackController.hpp"
 
-#include <Decoder/AudioDecoder.hpp>
 #include <Decoder/DecodeThread.hpp>
-#include <Decoder/FFmpegAudioDecoder.hpp>
+#include <Common/AudioFrame.hpp>
 #include <Common/FrameTime.hpp>
+#include <Common/MediaFrame.hpp>
 #include <Renderer/AudioDevice.hpp>
 #include <Utiles/Logger.hpp>
 
@@ -32,8 +32,9 @@ namespace ctrl {
 using FramePtr = std::shared_ptr<AVFrame>;
 
 struct PlaybackController::Impl {
-    RingBuffer<FramePtr> frameBuffer{16};
-    DecodeThread         decodeThread{frameBuffer};
+    RingBuffer<MediaFrame> frameBuffer{16};
+    RingBuffer<MediaFrame> audioFrameBuffer{64};
+    DecodeThread decodeThread{frameBuffer, audioFrameBuffer};
 
     double durationSecs = 0.0;
     double fps          = 0.0;
@@ -58,52 +59,83 @@ struct PlaybackController::Impl {
     uint64_t endingScrubRequestId = 0;
     int64_t lastRequestedScrubFrame = 0;
 
-    // ── Graceful EOF ───────────────────────────────────────
-    // Set by onEndOfStream; consumer drains the remaining video frames
-    // before transitioning to Ended and waiting for replay.
-    std::atomic<bool> decoderEof_{false};
+    // Frames from an earlier open/seek generation are discarded by consumers.
+    std::atomic<uint64_t> activeGeneration{0};
 
     // Diagnostics
     std::atomic<int64_t> consumerFrames{0};
     std::atomic<int64_t> consumerEmpty{0};
 
     // ── Audio ────────────────────────────────────────────────
-    std::unique_ptr<decoder::IAudioDecoder> audioDecoder;
     std::unique_ptr<renderer::AudioDevice>  audioDevice;
     AudioSpec  audioSpec;
-    const float* audioPlanarData  = nullptr;
-    int64_t              audioTotalSamples  = 0;
+    AudioFramePtr currentAudioFrame;
+    int currentAudioOffset = 0;
+    bool hasAudio = false;
+    std::atomic<bool> audioEof{false};
     std::atomic<int64_t> audioSamplePos{0};
     std::atomic<int64_t> audioCallbackCount{0};
 
-    /// Called from the audio I/O thread — must be lock-free and allocation-free.
+    // Called from the audio I/O thread. Queue reads are non-blocking.
     void onAudioData(float* output, uint32_t frameCount) {
-        const int64_t pos    = audioSamplePos.load(std::memory_order_relaxed);
-        const int64_t endPos = pos + frameCount;
+        const int channels = audioSpec.channels;
+        std::memset(output, 0,
+                    static_cast<size_t>(frameCount) * channels * sizeof(float));
+        if (!hasAudio || frameCount == 0) return;
 
-        if (!audioPlanarData || pos >= audioTotalSamples || frameCount == 0) {
-            std::memset(output, 0,
-                        frameCount * audioSpec.channels * sizeof(float));
-            return;
-        }
+        uint32_t written = 0;
+        while (written < frameCount) {
+            if (!currentAudioFrame) {
+                MediaFrame mediaFrame;
+                if (!audioFrameBuffer.popWithTimeout(
+                        mediaFrame, std::chrono::milliseconds(0))) {
+                    break;
+                }
 
-        const int64_t actualEnd   = std::min(endPos, audioTotalSamples);
-        const int     actualCount = static_cast<int>(actualEnd - pos);
-        const int     channels    = audioSpec.channels;
+                const uint64_t expectedGeneration =
+                    activeGeneration.load(std::memory_order_acquire);
+                if (mediaFrame.metadata.generation != expectedGeneration)
+                    continue;
+                if (mediaFrame.type == MediaFrameType::Eof) {
+                    audioEof.store(true, std::memory_order_release);
+                    break;
+                }
 
-        for (int f = 0; f < actualCount; ++f) {
-            for (int ch = 0; ch < channels; ++ch) {
-                output[f * channels + ch] =
-                    audioPlanarData[ch * audioTotalSamples + pos + f];
+                currentAudioFrame = mediaFrame.audioFrame();
+                currentAudioOffset = 0;
+                if (!currentAudioFrame) continue;
+                if (currentAudioFrame->spec().channels != channels ||
+                    currentAudioFrame->spec().sampleRate != audioSpec.sampleRate) {
+                    currentAudioFrame.reset();
+                    continue;
+                }
+            }
+
+            const int available = currentAudioFrame->samples() -
+                                  currentAudioOffset;
+            if (available <= 0) {
+                currentAudioFrame.reset();
+                continue;
+            }
+
+            const int count = std::min<int>(
+                available, static_cast<int>(frameCount - written));
+            for (int sample = 0; sample < count; ++sample) {
+                for (int channel = 0; channel < channels; ++channel) {
+                    output[(written + sample) * channels + channel] =
+                        currentAudioFrame->sampleRo(
+                            channel, currentAudioOffset + sample);
+                }
+            }
+
+            currentAudioOffset += count;
+            written += static_cast<uint32_t>(count);
+            audioSamplePos.fetch_add(count, std::memory_order_relaxed);
+            if (currentAudioOffset >= currentAudioFrame->samples()) {
+                currentAudioFrame.reset();
+                currentAudioOffset = 0;
             }
         }
-
-        if (actualCount < static_cast<int>(frameCount)) {
-            std::memset(output + actualCount * channels, 0,
-                        (frameCount - actualCount) * channels * sizeof(float));
-        }
-
-        audioSamplePos.store(actualEnd, std::memory_order_relaxed);
     }
 
     // ── Consumer loop: MLT-style dedicated thread ────────────
@@ -113,11 +145,13 @@ struct PlaybackController::Impl {
             playing_.store(false, std::memory_order_release);
         }
 
-        double audioEndMs = (audioTotalSamples > 0)
-            ? static_cast<double>(audioTotalSamples)
-                / static_cast<double>(audioSpec.sampleRate) * 1000.0
+        double audioEndMs = hasAudio
+            ? static_cast<double>(
+                  audioSamplePos.load(std::memory_order_relaxed)) /
+                static_cast<double>(audioSpec.sampleRate) * 1000.0
             : lastDisplayedPtsMs;
-        double finalPosMs = std::max(lastDisplayedPtsMs, audioEndMs);
+        double finalPosMs = std::max(
+            {lastDisplayedPtsMs, audioEndMs, durationSecs * 1000.0});
 
         LOG_INFO("consumer: reached EOF - video={:.0f}ms audio={:.0f}ms "
                  "final={:.0f}ms containerDuration={:.1f}ms",
@@ -145,8 +179,8 @@ struct PlaybackController::Impl {
         auto       startTime   = Clock::now();
         double     pauseOffset = 0.0;     // ms, used in wall-clock mode
 
-        LOG_INFO("consumer: thread started — audioTotalSamples={} audioSpec={}Hz {}ch",
-                 audioTotalSamples, audioSpec.sampleRate, audioSpec.channels);
+        LOG_INFO("consumer: thread started, streamingAudio={} audioSpec={}Hz {}ch",
+                 hasAudio, audioSpec.sampleRate, audioSpec.channels);
 
         while (consumerRunning_.load(std::memory_order_acquire)) {
 
@@ -165,8 +199,7 @@ struct PlaybackController::Impl {
 
             // ── Master clock ─────────────────────────────────
             double masterTimeMs;
-            bool eof = decoderEof_.load(std::memory_order_acquire);
-            if (audioTotalSamples > 0 && !eof) {
+            if (hasAudio && !audioEof.load(std::memory_order_acquire)) {
                 // Audio clock: sample position → milliseconds.
                 int64_t pos = audioSamplePos.load(std::memory_order_relaxed);
                 masterTimeMs = static_cast<double>(pos)
@@ -181,19 +214,45 @@ struct PlaybackController::Impl {
             // ── Peek next frame ──────────────────────────────
             auto front = frameBuffer.peekFront();
             if (!front.has_value()) {
-                if (decoderEof_.load(std::memory_order_acquire)) {
-                    LOG_INFO("consumer: buffer empty + decoder EOF - waiting. "
-                             "lastVideoPts={:.0f}ms audioTotal={} samples",
-                             lastDisplayedPtsMs, audioTotalSamples);
-                    finishPlayback(ctrl);
-                    continue;
-                }
                 consumerEmpty.fetch_add(1, std::memory_order_relaxed);
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
             }
 
-            const double pts   = frameTimeMilliseconds(**front);
+            const uint64_t expectedGeneration =
+                activeGeneration.load(std::memory_order_acquire);
+            if (front->metadata.generation != expectedGeneration) {
+                MediaFrame stale;
+                frameBuffer.popWithTimeout(stale,
+                                           std::chrono::milliseconds(5));
+                continue;
+            }
+
+            if (front->isSignal()) {
+                if (hasAudio &&
+                    !audioEof.load(std::memory_order_acquire)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    continue;
+                }
+                MediaFrame eofFrame;
+                if (frameBuffer.popWithTimeout(eofFrame,
+                                               std::chrono::milliseconds(5))) {
+                    LOG_INFO("consumer: received EOF for generation {}",
+                             expectedGeneration);
+                    finishPlayback(ctrl);
+                }
+                continue;
+            }
+
+            FramePtr frontFrame = front->videoFrame();
+            if (!frontFrame) {
+                MediaFrame unsupported;
+                frameBuffer.popWithTimeout(unsupported,
+                                           std::chrono::milliseconds(5));
+                continue;
+            }
+
+            const double pts = frameTimeMilliseconds(*frontFrame);
             const double delay = pts - masterTimeMs;
 
             // ── Frame in the future → sleep until just before it's due ──
@@ -210,10 +269,13 @@ struct PlaybackController::Impl {
             }
 
             // ── Frame is due → pop and display ───────────────
-            FramePtr frame;
-            if (!frameBuffer.popWithTimeout(frame, std::chrono::milliseconds(5))) {
+            MediaFrame mediaFrame;
+            if (!frameBuffer.popWithTimeout(mediaFrame,
+                                            std::chrono::milliseconds(5))) {
                 continue;   // buffer cleared (seek) between peek and pop
             }
+            FramePtr frame = mediaFrame.videoFrame();
+            if (!frame) continue;
 
             {
                 int64_t n = consumerFrames.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -293,13 +355,25 @@ bool PlaybackController::open(const std::string& filePath) {
 
     auto alive = impl_->alive;
 
-    impl_->decodeThread.onOpened = [this, alive, path = filePath](
-        double dur, double fps, bool seekable, FramePtr firstFrame) {
-        QMetaObject::invokeMethod(this, [this, alive, path, dur, fps, seekable, firstFrame] {
+    impl_->decodeThread.onOpened = [this, alive](
+        double dur, double fps, bool seekable, FramePtr firstFrame,
+        uint64_t generation, AudioSpec audioSpec, bool hasAudio) {
+        QMetaObject::invokeMethod(this, [this, alive, dur, fps, seekable,
+                                         firstFrame, generation, audioSpec,
+                                         hasAudio] {
             if (!*alive) return;
+            impl_->activeGeneration.store(generation,
+                                          std::memory_order_release);
             impl_->durationSecs = dur;
             impl_->fps          = fps;
             impl_->seekable     = seekable;
+            impl_->audioSpec    = audioSpec;
+            impl_->hasAudio     = hasAudio && audioSpec.valid();
+            impl_->audioEof.store(false, std::memory_order_relaxed);
+            impl_->currentAudioFrame.reset();
+            impl_->currentAudioOffset = 0;
+            impl_->audioSamplePos.store(0, std::memory_order_relaxed);
+            impl_->audioCallbackCount.store(0, std::memory_order_relaxed);
             emit durationChanged(dur);
 
             if (firstFrame) {
@@ -308,35 +382,8 @@ bool PlaybackController::open(const std::string& filePath) {
                 emit positionChanged(frameTimeSeconds(*firstFrame));
             }
 
-            // ── Open audio decoder ────────────────────────────
-            {
-                std::unique_ptr<decoder::IAudioDecoder> audioDec;
-
-                auto miniaudioDec = std::make_unique<decoder::AudioDecoder>();
-                if (miniaudioDec->open(path)) {
-                    audioDec = std::move(miniaudioDec);
-                } else {
-                    auto ffmpegDec = std::make_unique<decoder::FFmpegAudioDecoder>();
-                    if (ffmpegDec->open(path)) {
-                        audioDec = std::move(ffmpegDec);
-                    }
-                }
-
-                if (audioDec && audioDec->isOpen()) {
-                    impl_->audioDecoder      = std::move(audioDec);
-                    impl_->audioSpec         = impl_->audioDecoder->spec();
-                    impl_->audioPlanarData   = impl_->audioDecoder->planarData();
-                    impl_->audioTotalSamples = impl_->audioDecoder->totalSamples();
-                    impl_->audioSamplePos.store(0, std::memory_order_relaxed);
-                    impl_->audioCallbackCount.store(0, std::memory_order_relaxed);
-                    LOG_INFO("PlaybackController: audio opened — {} Hz, {} ch, {} samples",
-                             impl_->audioSpec.sampleRate,
-                             impl_->audioSpec.channels,
-                             impl_->audioTotalSamples);
-                } else {
-                    LOG_INFO("PlaybackController: no audio stream found");
-                }
-            }
+            LOG_INFO("PlaybackController: streaming audio {}",
+                     impl_->hasAudio ? "enabled" : "unavailable");
 
             setState(Paused);
         }, Qt::QueuedConnection);
@@ -351,11 +398,6 @@ bool PlaybackController::open(const std::string& filePath) {
         }, Qt::QueuedConnection);
     };
 
-    impl_->decodeThread.onEndOfStream = [this, alive] {
-        impl_->decoderEof_.store(true, std::memory_order_release);
-        LOG_INFO("PlaybackController: decoder EOF");
-    };
-
     impl_->decodeThread.onScrubFrame = [this, alive](uint64_t requestId,
                                                       FramePtr frame) {
         QMetaObject::invokeMethod(this, [this, alive, requestId,
@@ -367,7 +409,7 @@ bool PlaybackController::open(const std::string& filePath) {
                 impl_->lastDisplayedPtsMs = frameTimeMilliseconds(*frame);
                 const double selectedSeconds = std::max(
                     0.0, impl_->lastDisplayedPtsMs / 1000.0);
-                if (impl_->audioDecoder && impl_->audioDecoder->isOpen()) {
+                if (impl_->hasAudio) {
                     impl_->audioSamplePos.store(
                         static_cast<int64_t>(selectedSeconds
                                              * impl_->audioSpec.sampleRate),
@@ -411,7 +453,7 @@ void PlaybackController::close() {
     }
     impl_->consumerFrames.store(0, std::memory_order_relaxed);
     impl_->consumerEmpty.store(0, std::memory_order_relaxed);
-    impl_->decoderEof_.store(false, std::memory_order_relaxed);
+    impl_->activeGeneration.store(0, std::memory_order_relaxed);
     impl_->pendingPlayAfterSeek = false;
     impl_->wasPlayingBeforeScrub = false;
     impl_->scrubEnding = false;
@@ -423,9 +465,10 @@ void PlaybackController::close() {
 
     // ── Destroy audio ─────────────────────────────────────
     impl_->audioDevice.reset();
-    impl_->audioDecoder.reset();
-    impl_->audioPlanarData   = nullptr;
-    impl_->audioTotalSamples  = 0;
+    impl_->currentAudioFrame.reset();
+    impl_->currentAudioOffset = 0;
+    impl_->hasAudio = false;
+    impl_->audioEof.store(false, std::memory_order_relaxed);
     impl_->audioSamplePos.store(0, std::memory_order_relaxed);
     impl_->audioCallbackCount.store(0, std::memory_order_relaxed);
 
@@ -452,7 +495,7 @@ void PlaybackController::play() {
     }
 
     // ── Start / resume audio device ──────────────────────
-    if (impl_->audioDecoder && impl_->audioDecoder->isOpen()) {
+    if (impl_->hasAudio) {
         if (!impl_->audioDevice) {
             impl_->audioDevice = std::make_unique<renderer::AudioDevice>();
             auto callback = [this](float* output, uint32_t frameCount) {
@@ -466,6 +509,8 @@ void PlaybackController::play() {
             } else {
                 LOG_ERROR("PlaybackController: audio device init failed");
                 impl_->audioDevice.reset();
+                impl_->hasAudio = false;
+                impl_->audioEof.store(true, std::memory_order_release);
             }
         } else {
             impl_->audioDevice->start();   // resume after pause
@@ -522,7 +567,6 @@ void PlaybackController::seek(double seconds) {
 
     bool wasPlaying = (impl_->state == Playing);
 
-    impl_->decoderEof_.store(false, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(impl_->consumerMutex);
         impl_->playing_ = false;
@@ -531,7 +575,7 @@ void PlaybackController::seek(double seconds) {
 
     if (impl_->audioDevice) impl_->audioDevice->stop();
 
-    if (impl_->audioDecoder && impl_->audioDecoder->isOpen()) {
+    if (impl_->hasAudio) {
         impl_->audioSamplePos.store(
             static_cast<int64_t>(seconds * impl_->audioSpec.sampleRate),
             std::memory_order_relaxed);
@@ -540,15 +584,27 @@ void PlaybackController::seek(double seconds) {
     auto alive = impl_->alive;
     impl_->decodeThread.onOpened = [this, alive, wasPlaying](double dur, double fps,
                                                               bool /*seekable*/,
-                                                              FramePtr keyFrame) {
-        QMetaObject::invokeMethod(this, [this, alive, dur, fps, wasPlaying, keyFrame] {
+                                                              FramePtr keyFrame,
+                                                              uint64_t generation,
+                                                              AudioSpec audioSpec,
+                                                              bool hasAudio) {
+        QMetaObject::invokeMethod(this, [this, alive, dur, fps, wasPlaying,
+                                         keyFrame, generation, audioSpec,
+                                         hasAudio] {
             if (!*alive) return;
+            impl_->activeGeneration.store(generation,
+                                          std::memory_order_release);
             impl_->durationSecs = dur;
             impl_->fps          = fps;
+            impl_->audioSpec    = audioSpec;
+            impl_->hasAudio     = hasAudio && audioSpec.valid();
+            impl_->audioEof.store(false, std::memory_order_relaxed);
+            impl_->currentAudioFrame.reset();
+            impl_->currentAudioOffset = 0;
 
             if (keyFrame) {
                 impl_->lastDisplayedPtsMs = frameTimeMilliseconds(*keyFrame);
-                if (impl_->audioDecoder && impl_->audioDecoder->isOpen()) {
+                if (impl_->hasAudio) {
                     const double selectedSeconds = std::max(
                         0.0, impl_->lastDisplayedPtsMs / 1000.0);
                     impl_->audioSamplePos.store(
@@ -591,7 +647,6 @@ void PlaybackController::beginScrub() {
             std::max(0.0, currentTime()) * std::max(impl_->fps, 1.0))),
         0, std::max<int64_t>(0, frameCount() - 1));
 
-    impl_->decoderEof_.store(false, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(impl_->consumerMutex);
         impl_->playing_ = false;

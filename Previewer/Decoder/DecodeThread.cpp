@@ -1,16 +1,16 @@
 #include "DecodeThread.hpp"
 #include <Decoder/DecoderFactory.hpp>
-#include <Decoder/SoftwareDecoder.hpp>
-#include <Demuxer/DemuxerFactory.hpp>
-#include <Common/Packet.hpp>
 #include <Common/FrameTime.hpp>
 #include <Common/Stream.hpp>
+#include <Pipeline/DecoderNode.hpp>
+#include <Pipeline/DemuxSource.hpp>
 #include <Utiles/Logger.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <utility>
 
 extern "C" {
 #include <libavutil/frame.h>
@@ -25,8 +25,9 @@ constexpr std::size_t kScrubFrameCacheCapacity = 16;
 
 } // namespace
 
-DecodeThread::DecodeThread(RingBuffer<FramePtr>& buffer)
-    : buffer_(&buffer) {}
+DecodeThread::DecodeThread(RingBuffer<MediaFrame>& videoBuffer,
+                           RingBuffer<MediaFrame>& audioBuffer)
+    : buffer_(&videoBuffer), audioBuffer_(&audioBuffer) {}
 
 DecodeThread::~DecodeThread() {
     stop();
@@ -50,14 +51,17 @@ void DecodeThread::stop() {
     }
     cmdCv_.notify_all();
     buffer_->abort();
+    audioBuffer_->abort();
 
     if (thread_.joinable()) {
         thread_.join();
     }
 
-    demuxer_.reset();
-    decoder_.reset();
+    demuxSource_.reset();
+    decoderNode_.reset();
+    audioDecoderNode_.reset();
     videoStream_ = nullptr;
+    audioStream_ = nullptr;
     clearScrubFrameCache();
 }
 
@@ -67,6 +71,7 @@ void DecodeThread::open(const std::string& path) {
         pendingCmd_ = Cmd::Open;
         openPath_   = path;
         buffer_->abort();
+        audioBuffer_->abort();
     }
     cmdCv_.notify_all();
 }
@@ -76,6 +81,7 @@ void DecodeThread::close() {
         std::lock_guard<std::mutex> lock(cmdMutex_);
         pendingCmd_ = Cmd::Close;
         buffer_->abort();
+        audioBuffer_->abort();
     }
     cmdCv_.notify_all();
 }
@@ -87,6 +93,7 @@ void DecodeThread::seek(double seconds, double currentSeconds) {
         seekTarget_ = seconds;
         seekOrigin_ = currentSeconds;
         buffer_->interrupt();
+        audioBuffer_->interrupt();
     }
     cmdCv_.notify_all();
 }
@@ -97,6 +104,7 @@ void DecodeThread::beginScrub() {
         scrubbing_.store(true, std::memory_order_release);
         scrubDecoderDetached_ = false;
         buffer_->interrupt();
+        audioBuffer_->interrupt();
     }
     cmdCv_.notify_all();
 }
@@ -111,6 +119,7 @@ void DecodeThread::scrubToFrame(int64_t targetFrame, int64_t currentFrame,
         scrubRequestId_ = requestId;
         resumePrefetchAfterScrub_ = resumePrefetch;
         buffer_->interrupt();
+        audioBuffer_->interrupt();
     }
     cmdCv_.notify_all();
 }
@@ -137,36 +146,45 @@ void DecodeThread::processCommand(Cmd cmd) {
     switch (cmd) {
 
     case Cmd::Open: {
-        if (demuxer_) { demuxer_->close(); demuxer_.reset(); }
-        if (decoder_) { decoder_->close(); decoder_.reset(); }
+        ++generation_;
+        if (demuxSource_) { demuxSource_->close(); demuxSource_.reset(); }
+        if (decoderNode_) { decoderNode_->close(); decoderNode_.reset(); }
+        if (audioDecoderNode_) {
+            audioDecoderNode_->close();
+            audioDecoderNode_.reset();
+        }
         videoStream_  = nullptr;
+        audioStream_  = nullptr;
+        audioSpec_    = {};
         durationSecs_ = 0.0;
         fps_          = 0.0;
         eof_          = false;
+        pendingEof_   = false;
         scrubbing_    = false;
         scrubDecoderDetached_ = false;
         resetDecodePosition();
         clearScrubFrameCache();
 
-        demuxer_ = demuxer::createDemuxer();
-        if (demuxer_->open(openPath_) < 0) {
+        demuxSource_ = std::make_unique<pipeline::DemuxSource>();
+        if (demuxSource_->open(openPath_) < 0) {
             LOG_ERROR("DecodeThread: failed to open — {}", openPath_);
-            demuxer_.reset();
+            demuxSource_.reset();
             if (onOpenFailed) onOpenFailed("Failed to open file: " + openPath_);
             break;
         }
 
-        durationSecs_ = demuxer_->duration();
+        durationSecs_ = demuxSource_->duration();
 
-        for (const auto& s : demuxer_->streams()) {
-            if (s.isVideo()) {
+        for (const auto& s : demuxSource_->streams()) {
+            if (s.isVideo() && !videoStream_) {
                 videoStream_ = &s;
-                break;
+            } else if (s.isAudio() && !audioStream_) {
+                audioStream_ = &s;
             }
         }
         if (!videoStream_) {
             LOG_ERROR("DecodeThread: no video stream in {}", openPath_);
-            demuxer_->close(); demuxer_.reset();
+            demuxSource_->close(); demuxSource_.reset();
             if (onOpenFailed) onOpenFailed("No video stream found");
             break;
         }
@@ -177,30 +195,54 @@ void DecodeThread::processCommand(Cmd cmd) {
         cfg.preferred     = decoder::DecoderBackend::Software;
         cfg.allowFallback = false;
 
-        decoder_ = decoder::createDecoder(cfg);
-        if (!decoder_ || decoder_->open(*videoStream_) < 0) {
+        decoderNode_ = std::make_unique<pipeline::DecoderNode>();
+        if (decoderNode_->open(*videoStream_, cfg) < 0) {
             LOG_ERROR("DecodeThread: failed to create decoder");
-            demuxer_->close(); demuxer_.reset();
-            decoder_.reset();
+            demuxSource_->close(); demuxSource_.reset();
+            decoderNode_.reset();
             videoStream_ = nullptr;
             if (onOpenFailed) onOpenFailed("Failed to create decoder");
             break;
         }
 
+        if (audioStream_) {
+            audioDecoderNode_ = std::make_unique<pipeline::DecoderNode>();
+            if (audioDecoderNode_->open(*audioStream_, cfg) < 0) {
+                LOG_WARN("DecodeThread: failed to create audio decoder");
+                audioDecoderNode_.reset();
+                audioStream_ = nullptr;
+            } else {
+                audioSpec_.sampleRate = audioStream_->codec.sampleRate;
+                audioSpec_.channels = audioStream_->codec.channels;
+                audioSpec_.layout = defaultLayout(audioSpec_.channels);
+                if (!audioSpec_.valid()) {
+                    LOG_WARN("DecodeThread: audio stream has an invalid format");
+                    audioDecoderNode_->close();
+                    audioDecoderNode_.reset();
+                    audioStream_ = nullptr;
+                }
+            }
+        }
+
         auto firstFrame = decodeFrameAt(0.0);
 
         buffer_->resume();
+        audioBuffer_->resume();
 
         if (firstFrame) {
-            if (buffer_->push(firstFrame)
+            if (pushVideo(firstFrame)
                 && firstFrame == lastDecodedFrame_) {
                 lastDecodedFrameQueued_ = true;
             }
+            queuePendingEof();
 
             LOG_INFO("DecodeThread: opened {} — {:.2f}s, {:.2f} fps",
                      openPath_, durationSecs_, fps_);
-            bool seekable = demuxer_->seekable();
-            if (onOpened) onOpened(durationSecs_, fps_, seekable, firstFrame);
+            bool seekable = demuxSource_->seekable();
+            if (onOpened) {
+                onOpened(durationSecs_, fps_, seekable, firstFrame,
+                         generation_, audioSpec_, audioStream_ != nullptr);
+            }
         } else {
             LOG_ERROR("DecodeThread: failed to decode first frame");
             if (onOpenFailed) onOpenFailed("Failed to decode first frame");
@@ -209,22 +251,33 @@ void DecodeThread::processCommand(Cmd cmd) {
     }
 
     case Cmd::Close:
-        if (decoder_) { decoder_->close(); decoder_.reset(); }
-        if (demuxer_) { demuxer_->close(); demuxer_.reset(); }
+        ++generation_;
+        if (decoderNode_) { decoderNode_->close(); decoderNode_.reset(); }
+        if (audioDecoderNode_) {
+            audioDecoderNode_->close();
+            audioDecoderNode_.reset();
+        }
+        if (demuxSource_) { demuxSource_->close(); demuxSource_.reset(); }
         videoStream_  = nullptr;
+        audioStream_  = nullptr;
         durationSecs_ = 0.0;
         fps_          = 0.0;
         eof_          = false;
+        pendingEof_   = false;
         scrubbing_    = false;
         scrubDecoderDetached_ = false;
         resetDecodePosition();
         clearScrubFrameCache();
         buffer_->flush();
         buffer_->resume();
+        audioBuffer_->flush();
+        audioBuffer_->resume();
         break;
 
     case Cmd::Seek: {
-        if (!demuxer_ || !decoder_ || !videoStream_) break;
+        if (!demuxSource_ || !decoderNode_ || !videoStream_) break;
+
+        ++generation_;
 
         double targetSeconds;
         double currentSeconds;
@@ -237,7 +290,10 @@ void DecodeThread::processCommand(Cmd cmd) {
         }
 
         eof_ = false;
+        pendingEof_ = false;
         buffer_->resume();
+        audioBuffer_->resume();
+        audioBuffer_->flush();
 
         auto targetFrame = decodeFrameAt(targetSeconds, currentSeconds);
 
@@ -245,16 +301,19 @@ void DecodeThread::processCommand(Cmd cmd) {
             std::lock_guard<std::mutex> lock(cmdMutex_);
             if (pendingCmd_ == Cmd::None) {
                 buffer_->resume();
-                if (buffer_->pushFront(targetFrame)) {
+                if (pushVideoFront(targetFrame)) {
                     if (targetFrame == lastDecodedFrame_) {
                         lastDecodedFrameQueued_ = true;
                     }
                     LOG_DEBUG("DecodeThread: seek to {:.3f}s selected frame at {:.3f}s",
                               targetSeconds, frameTimeSeconds(*targetFrame));
-                    bool seekable = demuxer_->seekable();
+                    bool seekable = demuxSource_->seekable();
                     if (onOpened) {
-                        onOpened(durationSecs_, fps_, seekable, targetFrame);
+                        onOpened(durationSecs_, fps_, seekable, targetFrame,
+                                 generation_, audioSpec_,
+                                 audioStream_ != nullptr);
                     }
+                    queuePendingEof();
                 }
             }
         }
@@ -262,7 +321,7 @@ void DecodeThread::processCommand(Cmd cmd) {
     }
 
     case Cmd::Scrub: {
-        if (!demuxer_ || !decoder_ || !videoStream_) break;
+        if (!demuxSource_ || !decoderNode_ || !videoStream_) break;
 
         int64_t targetFrame;
         int64_t currentFrame;
@@ -278,7 +337,9 @@ void DecodeThread::processCommand(Cmd cmd) {
         }
 
         eof_ = false;
+        pendingEof_ = false;
         buffer_->resume();
+        audioBuffer_->resume();
 
         FramePtr frame;
         bool cacheHit = false;
@@ -314,11 +375,13 @@ void DecodeThread::processCommand(Cmd cmd) {
 
         if (resumePrefetch) {
             buffer_->resume();
+            audioBuffer_->resume();
             if (frame) {
-                if (!buffer_->pushFront(frame)) break;
+                if (!pushVideoFront(frame)) break;
                 if (frame == lastDecodedFrame_) {
                     lastDecodedFrameQueued_ = true;
                 }
+                queuePendingEof();
             }
             scrubbing_.store(false, std::memory_order_release);
         }
@@ -337,7 +400,7 @@ void DecodeThread::processCommand(Cmd cmd) {
 
 DecodeThread::FramePtr DecodeThread::decodeFrameAt(double targetSeconds,
                                                     double currentSeconds) {
-    if (!demuxer_ || !decoder_ || !videoStream_) return nullptr;
+    if (!demuxSource_ || !decoderNode_ || !videoStream_) return nullptr;
 
     AVRational sourceFrameRate = {
         videoStream_->codec.fpsNum,
@@ -367,7 +430,7 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAt(double targetSeconds,
 
 DecodeThread::FramePtr DecodeThread::decodeFrameAtFrame(
     int64_t targetFrameIndex, int64_t currentFrameIndex) {
-    if (!demuxer_ || !decoder_ || !videoStream_) return nullptr;
+    if (!demuxSource_ || !decoderNode_ || !videoStream_) return nullptr;
 
     AVRational sourceFrameRate = {
         videoStream_->codec.fpsNum,
@@ -387,7 +450,9 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAtFrame(
 
     const double snappedTargetSeconds = targetFrameIndex / frameRate;
     const int64_t forwardDistance = targetFrameIndex - currentFrameIndex;
-    bool decodeForward = currentFrameIndex >= 0
+    // Reusing video-only buffered frames would move the shared demux cursor
+    // ahead of the audio queue. Seek both streams together when audio exists.
+    bool decodeForward = !audioStream_ && currentFrameIndex >= 0
         && forwardDistance >= 0
         && forwardDistance <= kForwardDecodeThresholdFrames;
 
@@ -395,23 +460,25 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAtFrame(
         // The producer can be ahead of the displayed frame due to buffering.
         // Reuse buffered frames first, then continue from the decoder cursor.
         while (auto front = buffer_->peekFront()) {
-            if (!*front || !hasFrameTimestamp(**front)) {
+            FramePtr frontFrame = front->videoFrame();
+            if (!frontFrame || !hasFrameTimestamp(*frontFrame)) {
                 decodeForward = false;
                 break;
             }
 
             const int64_t bufferedIndex = frameIndexFromTimestamp(
-                **front, sourceFrameRate);
+                *frontFrame, sourceFrameRate);
             if (bufferedIndex > targetFrameIndex) {
                 decodeForward = false;
                 break;
             }
 
-            FramePtr bufferedFrame;
-            if (!buffer_->popWithTimeout(bufferedFrame,
+            MediaFrame buffered;
+            if (!buffer_->popWithTimeout(buffered,
                                          std::chrono::milliseconds(0))) {
                 return nullptr;
             }
+            FramePtr bufferedFrame = buffered.videoFrame();
             if (bufferedIndex == targetFrameIndex) {
                 LOG_DEBUG("DecodeThread: reused buffered frame {} for seek",
                           targetFrameIndex);
@@ -435,18 +502,20 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAtFrame(
                   forwardDistance);
     } else {
         buffer_->flush();
+        audioBuffer_->flush();
 
         // Decode some preroll for inter-frame codecs and reordered B-frames.
         const double seekSeconds = std::max(
             0.0, snappedTargetSeconds - kSeekPrerollSeconds);
-        int seekResult = demuxer_->seek(
+        int seekResult = demuxSource_->seek(
             seekSeconds, videoStream_->index, 1 /* AVSEEK_FLAG_BACKWARD */);
         if (seekResult < 0) {
             LOG_ERROR("DecodeThread: seek to {:.3f}s failed with {}",
                       seekSeconds, seekResult);
             return nullptr;
         }
-        decoder_->flush();
+        decoderNode_->flush();
+        if (audioDecoderNode_) audioDecoderNode_->flush();
         resetDecodePosition();
     }
 
@@ -488,16 +557,25 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAtFrame(
             continue;
         }
 
-        auto pkt = demuxer_->readPacket();
-        if (pkt) {
-            if (pkt->streamIndex == videoStream_->index) {
-                decoder_->sendPacket(pkt);
+        MediaFrame input = demuxSource_->read(generation_);
+        if (input.type == MediaFrameType::Packet) {
+            if (input.metadata.streamIndex == videoStream_->index) {
+                decoderNode_->push(input);
+            } else if (audioDecoderNode_ && audioStream_ &&
+                       input.metadata.streamIndex == audioStream_->index) {
+                audioDecoderNode_->push(input);
+                drainAudioOutput(false);
             }
-        } else {
-            decoder_->sendPacket(nullptr);
+        } else if (input.type == MediaFrameType::Eof) {
+            decoderNode_->push(input);
+            if (audioDecoderNode_) {
+                audioDecoderNode_->push(input);
+                drainAudioOutput(false);
+            }
 
             while (running_) {
-                auto drainFrame = receiveDecodedFrame();
+                MediaFrame signal;
+                auto drainFrame = receiveDecodedFrame(&signal);
                 if (!drainFrame) break;
                 if (auto selected = selectFrame(std::move(drainFrame))) {
                     return selected;
@@ -508,6 +586,7 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAtFrame(
                 lastFrame->pts = timestampFromSeconds(snappedTargetSeconds,
                                                       lastFrame->time_base);
             }
+            pendingEof_ = true;
             return lastFrame;
         }
     }
@@ -523,7 +602,7 @@ void DecodeThread::runLoop() {
             continue;
         }
 
-        if (!demuxer_ || !decoder_) {
+        if (!demuxSource_ || !decoderNode_) {
             cmd = waitForCommand();
             if (cmd != Cmd::None) processCommand(cmd);
             continue;
@@ -544,53 +623,78 @@ void DecodeThread::runLoop() {
         // A seek can interrupt a producer blocked on a full buffer after the
         // decoder has already output the frame. Queue it before decoding more.
         if (lastDecodedFrame_ && !lastDecodedFrameQueued_) {
-            if (buffer_->push(lastDecodedFrame_)) {
+            if (pushVideo(lastDecodedFrame_)) {
                 lastDecodedFrameQueued_ = true;
             }
             continue;
         }
 
+        drainAudioOutput(true);
+
         auto frame = receiveDecodedFrame();
         if (frame) {
-            bool ok = buffer_->push(frame);
+            bool ok = pushVideo(frame);
             if (ok && frame == lastDecodedFrame_) {
                 lastDecodedFrameQueued_ = true;
             }
             continue;
         }
 
-        auto pkt = demuxer_->readPacket();
-        if (pkt) {
-            if (pkt->streamIndex == videoStream_->index) {
-                decoder_->sendPacket(pkt);
+        MediaFrame input = demuxSource_->read(generation_);
+        if (input.type == MediaFrameType::Packet) {
+            if (input.metadata.streamIndex == videoStream_->index) {
+                decoderNode_->push(input);
+            } else if (audioDecoderNode_ && audioStream_ &&
+                       input.metadata.streamIndex == audioStream_->index) {
+                audioDecoderNode_->push(input);
             }
-        } else {
-            decoder_->sendPacket(nullptr);
+        } else if (input.type == MediaFrameType::Eof) {
+            decoderNode_->push(input);
+            if (audioDecoderNode_) audioDecoderNode_->push(input);
+
+            MediaFrame eofFrame;
 
             while (running_) {
-                auto drainFrame = receiveDecodedFrame();
+                MediaFrame signal;
+                auto drainFrame = receiveDecodedFrame(&signal);
                 if (drainFrame) {
-                    if (!buffer_->push(drainFrame)) break;
+                    if (!pushVideo(drainFrame)) break;
                     if (drainFrame == lastDecodedFrame_) {
                         lastDecodedFrameQueued_ = true;
                     }
                 } else {
+                    if (signal.type == MediaFrameType::Eof)
+                        eofFrame = std::move(signal);
                     break;
                 }
             }
 
+            if (!eofFrame.isSignal())
+                eofFrame = MediaFrame::eof(generation_);
+
             if (!buffer_->isAborted() && running_) {
                 LOG_INFO("DecodeThread: end of stream");
-                if (onEndOfStream) onEndOfStream();
+                buffer_->push(std::move(eofFrame));
+            }
+
+            const bool audioEofQueued = drainAudioOutput(true);
+            if (audioDecoderNode_ && !audioEofQueued &&
+                !audioBuffer_->isAborted() && running_) {
+                audioBuffer_->push(MediaFrame::eof(generation_));
             }
 
             eof_ = true;
         }
     }
 
-    if (decoder_) { decoder_->close(); decoder_.reset(); }
-    if (demuxer_) { demuxer_->close(); demuxer_.reset(); }
+    if (decoderNode_) { decoderNode_->close(); decoderNode_.reset(); }
+    if (audioDecoderNode_) {
+        audioDecoderNode_->close();
+        audioDecoderNode_.reset();
+    }
+    if (demuxSource_) { demuxSource_->close(); demuxSource_.reset(); }
     videoStream_  = nullptr;
+    audioStream_  = nullptr;
     durationSecs_ = 0.0;
     fps_          = 0.0;
     scrubbing_    = false;
@@ -599,10 +703,16 @@ void DecodeThread::runLoop() {
     clearScrubFrameCache();
 }
 
-DecodeThread::FramePtr DecodeThread::receiveDecodedFrame() {
-    if (!decoder_) return nullptr;
+DecodeThread::FramePtr DecodeThread::receiveDecodedFrame(MediaFrame* signal) {
+    if (!decoderNode_) return nullptr;
 
-    auto frame = decoder_->receiveFrame();
+    MediaFrame output = decoderNode_->pull(generation_);
+    if (output.isSignal()) {
+        if (signal) *signal = std::move(output);
+        return nullptr;
+    }
+
+    auto frame = output.videoFrame();
     if (!frame) return nullptr;
 
     lastDecodedFrame_ = frame;
@@ -668,6 +778,51 @@ void DecodeThread::cacheScrubFrame(int64_t frameIndex,
 
 void DecodeThread::clearScrubFrameCache() {
     scrubFrameCache_.clear();
+}
+
+bool DecodeThread::pushVideo(const FramePtr& frame) {
+    if (!frame) return false;
+    MediaFrame output = MediaFrame::video(frame, generation_);
+    output.metadata.pts = frame->pts;
+    output.metadata.duration = frame->duration;
+    output.metadata.timeBaseNum = frame->time_base.num;
+    output.metadata.timeBaseDen = frame->time_base.den;
+    output.metadata.streamIndex = videoStream_ ? videoStream_->index : -1;
+    return buffer_->push(std::move(output));
+}
+
+bool DecodeThread::pushVideoFront(const FramePtr& frame) {
+    if (!frame) return false;
+    MediaFrame output = MediaFrame::video(frame, generation_);
+    output.metadata.pts = frame->pts;
+    output.metadata.duration = frame->duration;
+    output.metadata.timeBaseNum = frame->time_base.num;
+    output.metadata.timeBaseDen = frame->time_base.den;
+    output.metadata.streamIndex = videoStream_ ? videoStream_->index : -1;
+    return buffer_->pushFront(std::move(output));
+}
+
+bool DecodeThread::drainAudioOutput(bool queueOutput) {
+    if (!audioDecoderNode_) return false;
+
+    while (running_) {
+        MediaFrame output = audioDecoderNode_->pull(generation_);
+        if (output.type == MediaFrameType::None) return false;
+        const bool eof = output.isSignal();
+        if (queueOutput && !audioBuffer_->push(output)) return false;
+        if (eof) return true;
+    }
+    return false;
+}
+
+void DecodeThread::queuePendingEof() {
+    if (!pendingEof_) return;
+
+    buffer_->push(MediaFrame::eof(generation_));
+    if (audioDecoderNode_)
+        audioBuffer_->push(MediaFrame::eof(generation_));
+    pendingEof_ = false;
+    eof_ = true;
 }
 
 } // namespace heisenberg

@@ -4,6 +4,7 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavutil/channel_layout.h>
 #include <libavutil/frame.h>
 #include <libavutil/pixdesc.h>
 }
@@ -87,6 +88,13 @@ int SoftwareDecoder::open(const Stream& stream) {
     impl_->ctx->width = stream.codec.width;
     impl_->ctx->height = stream.codec.height;
     impl_->ctx->pix_fmt = AV_PIX_FMT_NONE;
+    if (stream.isAudio()) {
+        impl_->ctx->sample_rate = stream.codec.sampleRate;
+        if (stream.codec.channels > 0) {
+            av_channel_layout_default(&impl_->ctx->ch_layout,
+                                      stream.codec.channels);
+        }
+    }
 
     impl_->ctx->time_base = {stream.codec.tbNum, stream.codec.tbDen};
     impl_->ctx->pkt_timebase = impl_->ctx->time_base;

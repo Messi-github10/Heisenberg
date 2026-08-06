@@ -5,8 +5,6 @@
 #pragma once
 
 #include <QObject>
-#include <Common/AudioSpec.hpp>
-#include <Common/RingBuffer.hpp>
 #include <cstdint>
 #include <memory>
 
@@ -15,11 +13,6 @@ struct AVFrame;
 }
 
 namespace heisenberg {
-
-class DecodeThread;
-
-namespace decoder { class AudioDecoder; }
-namespace renderer { class AudioDevice; }
 
 namespace ctrl {
 
