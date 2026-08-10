@@ -28,9 +28,11 @@ uint32_t VulkanImageResource::findMemoryType(
 }
 
 bool VulkanImageResource::ensure(
-    VkExtent2D extent, VkFormat format, VkImageUsageFlags usage) {
+    VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
+    const GraphImageContract& contract) {
     if (image_ && extent_.width == extent.width && extent_.height == extent.height
         && format_ == format && usage_ == usage) {
+        contract_ = contract;
         return true;
     }
 
@@ -93,6 +95,7 @@ bool VulkanImageResource::ensure(
     extent_ = extent;
     format_ = format;
     usage_ = usage;
+    contract_ = contract;
     layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     ++generation_;
     return true;
@@ -109,6 +112,7 @@ void VulkanImageResource::reset() {
     extent_ = {};
     format_ = VK_FORMAT_UNDEFINED;
     usage_ = 0;
+    contract_ = {};
     layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
@@ -123,6 +127,7 @@ VulkanImageRef VulkanImageResource::ref(VulkanSyncPoint ready) const {
     result.queueFamilyIndex = context_.queueFamilyIndex;
     result.ready = ready;
     result.generation = generation_;
+    result.contract = contract_;
     return result;
 }
 

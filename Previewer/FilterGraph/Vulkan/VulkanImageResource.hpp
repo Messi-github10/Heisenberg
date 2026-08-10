@@ -12,7 +12,8 @@ public:
     VulkanImageResource(const VulkanImageResource&) = delete;
     VulkanImageResource& operator=(const VulkanImageResource&) = delete;
 
-    bool ensure(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage);
+    bool ensure(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
+                const GraphImageContract& contract);
     void reset();
     VulkanImageRef ref(VulkanSyncPoint ready = {}) const;
 
@@ -31,6 +32,7 @@ private:
     VkImageUsageFlags usage_   = 0;
     VkImageLayout layout_      = VK_IMAGE_LAYOUT_UNDEFINED;
     uint64_t generation_       = 0;
+    GraphImageContract contract_ = {};
 };
 
 } // namespace heisenberg::filtergraph

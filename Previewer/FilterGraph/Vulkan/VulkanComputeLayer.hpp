@@ -3,11 +3,23 @@
 #include "VulkanImageResource.hpp"
 #include "VulkanLayer.hpp"
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace heisenberg::filtergraph {
 
+enum class VulkanInputBinding : uint8_t {
+    storageImage,
+    sampledLinear,
+    sampledNearest,
+};
+
+/// Convention-based Vulkan compute node inspired by AOCE's VkLayer.
+/// Descriptor bindings are ordered as inputs, outputs, then an optional UBO.
 class VulkanComputeLayer : public VulkanLayer {
 public:
     ~VulkanComputeLayer() override;
@@ -17,34 +29,57 @@ public:
                 const FrameContext& frame) override;
 
 protected:
-    explicit VulkanComputeLayer(std::string mark);
+    explicit VulkanComputeLayer(std::string mark,
+                                int32_t inputCount = 1,
+                                int32_t outputCount = 1);
 
     bool configure(const std::vector<ImageFormat>& inputs) override;
-    virtual bool supportsFormat(ImageType format) const = 0;
+
+    /// Set once while constructing the layer. A zero size disables the UBO.
+    void setUniformBufferSize(size_t size);
+    void updateUniformData(const void* data, size_t size);
+
+    template<typename T>
+    void updateUniformData(const T& value) {
+        updateUniformData(&value, sizeof(T));
+    }
+
+    virtual bool supportsFormat(ImageType format) const;
+    virtual bool configureOutputs(const std::vector<ImageFormat>& inputs);
+    virtual VulkanInputBinding inputBinding(int32_t inputIndex) const;
+    virtual VkExtent3D workGroupSize() const;
     virtual const char* shaderPath() const = 0;
 
 private:
     bool initializePipeline();
+    bool initializeUniformBuffer();
+    bool initializeSamplers();
+    bool updateDescriptors();
+    bool uploadUniformData();
     void destroyPipeline();
-    void updateDescriptors(const VulkanImageRef& source,
-                           const VulkanImageRef& destination);
+    void destroyUniformBuffer();
+    uint32_t findMemoryType(uint32_t bits,
+                            VkMemoryPropertyFlags flags) const;
+    VkSampler samplerFor(VulkanInputBinding binding) const;
 
     VulkanGraphContext context_ = {};
-    std::unique_ptr<VulkanImageResource> outputImage_;
+    std::vector<std::unique_ptr<VulkanImageResource>> outputImages_;
+
     VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
-};
+    VkSampler linearSampler_ = VK_NULL_HANDLE;
+    VkSampler nearestSampler_ = VK_NULL_HANDLE;
 
-class VulkanColorInvertLayer final : public VulkanComputeLayer {
-public:
-    VulkanColorInvertLayer();
-
-protected:
-    bool supportsFormat(ImageType format) const override;
-    const char* shaderPath() const override;
+    VkBuffer uniformBuffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory uniformMemory_ = VK_NULL_HANDLE;
+    void* uniformMapped_ = nullptr;
+    VkDeviceSize uniformAllocationSize_ = 0;
+    std::vector<uint8_t> uniformData_;
+    bool uniformDirty_ = false;
+    std::mutex uniformMutex_;
 };
 
 } // namespace heisenberg::filtergraph

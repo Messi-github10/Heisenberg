@@ -19,6 +19,9 @@ public:
     IOutputLayer* createOutput() override;
     ILayer* createPassthrough() override;
     ILayer* createColorInvert() override;
+    ITLayer<float>* createExposure() override;
+    ITLayer<float>* createBlend() override;
+    ITLayer<GaussianBlurParamet>* createGaussianBlur() override;
 
 private:
     template<typename T>

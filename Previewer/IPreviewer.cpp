@@ -47,7 +47,7 @@ VkImageUsageFlags toCUsage(vk::ImageUsageFlags usage) {
 }
 
 pl_frame makeRgbFrame(pl_tex texture, int width, int height,
-                      enum pl_color_transfer transfer) {
+                      const pl_color_space& color) {
     pl_frame frame = {};
     frame.num_planes = 1;
     frame.planes[0].texture = texture;
@@ -58,10 +58,25 @@ pl_frame makeRgbFrame(pl_tex texture, int width, int height,
     frame.planes[0].component_mapping[3] = 3;
     frame.repr.sys = PL_COLOR_SYSTEM_RGB;
     frame.repr.levels = PL_COLOR_LEVELS_PC;
-    frame.color.primaries = PL_COLOR_PRIM_BT_709;
-    frame.color.transfer = transfer;
+    frame.repr.alpha = PL_ALPHA_INDEPENDENT;
+    frame.color = color;
     frame.crop = {0, 0, static_cast<float>(width), static_cast<float>(height)};
     return frame;
+}
+
+pl_color_space makeDisplayColor() {
+    pl_color_space color = {};
+    color.primaries = PL_COLOR_PRIM_BT_709;
+    color.transfer = PL_COLOR_TRC_SRGB;
+    return color;
+}
+
+pl_color_space makeWorkingColor(const pl_frame& source) {
+    pl_color_space color = source.color;
+    pl_color_space_infer(&color);
+    color.primaries = PL_COLOR_PRIM_BT_2020;
+    color.transfer = PL_COLOR_TRC_LINEAR;
+    return color;
 }
 
 } // namespace
@@ -98,6 +113,7 @@ struct IPreviewer::Impl {
     filtergraph::IPipeGraph* filterGraph = nullptr;
     filtergraph::IInputLayer* dagInput = nullptr;
     filtergraph::IOutputLayer* dagOutput = nullptr;
+    pl_color_space workingColor = {};
 };
 
 IPreviewer::IPreviewer() : impl_(std::make_unique<Impl>()) {}
@@ -330,8 +346,9 @@ bool IPreviewer::presentFrame(const AVFrame* avframe) {
     releaseParams.semaphore.value = impl_->intermediateReleaseWait.value;
     pl_vulkan_release_ex(impl_->gpu, &releaseParams);
 
+    impl_->workingColor = makeWorkingColor(*source);
     pl_frame workingFrame = makeRgbFrame(
-        targetTexture, workWidth, workHeight, PL_COLOR_TRC_LINEAR);
+        targetTexture, workWidth, workHeight, impl_->workingColor);
     if (!impl_->renderEngine->render(source, &workingFrame)) {
         pl_tex_destroy(impl_->gpu, &targetTexture);
         return false;
@@ -361,6 +378,7 @@ bool IPreviewer::presentFrame(const AVFrame* avframe) {
     graphInput.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     graphInput.queueFamilyIndex = impl_->vulkan->queue_graphics.index;
     graphInput.ready = {toC(impl_->interopSemaphore), impl_->interopValue};
+    graphInput.contract = filtergraph::kWorkingImageContract;
     if (!impl_->dagInput->setVulkanInput(graphInput)) return false;
 
     filtergraph::FrameContext frameContext;
@@ -389,8 +407,8 @@ bool IPreviewer::renderToSwapChain(
     pl_tex framebuffer = impl_->swapChain->startFrame(width, height);
     if (!framebuffer) return false;
 
-    pl_frame target = makeRgbFrame(
-        framebuffer, width, height, PL_COLOR_TRC_SRGB);
+    const pl_color_space displayColor = makeDisplayColor();
+    pl_frame target = makeRgbFrame(framebuffer, width, height, displayColor);
     if (!impl_->renderEngine->render(source, &target)) return false;
     if (!impl_->swapChain->submitFrame()) return false;
     impl_->swapChain->swapBuffers();
@@ -422,16 +440,17 @@ bool IPreviewer::renderToSwapChain(
         impl_->outputWidth, impl_->outputHeight);
     bool rendered = framebuffer != nullptr;
     if (rendered) {
-        const enum pl_color_transfer transfer =
-            image.format == VK_FORMAT_R16G16B16A16_SFLOAT
-                ? PL_COLOR_TRC_LINEAR : PL_COLOR_TRC_SRGB;
+        if (image.contract != filtergraph::kWorkingImageContract) {
+            LOG_ERROR("IPreviewer: graph output violates the working image contract");
+            rendered = false;
+        }
         pl_frame source = makeRgbFrame(
             sourceTexture, static_cast<int>(image.extent.width),
-            static_cast<int>(image.extent.height), transfer);
-        pl_frame target = makeRgbFrame(
-            framebuffer, impl_->outputWidth, impl_->outputHeight,
-            PL_COLOR_TRC_SRGB);
-        rendered = impl_->renderEngine->render(&source, &target);
+            static_cast<int>(image.extent.height), impl_->workingColor);
+        const pl_color_space displayColor = makeDisplayColor();
+        pl_frame target = makeRgbFrame(framebuffer, impl_->outputWidth,
+                                       impl_->outputHeight, displayColor);
+        if (rendered) rendered = impl_->renderEngine->render(&source, &target);
     }
 
     pl_gpu_flush(impl_->gpu);

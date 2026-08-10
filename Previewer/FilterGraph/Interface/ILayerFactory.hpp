@@ -81,6 +81,9 @@ public:
     virtual IOutputLayer* createOutput()     = 0;
     virtual ILayer*       createPassthrough() = 0;
     virtual ILayer*       createColorInvert() = 0;
+    virtual ITLayer<float>* createExposure() = 0;
+    virtual ITLayer<float>* createBlend() = 0;
+    virtual ITLayer<GaussianBlurParamet>* createGaussianBlur() = 0;
 };
 
 } // namespace filtergraph

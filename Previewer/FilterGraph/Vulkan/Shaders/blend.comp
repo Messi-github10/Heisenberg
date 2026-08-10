@@ -1,0 +1,25 @@
+#version 450
+
+// Linear crossfade in the BT.2020 RGBA16F working space.
+// RGB values are intentionally not clamped, preserving HDR headroom.
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (binding = 0, rgba16f) uniform readonly image2D originalTex;
+layout (binding = 1, rgba16f) uniform readonly image2D effectTex;
+layout (binding = 2, rgba16f) uniform image2D outTex;
+
+layout (std140, binding = 3) uniform BlendParams {
+    float factor;
+} params;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outTex);
+    if (pixel.x >= size.x || pixel.y >= size.y) {
+        return;
+    }
+
+    vec4 original = imageLoad(originalTex, pixel);
+    vec4 effect = imageLoad(effectTex, pixel);
+    imageStore(outTex, pixel, mix(original, effect, params.factor));
+}

@@ -89,6 +89,12 @@ void VulkanInputLayer::inputCpuData(uint8_t*, const ImageFormat&, bool) {
 bool VulkanInputLayer::setVulkanInput(
     const VulkanImageRef& image, int32_t inputIndex) {
     if (inputIndex != 0 || !image.valid()) return false;
+    if (image.format != kWorkingImageContract.format
+        || image.contract != kWorkingImageContract) {
+        LOG_ERROR("FilterGraph: Vulkan input violates the linear BT.2020 "
+                  "RGBA16F straight-alpha working contract");
+        return false;
+    }
     const bool formatChanged = !externalImage_.valid()
         || externalImage_.format != image.format
         || externalImage_.extent.width != image.extent.width
@@ -99,7 +105,10 @@ bool VulkanInputLayer::setVulkanInput(
 }
 
 bool VulkanInputLayer::configure(const std::vector<ImageFormat>& inputs) {
-    if (!inputs.empty() || !externalImage_.valid()) return false;
+    if (!inputs.empty() || !externalImage_.valid()
+        || externalImage_.contract != kWorkingImageContract) {
+        return false;
+    }
     ImageFormat format;
     format.width = static_cast<int32_t>(externalImage_.extent.width);
     format.height = static_cast<int32_t>(externalImage_.extent.height);
@@ -197,7 +206,7 @@ bool VulkanPassthroughLayer::prepare(const VulkanGraphContext& context) {
     return outputImage_->ensure(
         {static_cast<uint32_t>(outputFormat.width),
          static_cast<uint32_t>(outputFormat.height)},
-        format, usage);
+        format, usage, kWorkingImageContract);
 }
 
 void VulkanPassthroughLayer::record(

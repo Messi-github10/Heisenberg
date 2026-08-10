@@ -1,0 +1,62 @@
+#version 450
+
+// Separable Gaussian blur in the linear BT.2020 RGBA16F working space.
+// Straight alpha is temporarily premultiplied during filtering.
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (binding = 0) uniform sampler2D inTex;
+layout (binding = 1, rgba16f) uniform image2D outTex;
+
+layout (std140, binding = 2) uniform GaussianBlurParams {
+    ivec2 direction;
+    int radius;
+    float sigma;
+} params;
+
+const int MAX_RADIUS = 32;
+
+void accumulateSample(vec4 sampleColor, float weight,
+                      inout vec3 premultipliedRgb,
+                      inout float alphaSum,
+                      inout float weightSum) {
+    premultipliedRgb += sampleColor.rgb * sampleColor.a * weight;
+    alphaSum += sampleColor.a * weight;
+    weightSum += weight;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outTex);
+    if (pixel.x >= size.x || pixel.y >= size.y) {
+        return;
+    }
+
+    vec2 inverseSize = 1.0 / vec2(size);
+    vec2 uv = (vec2(pixel) + 0.5) * inverseSize;
+    vec2 texelStep = vec2(params.direction) * inverseSize;
+    int radius = clamp(params.radius, 0, MAX_RADIUS);
+    float sigma = max(params.sigma, 0.0001);
+    float gaussianScale = 1.0 / (2.0 * sigma * sigma);
+
+    vec3 premultipliedRgb = vec3(0.0);
+    float alphaSum = 0.0;
+    float weightSum = 0.0;
+    accumulateSample(texture(inTex, uv), 1.0,
+                     premultipliedRgb, alphaSum, weightSum);
+
+    for (int offset = 1; offset <= MAX_RADIUS; ++offset) {
+        if (offset > radius) break;
+        float distance = float(offset);
+        float weight = exp(-(distance * distance) * gaussianScale);
+        vec2 sampleOffset = texelStep * distance;
+        accumulateSample(texture(inTex, uv + sampleOffset), weight,
+                         premultipliedRgb, alphaSum, weightSum);
+        accumulateSample(texture(inTex, uv - sampleOffset), weight,
+                         premultipliedRgb, alphaSum, weightSum);
+    }
+
+    float outputAlpha = alphaSum / weightSum;
+    vec3 outputRgb = alphaSum > 0.000001
+        ? premultipliedRgb / alphaSum : vec3(0.0);
+    imageStore(outTex, pixel, vec4(outputRgb, outputAlpha));
+}

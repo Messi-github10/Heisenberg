@@ -39,6 +39,43 @@ enum class ImageType : int32_t {
     rgba16f  = 11,  // 四通道 16-bit 浮点
 };
 
+enum class ColorPrimaries : int32_t {
+    unknown = 0,
+    bt2020  = 1,
+};
+
+enum class ColorTransfer : int32_t {
+    unknown = 0,
+    linear  = 1,
+};
+
+enum class AlphaMode : int32_t {
+    unknown  = 0,
+    straight = 1,
+};
+
+/// Semantic contract for images crossing the Vulkan filter graph boundary.
+/// Extended range means valid RGB values are not restricted to [0, 1].
+struct GraphImageContract {
+    VkFormat       format        = VK_FORMAT_UNDEFINED;
+    ImageType      imageType     = ImageType::other;
+    ColorPrimaries primaries     = ColorPrimaries::unknown;
+    ColorTransfer  transfer      = ColorTransfer::unknown;
+    AlphaMode      alpha         = AlphaMode::unknown;
+    bool           extendedRange = false;
+
+    constexpr bool operator==(const GraphImageContract&) const = default;
+};
+
+inline constexpr GraphImageContract kWorkingImageContract{
+    VK_FORMAT_R16G16B16A16_SFLOAT,
+    ImageType::rgba16f,
+    ColorPrimaries::bt2020,
+    ColorTransfer::linear,
+    AlphaMode::straight,
+    true,
+};
+
 // ============================================================
 // 图像格式描述
 // ============================================================
@@ -56,6 +93,15 @@ struct ImageFormat {
 
     inline bool operator!=(const ImageFormat& right) const {
         return !(*this == right);
+    }
+};
+
+struct GaussianBlurParamet {
+    int32_t blurRadius = 4;
+    float sigma = 0.0f;
+
+    bool operator==(const GaussianBlurParamet& right) const {
+        return blurRadius == right.blurRadius && sigma == right.sigma;
     }
 };
 
@@ -120,6 +166,7 @@ struct VulkanImageRef {
     uint32_t          queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     VulkanSyncPoint   ready            = {};
     uint64_t          generation       = 0;
+    GraphImageContract contract         = {};
 
     bool valid() const {
         return image != VK_NULL_HANDLE

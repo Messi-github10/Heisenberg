@@ -3,14 +3,14 @@
 #include <Utiles/Logger.hpp>
 #include <volk.h>
 
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include <fstream>
+#include <limits>
+#include <stdexcept>
 #include <utility>
 #include <vector>
-
-#ifndef HEISENBERG_COLOR_INVERT_SHADER_PATH
-#error HEISENBERG_COLOR_INVERT_SHADER_PATH must be defined by CMake
-#endif
 
 namespace heisenberg::filtergraph {
 namespace {
@@ -60,55 +60,231 @@ std::vector<uint32_t> loadShaderCode(const char* path) {
     return code;
 }
 
+VkDeviceSize alignedUniformSize(size_t size) {
+    constexpr VkDeviceSize alignment = 16;
+    return std::max<VkDeviceSize>(
+        alignment, (static_cast<VkDeviceSize>(size) + alignment - 1)
+            & ~(alignment - 1));
+}
+
+bool isSampled(VulkanInputBinding binding) {
+    return binding != VulkanInputBinding::storageImage;
+}
+
 } // namespace
 
-VulkanComputeLayer::VulkanComputeLayer(std::string mark)
-    : VulkanLayer(std::move(mark), 1, 1) {}
+VulkanComputeLayer::VulkanComputeLayer(
+    std::string mark, int32_t inputCount, int32_t outputCount)
+    : VulkanLayer(std::move(mark), inputCount, outputCount) {
+    if (inputCount < 1 || outputCount < 1) {
+        throw std::invalid_argument(
+            "FilterGraph compute layers require at least one input and output");
+    }
+}
 
 VulkanComputeLayer::~VulkanComputeLayer() {
     destroyPipeline();
 }
 
-bool VulkanComputeLayer::configure(const std::vector<ImageFormat>& inputs) {
-    if (inputs.size() != 1 || !supportsFormat(inputs[0].imageType)) {
-        return false;
+bool VulkanComputeLayer::supportsFormat(ImageType format) const {
+    return format == kWorkingImageContract.imageType;
+}
+
+bool VulkanComputeLayer::configure(
+    const std::vector<ImageFormat>& inputs) {
+    if (inputs.size() != static_cast<size_t>(inputCount())) return false;
+    for (int32_t index = 0; index < inputCount(); ++index) {
+        const ImageFormat& format = inputs[static_cast<size_t>(index)];
+        if (format.width <= 0 || format.height <= 0
+            || !supportsFormat(format.imageType)) {
+            return false;
+        }
+        setInputFormat(index, format);
     }
-    setInputFormat(0, inputs[0]);
-    setOutputFormat(0, inputs[0]);
+    return configureOutputs(inputs);
+}
+
+bool VulkanComputeLayer::configureOutputs(
+    const std::vector<ImageFormat>& inputs) {
+    if (inputs.empty()) return false;
+    for (int32_t index = 0; index < outputCount(); ++index) {
+        setOutputFormat(index, inputs[0]);
+    }
     return true;
 }
 
+VulkanInputBinding VulkanComputeLayer::inputBinding(int32_t) const {
+    return VulkanInputBinding::storageImage;
+}
+
+VkExtent3D VulkanComputeLayer::workGroupSize() const {
+    return {16, 16, 1};
+}
+
+void VulkanComputeLayer::setUniformBufferSize(size_t size) {
+    if (context_.device) {
+        throw std::logic_error(
+            "FilterGraph UBO size must be set before graph preparation");
+    }
+    std::lock_guard<std::mutex> lock(uniformMutex_);
+    uniformData_.assign(size, 0);
+    uniformDirty_ = size > 0;
+}
+
+void VulkanComputeLayer::updateUniformData(const void* data, size_t size) {
+    std::lock_guard<std::mutex> lock(uniformMutex_);
+    if (size != uniformData_.size() || (size > 0 && !data)) {
+        throw std::invalid_argument("FilterGraph UBO update size mismatch");
+    }
+    if (size > 0) std::memcpy(uniformData_.data(), data, size);
+    uniformDirty_ = size > 0;
+}
+
 bool VulkanComputeLayer::prepare(const VulkanGraphContext& context) {
-    if (!context.device) return false;
+    if (!context.device || !context.physicalDevice) return false;
     if (context_.device && context_.device != context.device) {
         destroyPipeline();
-        outputImage_.reset();
+        outputImages_.clear();
     }
     context_ = context;
-    if (!outputImage_) {
-        outputImage_ = std::make_unique<VulkanImageResource>(context_);
-    }
-    if (!pipeline_ && !initializePipeline()) return false;
 
-    const ImageFormat& format = outputFormats()[0];
-    return outputImage_->ensure(
-        {static_cast<uint32_t>(format.width),
-         static_cast<uint32_t>(format.height)},
-        VK_FORMAT_R16G16B16A16_SFLOAT,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
-            | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    if (outputImages_.empty()) {
+        outputImages_.reserve(static_cast<size_t>(outputCount()));
+        for (int32_t index = 0; index < outputCount(); ++index) {
+            outputImages_.push_back(
+                std::make_unique<VulkanImageResource>(context_));
+        }
+    }
+
+    constexpr VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT
+        | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+        | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    for (int32_t index = 0; index < outputCount(); ++index) {
+        const ImageFormat& format =
+            outputFormats()[static_cast<size_t>(index)];
+        if (!supportsFormat(format.imageType)
+            || !outputImages_[static_cast<size_t>(index)]->ensure(
+                {static_cast<uint32_t>(format.width),
+                 static_cast<uint32_t>(format.height)},
+                kWorkingImageContract.format, usage,
+                kWorkingImageContract)) {
+            return false;
+        }
+    }
+
+    return pipeline_ || initializePipeline();
+}
+
+uint32_t VulkanComputeLayer::findMemoryType(
+    uint32_t bits, VkMemoryPropertyFlags flags) const {
+    VkPhysicalDeviceMemoryProperties properties{};
+    vkGetPhysicalDeviceMemoryProperties(context_.physicalDevice, &properties);
+    for (uint32_t index = 0; index < properties.memoryTypeCount; ++index) {
+        if ((bits & (1u << index))
+            && (properties.memoryTypes[index].propertyFlags & flags) == flags) {
+            return index;
+        }
+    }
+    return std::numeric_limits<uint32_t>::max();
+}
+
+bool VulkanComputeLayer::initializeUniformBuffer() {
+    if (uniformData_.empty()) return true;
+
+    uniformAllocationSize_ = alignedUniformSize(uniformData_.size());
+    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = uniformAllocationSize_;
+    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(context_.device, &bufferInfo, nullptr, &uniformBuffer_)
+        != VK_SUCCESS) {
+        return false;
+    }
+
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(context_.device, uniformBuffer_, &requirements);
+    const uint32_t memoryType = findMemoryType(
+        requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (memoryType == std::numeric_limits<uint32_t>::max()) return false;
+
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = memoryType;
+    if (vkAllocateMemory(context_.device, &allocation, nullptr, &uniformMemory_)
+            != VK_SUCCESS
+        || vkBindBufferMemory(context_.device, uniformBuffer_, uniformMemory_, 0)
+            != VK_SUCCESS
+        || vkMapMemory(context_.device, uniformMemory_, 0,
+                       uniformAllocationSize_, 0, &uniformMapped_)
+            != VK_SUCCESS) {
+        return false;
+    }
+    return uploadUniformData();
+}
+
+bool VulkanComputeLayer::initializeSamplers() {
+    bool needsLinear = false;
+    bool needsNearest = false;
+    for (int32_t index = 0; index < inputCount(); ++index) {
+        const VulkanInputBinding binding = inputBinding(index);
+        needsLinear |= binding == VulkanInputBinding::sampledLinear;
+        needsNearest |= binding == VulkanInputBinding::sampledNearest;
+    }
+
+    auto createSampler = [&](VkFilter filter, VkSampler* sampler) {
+        VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        info.magFilter = filter;
+        info.minFilter = filter;
+        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.maxLod = 0.0f;
+        return vkCreateSampler(context_.device, &info, nullptr, sampler)
+            == VK_SUCCESS;
+    };
+
+    if (needsLinear && !createSampler(VK_FILTER_LINEAR, &linearSampler_)) {
+        return false;
+    }
+    if (needsNearest && !createSampler(VK_FILTER_NEAREST, &nearestSampler_)) {
+        return false;
+    }
+    return true;
 }
 
 bool VulkanComputeLayer::initializePipeline() {
-    const std::vector<uint32_t> code = loadShaderCode(shaderPath());
-    if (!context_.device || code.empty()) return false;
+    if (!initializeUniformBuffer() || !initializeSamplers()) {
+        destroyPipeline();
+        return false;
+    }
 
-    const std::array<VkDescriptorSetLayoutBinding, 2> bindings{{
-        {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
-         VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-        {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
-         VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-    }};
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    bindings.reserve(static_cast<size_t>(inputCount() + outputCount() + 1));
+    uint32_t storageCount = static_cast<uint32_t>(outputCount());
+    uint32_t sampledCount = 0;
+    uint32_t bindingIndex = 0;
+
+    for (int32_t index = 0; index < inputCount(); ++index) {
+        const VkDescriptorType type = isSampled(inputBinding(index))
+            ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+            : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings.push_back({bindingIndex++, type, 1,
+                            VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+        if (type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) ++storageCount;
+        else ++sampledCount;
+    }
+    for (int32_t index = 0; index < outputCount(); ++index) {
+        bindings.push_back({bindingIndex++, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+                            VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+    }
+    if (!uniformData_.empty()) {
+        bindings.push_back({bindingIndex, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+                            VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+    }
+
     VkDescriptorSetLayoutCreateInfo setLayoutInfo{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     setLayoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -129,14 +305,20 @@ bool VulkanComputeLayer::initializePipeline() {
         return false;
     }
 
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSize.descriptorCount = 2;
+    std::vector<VkDescriptorPoolSize> poolSizes;
+    poolSizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, storageCount});
+    if (sampledCount > 0) {
+        poolSizes.push_back(
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sampledCount});
+    }
+    if (!uniformData_.empty()) {
+        poolSizes.push_back({VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1});
+    }
     VkDescriptorPoolCreateInfo poolInfo{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.maxSets = 1;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
     if (vkCreateDescriptorPool(context_.device, &poolInfo, nullptr,
                                &descriptorPool_) != VK_SUCCESS) {
         destroyPipeline();
@@ -154,6 +336,11 @@ bool VulkanComputeLayer::initializePipeline() {
         return false;
     }
 
+    const std::vector<uint32_t> code = loadShaderCode(shaderPath());
+    if (code.empty()) {
+        destroyPipeline();
+        return false;
+    }
     VkShaderModuleCreateInfo shaderInfo{
         VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     shaderInfo.codeSize = code.size() * sizeof(uint32_t);
@@ -186,6 +373,23 @@ bool VulkanComputeLayer::initializePipeline() {
     return true;
 }
 
+void VulkanComputeLayer::destroyUniformBuffer() {
+    if (!context_.device) return;
+    if (uniformMapped_ && uniformMemory_) {
+        vkUnmapMemory(context_.device, uniformMemory_);
+    }
+    if (uniformBuffer_) {
+        vkDestroyBuffer(context_.device, uniformBuffer_, nullptr);
+    }
+    if (uniformMemory_) {
+        vkFreeMemory(context_.device, uniformMemory_, nullptr);
+    }
+    uniformMapped_ = nullptr;
+    uniformBuffer_ = VK_NULL_HANDLE;
+    uniformMemory_ = VK_NULL_HANDLE;
+    uniformAllocationSize_ = 0;
+}
+
 void VulkanComputeLayer::destroyPipeline() {
     if (!context_.device) return;
     if (pipeline_) vkDestroyPipeline(context_.device, pipeline_, nullptr);
@@ -199,91 +403,196 @@ void VulkanComputeLayer::destroyPipeline() {
         vkDestroyDescriptorSetLayout(
             context_.device, descriptorSetLayout_, nullptr);
     }
+    if (linearSampler_) {
+        vkDestroySampler(context_.device, linearSampler_, nullptr);
+    }
+    if (nearestSampler_) {
+        vkDestroySampler(context_.device, nearestSampler_, nullptr);
+    }
+    destroyUniformBuffer();
     pipeline_ = VK_NULL_HANDLE;
     pipelineLayout_ = VK_NULL_HANDLE;
     descriptorPool_ = VK_NULL_HANDLE;
     descriptorSetLayout_ = VK_NULL_HANDLE;
     descriptorSet_ = VK_NULL_HANDLE;
+    linearSampler_ = VK_NULL_HANDLE;
+    nearestSampler_ = VK_NULL_HANDLE;
 }
 
-void VulkanComputeLayer::updateDescriptors(
-    const VulkanImageRef& source, const VulkanImageRef& destination) {
-    const std::array<VkDescriptorImageInfo, 2> images{{
-        {VK_NULL_HANDLE, source.view, VK_IMAGE_LAYOUT_GENERAL},
-        {VK_NULL_HANDLE, destination.view, VK_IMAGE_LAYOUT_GENERAL},
-    }};
-    std::array<VkWriteDescriptorSet, 2> writes{};
-    for (uint32_t i = 0; i < writes.size(); ++i) {
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = descriptorSet_;
-        writes[i].dstBinding = i;
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[i].pImageInfo = &images[i];
+VkSampler VulkanComputeLayer::samplerFor(
+    VulkanInputBinding binding) const {
+    return binding == VulkanInputBinding::sampledNearest
+        ? nearestSampler_ : linearSampler_;
+}
+
+bool VulkanComputeLayer::updateDescriptors() {
+    const size_t imageCount =
+        static_cast<size_t>(inputCount() + outputCount());
+    const size_t writeCount = imageCount + (uniformData_.empty() ? 0u : 1u);
+    std::vector<VkDescriptorImageInfo> imageInfos(imageCount);
+    std::vector<VkWriteDescriptorSet> writes(writeCount);
+    size_t imageIndex = 0;
+    size_t writeIndex = 0;
+    uint32_t bindingIndex = 0;
+
+    for (int32_t index = 0; index < inputCount(); ++index) {
+        const VulkanImageRef& source = input(index);
+        const VulkanInputBinding binding = inputBinding(index);
+        const bool sampled = isSampled(binding);
+        const VkImageUsageFlagBits requiredUsage = sampled
+            ? VK_IMAGE_USAGE_SAMPLED_BIT : VK_IMAGE_USAGE_STORAGE_BIT;
+        if (!source.view || !(source.usage & requiredUsage)) {
+            LOG_ERROR("FilterGraph: input {} is missing required Vulkan usage",
+                      index);
+            return false;
+        }
+        VkDescriptorImageInfo& imageInfo = imageInfos[imageIndex++];
+        imageInfo.sampler = sampled ? samplerFor(binding) : VK_NULL_HANDLE;
+        imageInfo.imageView = source.view;
+        imageInfo.imageLayout = sampled
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_GENERAL;
+
+        VkWriteDescriptorSet& write = writes[writeIndex++];
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptorSet_;
+        write.dstBinding = bindingIndex++;
+        write.descriptorCount = 1;
+        write.descriptorType = sampled
+            ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+            : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        write.pImageInfo = &imageInfo;
     }
+
+    for (int32_t index = 0; index < outputCount(); ++index) {
+        const VulkanImageRef destination =
+            outputImages_[static_cast<size_t>(index)]->ref();
+        VkDescriptorImageInfo& imageInfo = imageInfos[imageIndex++];
+        imageInfo.imageView = destination.view;
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        VkWriteDescriptorSet& write = writes[writeIndex++];
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptorSet_;
+        write.dstBinding = bindingIndex++;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        write.pImageInfo = &imageInfo;
+    }
+
+    VkDescriptorBufferInfo uniformInfo{};
+    if (!uniformData_.empty()) {
+        uniformInfo.buffer = uniformBuffer_;
+        uniformInfo.range = uniformAllocationSize_;
+        VkWriteDescriptorSet& write = writes[writeIndex];
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptorSet_;
+        write.dstBinding = bindingIndex;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        write.pBufferInfo = &uniformInfo;
+    }
+
     vkUpdateDescriptorSets(context_.device,
                            static_cast<uint32_t>(writes.size()), writes.data(),
                            0, nullptr);
+    return true;
+}
+
+bool VulkanComputeLayer::uploadUniformData() {
+    std::lock_guard<std::mutex> lock(uniformMutex_);
+    if (uniformData_.empty()) return true;
+    if (!uniformMapped_) return false;
+    if (uniformDirty_) {
+        std::memcpy(uniformMapped_, uniformData_.data(), uniformData_.size());
+        uniformDirty_ = false;
+    }
+    return true;
 }
 
 void VulkanComputeLayer::record(
     VkCommandBuffer commandBuffer, const FrameContext&) {
-    const VulkanImageRef& source = input(0);
-    if (!source.valid() || !source.view || !outputImage_ || !pipeline_) {
-        LOG_ERROR("FilterGraph: compute layer requires valid Vulkan image views");
-        return;
+    if (!pipeline_ || outputImages_.empty() || !uploadUniformData()) return;
+
+    std::vector<VkImageLayout> originalLayouts(
+        static_cast<size_t>(inputCount()));
+    for (int32_t index = 0; index < inputCount(); ++index) {
+        const VulkanImageRef& source = input(index);
+        if (!source.valid() || !source.view
+            || source.contract != kWorkingImageContract) {
+            LOG_ERROR("FilterGraph: compute input {} violates the working contract",
+                      index);
+            return;
+        }
+        originalLayouts[static_cast<size_t>(index)] = source.layout;
+        const VkImageLayout targetLayout = isSampled(inputBinding(index))
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_GENERAL;
+        transitionImage(commandBuffer, source.image, source.layout, targetLayout,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                        VK_ACCESS_SHADER_READ_BIT);
     }
 
-    VulkanImageRef destination = outputImage_->ref();
-    if (!destination.valid() || !destination.view) return;
+    for (int32_t index = 0; index < outputCount(); ++index) {
+        VulkanImageResource& output =
+            *outputImages_[static_cast<size_t>(index)];
+        const VulkanImageRef destination = output.ref();
+        transitionImage(commandBuffer, destination.image, output.layout(),
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        output.layout() == VK_IMAGE_LAYOUT_UNDEFINED
+                            ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                            : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        output.layout() == VK_IMAGE_LAYOUT_UNDEFINED
+                            ? 0
+                            : VK_ACCESS_MEMORY_READ_BIT
+                                | VK_ACCESS_MEMORY_WRITE_BIT,
+                        VK_ACCESS_SHADER_WRITE_BIT);
+    }
 
-    transitionImage(commandBuffer, source.image, source.layout,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-                    VK_ACCESS_SHADER_READ_BIT);
-    transitionImage(commandBuffer, destination.image, destination.layout,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    destination.layout == VK_IMAGE_LAYOUT_UNDEFINED
-                        ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                        : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    destination.layout == VK_IMAGE_LAYOUT_UNDEFINED
-                        ? 0
-                        : VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-                    VK_ACCESS_SHADER_WRITE_BIT);
-
-    updateDescriptors(source, destination);
+    if (!updateDescriptors()) return;
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                             pipelineLayout_, 0, 1, &descriptorSet_, 0, nullptr);
-    vkCmdDispatch(commandBuffer, (source.extent.width + 15u) / 16u,
-                  (source.extent.height + 15u) / 16u, 1);
 
-    transitionImage(commandBuffer, source.image, VK_IMAGE_LAYOUT_GENERAL,
-                    source.layout,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                    VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT);
-    transitionImage(commandBuffer, destination.image, VK_IMAGE_LAYOUT_GENERAL,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                    VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT);
-    outputImage_->setLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    setOutput(0, outputImage_->ref());
-}
+    const VulkanImageRef dispatchImage = outputImages_[0]->ref();
+    const VkExtent3D group = workGroupSize();
+    if (group.width == 0 || group.height == 0 || group.depth == 0) {
+        LOG_ERROR("FilterGraph: compute work group size cannot be zero");
+        return;
+    }
+    vkCmdDispatch(commandBuffer,
+                  (dispatchImage.extent.width + group.width - 1) / group.width,
+                  (dispatchImage.extent.height + group.height - 1) / group.height,
+                  1);
 
-VulkanColorInvertLayer::VulkanColorInvertLayer()
-    : VulkanComputeLayer("VulkanColorInvert") {}
+    for (int32_t index = 0; index < inputCount(); ++index) {
+        const VulkanImageRef& source = input(index);
+        const VkImageLayout usedLayout = isSampled(inputBinding(index))
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_GENERAL;
+        transitionImage(commandBuffer, source.image, usedLayout,
+                        originalLayouts[static_cast<size_t>(index)],
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT);
+    }
 
-bool VulkanColorInvertLayer::supportsFormat(ImageType format) const {
-    return format == ImageType::rgba16f;
-}
-
-const char* VulkanColorInvertLayer::shaderPath() const {
-    return HEISENBERG_COLOR_INVERT_SHADER_PATH;
+    for (int32_t index = 0; index < outputCount(); ++index) {
+        VulkanImageResource& output =
+            *outputImages_[static_cast<size_t>(index)];
+        const VulkanImageRef destination = output.ref();
+        transitionImage(commandBuffer, destination.image,
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT);
+        output.setLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        setOutput(index, output.ref());
+    }
 }
 
 } // namespace heisenberg::filtergraph

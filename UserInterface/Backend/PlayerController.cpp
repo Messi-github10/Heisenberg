@@ -163,6 +163,9 @@ void PlayerController::initPipeline(VideoWidget* widget) {
     try {
         filterGraph_ = std::make_unique<filtergraph::VulkanFilterGraph>(
             graphContext);
+        filterGraph_->exposure()->updateParamet(-2.0f);
+        filterGraph_->blend()->updateParamet(0.5f);
+        filterGraph_->gaussianBlur()->updateParamet({12, 0.0f});
         previewer_->setFilterGraph(filterGraph_->graph(), filterGraph_->input(),
                                    filterGraph_->output());
     } catch (const std::exception& error) {

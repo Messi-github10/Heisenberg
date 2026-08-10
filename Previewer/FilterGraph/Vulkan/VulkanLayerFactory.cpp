@@ -1,6 +1,9 @@
 #include "VulkanLayerFactory.hpp"
 
-#include "VulkanComputeLayer.hpp"
+#include "Filters/VulkanBlendLayer.hpp"
+#include "Filters/VulkanColorInvertLayer.hpp"
+#include "Filters/VulkanExposureLayer.hpp"
+#include "Filters/VulkanGaussianBlurLayer.hpp"
 #include "VulkanNodes.hpp"
 #include "VulkanPipeGraph.hpp"
 
@@ -34,6 +37,18 @@ ILayer* VulkanLayerFactory::createPassthrough() {
 
 ILayer* VulkanLayerFactory::createColorInvert() {
     return createLayer<VulkanColorInvertLayer>();
+}
+
+ITLayer<float>* VulkanLayerFactory::createExposure() {
+    return createLayer<VulkanExposureLayer>();
+}
+
+ITLayer<float>* VulkanLayerFactory::createBlend() {
+    return createLayer<VulkanBlendLayer>();
+}
+
+ITLayer<GaussianBlurParamet>* VulkanLayerFactory::createGaussianBlur() {
+    return createLayer<VulkanGaussianBlurLayer>();
 }
 
 IPipeGraph* VulkanPipeGraphFactory::createGraph(

@@ -6,6 +6,8 @@
 
 namespace heisenberg::filtergraph {
 
+class VulkanGroupLayer;
+
 class VulkanLayer : public BaseLayer {
 public:
     VulkanLayer(std::string mark, int32_t inputCount, int32_t outputCount);
@@ -27,6 +29,12 @@ protected:
     void bypass();
 
 private:
+    friend class VulkanGroupLayer;
+
+    bool configureAsGroupPass(const std::vector<ImageFormat>& inputs) {
+        return configure(inputs);
+    }
+
     std::vector<VulkanImageRef> inputs_;
     std::vector<VulkanImageRef> outputs_;
 };
