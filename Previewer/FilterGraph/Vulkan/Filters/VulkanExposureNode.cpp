@@ -1,4 +1,4 @@
-#include "VulkanExposureLayer.hpp"
+#include "VulkanExposureNode.hpp"
 
 #ifndef HEISENBERG_EXPOSURE_SHADER_PATH
 #error HEISENBERG_EXPOSURE_SHADER_PATH must be defined by CMake
@@ -6,20 +6,20 @@
 
 namespace heisenberg::filtergraph {
 
-VulkanExposureLayer::VulkanExposureLayer()
-    : VulkanComputeLayer("VulkanExposure") {
+VulkanExposureNode::VulkanExposureNode()
+    : VulkanComputeNode("VulkanExposure") {
     paramet = 0.0f;
     oldParamet = paramet;
     setUniformBufferSize(sizeof(paramet));
     updateUniformData(paramet);
 }
 
-void VulkanExposureLayer::onUpdateParamet() {
+void VulkanExposureNode::onUpdateParamet() {
     if (paramet == oldParamet) return;
     updateUniformData(paramet);
 }
 
-const char* VulkanExposureLayer::shaderPath() const {
+const char* VulkanExposureNode::shaderPath() const {
     return HEISENBERG_EXPOSURE_SHADER_PATH;
 }
 

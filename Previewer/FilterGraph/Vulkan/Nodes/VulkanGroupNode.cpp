@@ -1,4 +1,4 @@
-#include "VulkanGroupLayer.hpp"
+#include "VulkanGroupNode.hpp"
 
 #include <Utiles/Logger.hpp>
 
@@ -7,29 +7,29 @@
 
 namespace heisenberg::filtergraph {
 
-VulkanGroupLayer::VulkanGroupLayer(std::string mark)
-    : VulkanLayer(std::move(mark), 1, 1) {}
+VulkanGroupNode::VulkanGroupNode(std::string mark)
+    : VulkanNode(std::move(mark), 1, 1) {}
 
-VulkanGroupLayer::~VulkanGroupLayer() = default;
+VulkanGroupNode::~VulkanGroupNode() = default;
 
-VulkanLayer* VulkanGroupLayer::addPass(
-    std::unique_ptr<VulkanLayer> pass) {
+VulkanNode* VulkanGroupNode::addPass(
+    std::unique_ptr<VulkanNode> pass) {
     if (!pass || pass->inputCount() != 1 || pass->outputCount() != 1) {
         throw std::invalid_argument(
-            "FilterGraph group passes must have one input and one output");
+            "FilterGraph group node passes must have one input and one output");
     }
-    VulkanLayer* result = pass.get();
+    VulkanNode* result = pass.get();
     passes_.push_back(std::move(pass));
     return result;
 }
 
-bool VulkanGroupLayer::configure(
+bool VulkanGroupNode::configure(
     const std::vector<ImageFormat>& inputs) {
     if (inputs.size() != 1 || passes_.empty()) return false;
 
     ImageFormat current = inputs[0];
     setInputFormat(0, current);
-    for (const std::unique_ptr<VulkanLayer>& pass : passes_) {
+    for (const std::unique_ptr<VulkanNode>& pass : passes_) {
         if (!pass->configureAsGroupPass({current})
             || pass->outputFormats().size() != 1) {
             return false;
@@ -40,18 +40,18 @@ bool VulkanGroupLayer::configure(
     return true;
 }
 
-bool VulkanGroupLayer::prepare(const VulkanGraphContext& context) {
-    for (const std::unique_ptr<VulkanLayer>& pass : passes_) {
+bool VulkanGroupNode::prepare(const VulkanGraphContext& context) {
+    for (const std::unique_ptr<VulkanNode>& pass : passes_) {
         if (!pass->prepare(context)) return false;
     }
     return true;
 }
 
-void VulkanGroupLayer::record(
+void VulkanGroupNode::record(
     VkCommandBuffer commandBuffer, const FrameContext& frame) {
     setOutput(0, {});
     VulkanImageRef current = input(0);
-    for (const std::unique_ptr<VulkanLayer>& pass : passes_) {
+    for (const std::unique_ptr<VulkanNode>& pass : passes_) {
         pass->bindInputs({current});
         if (pass->beginFrame(frame)) {
             pass->record(commandBuffer, frame);

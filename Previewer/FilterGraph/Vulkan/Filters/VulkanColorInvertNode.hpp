@@ -1,12 +1,12 @@
 #pragma once
 
-#include "../VulkanComputeLayer.hpp"
+#include "VulkanComputeNode.hpp"
 
 namespace heisenberg::filtergraph {
 
-class VulkanColorInvertLayer final : public VulkanComputeLayer {
+class VulkanColorInvertNode final : public VulkanComputeNode {
 public:
-    VulkanColorInvertLayer();
+    VulkanColorInvertNode();
 
 protected:
     const char* shaderPath() const override;

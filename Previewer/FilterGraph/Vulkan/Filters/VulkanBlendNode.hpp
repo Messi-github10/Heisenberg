@@ -1,14 +1,14 @@
 #pragma once
 
-#include "../VulkanComputeLayer.hpp"
+#include "VulkanComputeNode.hpp"
 
 namespace heisenberg::filtergraph {
 
 /// Linear crossfade between two images with identical working formats.
-class VulkanBlendLayer final : public VulkanComputeLayer,
+class VulkanBlendNode final : public VulkanComputeNode,
                                public ITLayer<float> {
 public:
-    VulkanBlendLayer();
+    VulkanBlendNode();
 
     IBaseLayer* getLayer() override {
         return static_cast<BaseLayer*>(this);

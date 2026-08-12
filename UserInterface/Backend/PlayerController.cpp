@@ -9,9 +9,12 @@
 #include <Renderer/GpuContext.hpp>
 #include <Renderer/VulkanContext.hpp>
 #include <Renderer/SwapChain.hpp>
-#include <FilterGraph/Vulkan/VulkanFilterGraph.hpp>
+#include <FilterGraph/Vulkan/Graph/VulkanFilterGraph.hpp>
 #include <MainWidget/VideoWidget.hpp>
 #include <Utiles/Logger.hpp>
+
+#include <stdexcept>
+#include <string>
 
 extern "C" {
 #include <libavutil/frame.h>
@@ -161,11 +164,16 @@ void PlayerController::initPipeline(VideoWidget* widget) {
     graphContext.queue = static_cast<VkQueue>(vkQueue);
     graphContext.queueFamilyIndex = qf;
     try {
+        filtergraph::VulkanGraphDocument graphDocument;
+        std::string graphError;
+        if (!graphDocument.loadFromJsonFile(
+                filtergraph::VulkanGraphDocument::testGraphPath(),
+                &graphError)) {
+            throw std::runtime_error(
+                "Failed to load test filter graph: " + graphError);
+        }
         filterGraph_ = std::make_unique<filtergraph::VulkanFilterGraph>(
-            graphContext);
-        filterGraph_->exposure()->updateParamet(-2.0f);
-        filterGraph_->blend()->updateParamet(0.5f);
-        filterGraph_->gaussianBlur()->updateParamet({12, 0.0f});
+            graphContext, graphDocument);
         previewer_->setFilterGraph(filterGraph_->graph(), filterGraph_->input(),
                                    filterGraph_->output());
     } catch (const std::exception& error) {

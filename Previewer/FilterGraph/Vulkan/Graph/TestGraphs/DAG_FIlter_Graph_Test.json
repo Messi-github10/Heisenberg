@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "input",
+      "position": { "x": 0.0, "y": 120.0 }
+    },
+    {
+      "id": 2,
+      "type": "output",
+      "position": { "x": 720.0, "y": 120.0 }
+    },
+    {
+      "id": 3,
+      "type": "exposure",
+      "parameters": { "exposure": -2.0 },
+      "position": { "x": 220.0, "y": 40.0 }
+    },
+    {
+      "id": 4,
+      "type": "gaussian_blur",
+      "parameters": { "blurRadius": 12, "sigma": 0.0 },
+      "position": { "x": 220.0, "y": 200.0 }
+    },
+    {
+      "id": 5,
+      "type": "blend",
+      "parameters": { "factor": 0.5 },
+      "position": { "x": 480.0, "y": 120.0 }
+    },
+    {
+      "id": 6,
+      "type": "color_invert",
+      "position": { "x": 680.0, "y": 120.0 }
+    }
+  ],
+  "edges": [
+    { "fromNode": 1, "fromPin": 0, "toNode": 3, "toPin": 0 },
+    { "fromNode": 1, "fromPin": 0, "toNode": 4, "toPin": 0 },
+    { "fromNode": 3, "fromPin": 0, "toNode": 5, "toPin": 0 },
+    { "fromNode": 4, "fromPin": 0, "toNode": 5, "toPin": 1 },
+    { "fromNode": 5, "fromPin": 0, "toNode": 6, "toPin": 0 },
+    { "fromNode": 6, "fromPin": 0, "toNode": 2, "toPin": 0 }
+  ]
+}

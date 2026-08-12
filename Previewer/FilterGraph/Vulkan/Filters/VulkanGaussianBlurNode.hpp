@@ -1,17 +1,17 @@
 #pragma once
 
-#include "../VulkanGroupLayer.hpp"
+#include "VulkanGroupNode.hpp"
 
 namespace heisenberg::filtergraph {
 
-class VulkanGaussianBlurPassLayer;
+class VulkanGaussianBlurPassNode;
 
 /// Separable Gaussian blur implemented as horizontal and vertical passes.
-class VulkanGaussianBlurLayer final : public VulkanGroupLayer,
+class VulkanGaussianBlurNode final : public VulkanGroupNode,
                                       public ITLayer<GaussianBlurParamet> {
 public:
-    VulkanGaussianBlurLayer();
-    ~VulkanGaussianBlurLayer() override;
+    VulkanGaussianBlurNode();
+    ~VulkanGaussianBlurNode() override;
 
     IBaseLayer* getLayer() override {
         return static_cast<BaseLayer*>(this);
@@ -23,8 +23,8 @@ protected:
 private:
     void updatePassParameters();
 
-    VulkanGaussianBlurPassLayer* horizontalPass_ = nullptr;
-    VulkanGaussianBlurPassLayer* verticalPass_ = nullptr;
+    VulkanGaussianBlurPassNode* horizontalPass_ = nullptr;
+    VulkanGaussianBlurPassNode* verticalPass_ = nullptr;
 };
 
 } // namespace heisenberg::filtergraph

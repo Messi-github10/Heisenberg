@@ -1,6 +1,6 @@
 #include "VulkanPipeGraph.hpp"
 
-#include "VulkanLayer.hpp"
+#include "VulkanNode.hpp"
 
 #include <FilterGraph/Core/BaseLayer.hpp>
 #include <Utiles/Logger.hpp>
@@ -104,9 +104,9 @@ bool VulkanPipeGraph::onGraphRebuilt() {
     // until libplacebo has returned every borrowed graph output.
     vkQueueWaitIdle(context_.queue);
     for (BaseLayer* base : nodes()) {
-        auto* layer = dynamic_cast<VulkanLayer*>(base);
+        auto* layer = dynamic_cast<VulkanNode*>(base);
         if (!layer || !layer->prepare(context_)) {
-            LOG_ERROR("FilterGraph: failed to prepare Vulkan layer '{}'",
+            LOG_ERROR("FilterGraph: failed to prepare Vulkan node '{}'",
                       base ? base->getMark() : "<null>");
             return false;
         }
@@ -140,7 +140,7 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
 
     std::vector<VulkanSyncPoint> waits;
     for (BaseLayer* base : nodes()) {
-        auto* layer = static_cast<VulkanLayer*>(base);
+        auto* layer = static_cast<VulkanNode*>(base);
         appendWait(waits, layer->takeConsumerDone());
     }
 
@@ -154,14 +154,14 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
     }
 
     for (int32_t nodeIndex : executionOrder()) {
-        auto* layer = static_cast<VulkanLayer*>(
+        auto* layer = static_cast<VulkanNode*>(
             nodes()[static_cast<size_t>(nodeIndex)]);
         std::vector<VulkanImageRef> inputs;
         inputs.reserve(static_cast<size_t>(layer->inputCount()));
         for (int32_t pin = 0; pin < layer->inputCount(); ++pin) {
             const GraphEdge* edge = inputEdge(nodeIndex, pin);
             if (!edge) return false;
-            auto* source = static_cast<VulkanLayer*>(
+            auto* source = static_cast<VulkanNode*>(
                 nodes()[static_cast<size_t>(edge->fromNode)]);
             const VulkanImageRef& sourceImage = source->output(edge->fromPin);
             if (!sourceImage.valid()) return false;
@@ -222,7 +222,7 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
 
     const VulkanSyncPoint completion{timeline_, signalValue};
     for (BaseLayer* base : nodes()) {
-        static_cast<VulkanLayer*>(base)->setCompletion(completion);
+        static_cast<VulkanNode*>(base)->setCompletion(completion);
     }
     return true;
 }

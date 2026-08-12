@@ -1,4 +1,4 @@
-#include "VulkanColorInvertLayer.hpp"
+#include "VulkanColorInvertNode.hpp"
 
 #ifndef HEISENBERG_COLOR_INVERT_SHADER_PATH
 #error HEISENBERG_COLOR_INVERT_SHADER_PATH must be defined by CMake
@@ -6,10 +6,10 @@
 
 namespace heisenberg::filtergraph {
 
-VulkanColorInvertLayer::VulkanColorInvertLayer()
-    : VulkanComputeLayer("VulkanColorInvert") {}
+VulkanColorInvertNode::VulkanColorInvertNode()
+    : VulkanComputeNode("VulkanColorInvert") {}
 
-const char* VulkanColorInvertLayer::shaderPath() const {
+const char* VulkanColorInvertNode::shaderPath() const {
     return HEISENBERG_COLOR_INVERT_SHADER_PATH;
 }
 

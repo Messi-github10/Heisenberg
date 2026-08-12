@@ -17,6 +17,8 @@ set(FILTER_SHADER_SOURCE_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/FilterGraph/Vulkan/Shaders")
 set(FILTER_SHADER_BINARY_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/FilterGraph/Vulkan/Shaders")
+set(TEST_FILTER_GRAPH
+    "${CMAKE_CURRENT_SOURCE_DIR}/FilterGraph/Vulkan/Graph/TestGraphs/DAG_FIlter_Graph_Test.json")
 
 function(add_filter_shader output_variable source_name)
     set(shader_source "${FILTER_SHADER_SOURCE_DIR}/${source_name}")
@@ -58,6 +60,12 @@ set_target_properties(HeisenbergPreviewer PROPERTIES
 
 target_include_directories(HeisenbergPreviewer PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan
+    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/Filters
+    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/Graph
+    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/Nodes
+    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/IOLayer
+    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/Resources
 )
 
 target_link_libraries(HeisenbergPreviewer PUBLIC
@@ -83,6 +91,7 @@ target_compile_definitions(HeisenbergPreviewer PRIVATE
     HEISENBERG_EXPOSURE_SHADER_PATH="${EXPOSURE_SHADER}"
     HEISENBERG_BLEND_SHADER_PATH="${BLEND_SHADER}"
     HEISENBERG_GAUSSIAN_BLUR_SHADER_PATH="${GAUSSIAN_BLUR_SHADER}"
+    HEISENBERG_TEST_FILTER_GRAPH_PATH="${TEST_FILTER_GRAPH}"
 )
 
 if(MSVC)

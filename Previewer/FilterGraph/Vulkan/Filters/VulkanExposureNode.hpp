@@ -1,13 +1,13 @@
 #pragma once
 
-#include "../VulkanComputeLayer.hpp"
+#include "VulkanComputeNode.hpp"
 
 namespace heisenberg::filtergraph {
 
-class VulkanExposureLayer final : public VulkanComputeLayer,
+class VulkanExposureNode final : public VulkanComputeNode,
                                   public ITLayer<float> {
 public:
-    VulkanExposureLayer();
+    VulkanExposureNode();
 
     IBaseLayer* getLayer() override {
         return static_cast<BaseLayer*>(this);

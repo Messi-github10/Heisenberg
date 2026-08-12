@@ -1,4 +1,4 @@
-#include "VulkanComputeLayer.hpp"
+#include "VulkanComputeNode.hpp"
 
 #include <Utiles/Logger.hpp>
 #include <volk.h>
@@ -73,24 +73,24 @@ bool isSampled(VulkanInputBinding binding) {
 
 } // namespace
 
-VulkanComputeLayer::VulkanComputeLayer(
+VulkanComputeNode::VulkanComputeNode(
     std::string mark, int32_t inputCount, int32_t outputCount)
-    : VulkanLayer(std::move(mark), inputCount, outputCount) {
+    : VulkanNode(std::move(mark), inputCount, outputCount) {
     if (inputCount < 1 || outputCount < 1) {
         throw std::invalid_argument(
-            "FilterGraph compute layers require at least one input and output");
+            "FilterGraph compute nodes require at least one input and output");
     }
 }
 
-VulkanComputeLayer::~VulkanComputeLayer() {
+VulkanComputeNode::~VulkanComputeNode() {
     destroyPipeline();
 }
 
-bool VulkanComputeLayer::supportsFormat(ImageType format) const {
+bool VulkanComputeNode::supportsFormat(ImageType format) const {
     return format == kWorkingImageContract.imageType;
 }
 
-bool VulkanComputeLayer::configure(
+bool VulkanComputeNode::configure(
     const std::vector<ImageFormat>& inputs) {
     if (inputs.size() != static_cast<size_t>(inputCount())) return false;
     for (int32_t index = 0; index < inputCount(); ++index) {
@@ -104,7 +104,7 @@ bool VulkanComputeLayer::configure(
     return configureOutputs(inputs);
 }
 
-bool VulkanComputeLayer::configureOutputs(
+bool VulkanComputeNode::configureOutputs(
     const std::vector<ImageFormat>& inputs) {
     if (inputs.empty()) return false;
     for (int32_t index = 0; index < outputCount(); ++index) {
@@ -113,15 +113,15 @@ bool VulkanComputeLayer::configureOutputs(
     return true;
 }
 
-VulkanInputBinding VulkanComputeLayer::inputBinding(int32_t) const {
+VulkanInputBinding VulkanComputeNode::inputBinding(int32_t) const {
     return VulkanInputBinding::storageImage;
 }
 
-VkExtent3D VulkanComputeLayer::workGroupSize() const {
+VkExtent3D VulkanComputeNode::workGroupSize() const {
     return {16, 16, 1};
 }
 
-void VulkanComputeLayer::setUniformBufferSize(size_t size) {
+void VulkanComputeNode::setUniformBufferSize(size_t size) {
     if (context_.device) {
         throw std::logic_error(
             "FilterGraph UBO size must be set before graph preparation");
@@ -131,7 +131,7 @@ void VulkanComputeLayer::setUniformBufferSize(size_t size) {
     uniformDirty_ = size > 0;
 }
 
-void VulkanComputeLayer::updateUniformData(const void* data, size_t size) {
+void VulkanComputeNode::updateUniformData(const void* data, size_t size) {
     std::lock_guard<std::mutex> lock(uniformMutex_);
     if (size != uniformData_.size() || (size > 0 && !data)) {
         throw std::invalid_argument("FilterGraph UBO update size mismatch");
@@ -140,7 +140,7 @@ void VulkanComputeLayer::updateUniformData(const void* data, size_t size) {
     uniformDirty_ = size > 0;
 }
 
-bool VulkanComputeLayer::prepare(const VulkanGraphContext& context) {
+bool VulkanComputeNode::prepare(const VulkanGraphContext& context) {
     if (!context.device || !context.physicalDevice) return false;
     if (context_.device && context_.device != context.device) {
         destroyPipeline();
@@ -175,7 +175,7 @@ bool VulkanComputeLayer::prepare(const VulkanGraphContext& context) {
     return pipeline_ || initializePipeline();
 }
 
-uint32_t VulkanComputeLayer::findMemoryType(
+uint32_t VulkanComputeNode::findMemoryType(
     uint32_t bits, VkMemoryPropertyFlags flags) const {
     VkPhysicalDeviceMemoryProperties properties{};
     vkGetPhysicalDeviceMemoryProperties(context_.physicalDevice, &properties);
@@ -188,7 +188,7 @@ uint32_t VulkanComputeLayer::findMemoryType(
     return std::numeric_limits<uint32_t>::max();
 }
 
-bool VulkanComputeLayer::initializeUniformBuffer() {
+bool VulkanComputeNode::initializeUniformBuffer() {
     if (uniformData_.empty()) return true;
 
     uniformAllocationSize_ = alignedUniformSize(uniformData_.size());
@@ -224,7 +224,7 @@ bool VulkanComputeLayer::initializeUniformBuffer() {
     return uploadUniformData();
 }
 
-bool VulkanComputeLayer::initializeSamplers() {
+bool VulkanComputeNode::initializeSamplers() {
     bool needsLinear = false;
     bool needsNearest = false;
     for (int32_t index = 0; index < inputCount(); ++index) {
@@ -255,7 +255,7 @@ bool VulkanComputeLayer::initializeSamplers() {
     return true;
 }
 
-bool VulkanComputeLayer::initializePipeline() {
+bool VulkanComputeNode::initializePipeline() {
     if (!initializeUniformBuffer() || !initializeSamplers()) {
         destroyPipeline();
         return false;
@@ -373,7 +373,7 @@ bool VulkanComputeLayer::initializePipeline() {
     return true;
 }
 
-void VulkanComputeLayer::destroyUniformBuffer() {
+void VulkanComputeNode::destroyUniformBuffer() {
     if (!context_.device) return;
     if (uniformMapped_ && uniformMemory_) {
         vkUnmapMemory(context_.device, uniformMemory_);
@@ -390,7 +390,7 @@ void VulkanComputeLayer::destroyUniformBuffer() {
     uniformAllocationSize_ = 0;
 }
 
-void VulkanComputeLayer::destroyPipeline() {
+void VulkanComputeNode::destroyPipeline() {
     if (!context_.device) return;
     if (pipeline_) vkDestroyPipeline(context_.device, pipeline_, nullptr);
     if (pipelineLayout_) {
@@ -419,13 +419,13 @@ void VulkanComputeLayer::destroyPipeline() {
     nearestSampler_ = VK_NULL_HANDLE;
 }
 
-VkSampler VulkanComputeLayer::samplerFor(
+VkSampler VulkanComputeNode::samplerFor(
     VulkanInputBinding binding) const {
     return binding == VulkanInputBinding::sampledNearest
         ? nearestSampler_ : linearSampler_;
 }
 
-bool VulkanComputeLayer::updateDescriptors() {
+bool VulkanComputeNode::updateDescriptors() {
     const size_t imageCount =
         static_cast<size_t>(inputCount() + outputCount());
     const size_t writeCount = imageCount + (uniformData_.empty() ? 0u : 1u);
@@ -499,7 +499,7 @@ bool VulkanComputeLayer::updateDescriptors() {
     return true;
 }
 
-bool VulkanComputeLayer::uploadUniformData() {
+bool VulkanComputeNode::uploadUniformData() {
     std::lock_guard<std::mutex> lock(uniformMutex_);
     if (uniformData_.empty()) return true;
     if (!uniformMapped_) return false;
@@ -510,7 +510,7 @@ bool VulkanComputeLayer::uploadUniformData() {
     return true;
 }
 
-void VulkanComputeLayer::record(
+void VulkanComputeNode::record(
     VkCommandBuffer commandBuffer, const FrameContext&) {
     if (!pipeline_ || outputImages_.empty() || !uploadUniformData()) return;
 

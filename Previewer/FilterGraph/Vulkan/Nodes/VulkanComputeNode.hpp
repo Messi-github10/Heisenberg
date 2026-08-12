@@ -1,7 +1,7 @@
 #pragma once
 
 #include "VulkanImageResource.hpp"
-#include "VulkanLayer.hpp"
+#include "VulkanNode.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -20,22 +20,22 @@ enum class VulkanInputBinding : uint8_t {
 
 /// Convention-based Vulkan compute node inspired by AOCE's VkLayer.
 /// Descriptor bindings are ordered as inputs, outputs, then an optional UBO.
-class VulkanComputeLayer : public VulkanLayer {
+class VulkanComputeNode : public VulkanNode {
 public:
-    ~VulkanComputeLayer() override;
+    ~VulkanComputeNode() override;
 
     bool prepare(const VulkanGraphContext& context) override;
     void record(VkCommandBuffer commandBuffer,
                 const FrameContext& frame) override;
 
 protected:
-    explicit VulkanComputeLayer(std::string mark,
-                                int32_t inputCount = 1,
-                                int32_t outputCount = 1);
+    explicit VulkanComputeNode(std::string mark,
+                              int32_t inputCount = 1,
+                              int32_t outputCount = 1);
 
     bool configure(const std::vector<ImageFormat>& inputs) override;
 
-    /// Set once while constructing the layer. A zero size disables the UBO.
+    /// Set once while constructing the node. A zero size disables the UBO.
     void setUniformBufferSize(size_t size);
     void updateUniformData(const void* data, size_t size);
 

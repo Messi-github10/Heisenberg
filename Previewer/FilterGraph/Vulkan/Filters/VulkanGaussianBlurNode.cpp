@@ -1,6 +1,6 @@
-#include "VulkanGaussianBlurLayer.hpp"
+#include "VulkanGaussianBlurNode.hpp"
 
-#include "../VulkanComputeLayer.hpp"
+#include "VulkanComputeNode.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -33,11 +33,11 @@ float automaticSigma(int32_t radius) {
 
 } // namespace
 
-class VulkanGaussianBlurPassLayer final : public VulkanComputeLayer {
+class VulkanGaussianBlurPassNode final : public VulkanComputeNode {
 public:
-    VulkanGaussianBlurPassLayer(
+    VulkanGaussianBlurPassNode(
         std::string mark, int32_t directionX, int32_t directionY)
-        : VulkanComputeLayer(std::move(mark)) {
+        : VulkanComputeNode(std::move(mark)) {
         uniform_.directionX = directionX;
         uniform_.directionY = directionY;
         setUniformBufferSize(sizeof(uniform_));
@@ -63,14 +63,14 @@ private:
     GaussianBlurPassUniform uniform_ = {};
 };
 
-VulkanGaussianBlurLayer::VulkanGaussianBlurLayer()
-    : VulkanGroupLayer("VulkanGaussianBlur") {
-    auto horizontal = std::make_unique<VulkanGaussianBlurPassLayer>(
+VulkanGaussianBlurNode::VulkanGaussianBlurNode()
+    : VulkanGroupNode("VulkanGaussianBlur") {
+    auto horizontal = std::make_unique<VulkanGaussianBlurPassNode>(
         "VulkanGaussianBlurHorizontal", 1, 0);
     horizontalPass_ = horizontal.get();
     addPass(std::move(horizontal));
 
-    auto vertical = std::make_unique<VulkanGaussianBlurPassLayer>(
+    auto vertical = std::make_unique<VulkanGaussianBlurPassNode>(
         "VulkanGaussianBlurVertical", 0, 1);
     verticalPass_ = vertical.get();
     addPass(std::move(vertical));
@@ -80,16 +80,16 @@ VulkanGaussianBlurLayer::VulkanGaussianBlurLayer()
     updatePassParameters();
 }
 
-VulkanGaussianBlurLayer::~VulkanGaussianBlurLayer() = default;
+VulkanGaussianBlurNode::~VulkanGaussianBlurNode() = default;
 
-void VulkanGaussianBlurLayer::onUpdateParamet() {
+void VulkanGaussianBlurNode::onUpdateParamet() {
     if (paramet == oldParamet) return;
     paramet.blurRadius = std::clamp(
         paramet.blurRadius, 0, kMaximumBlurRadius);
     updatePassParameters();
 }
 
-void VulkanGaussianBlurLayer::updatePassParameters() {
+void VulkanGaussianBlurNode::updatePassParameters() {
     const float sigma = paramet.sigma > 0.0f
         ? paramet.sigma : automaticSigma(paramet.blurRadius);
     horizontalPass_->updateBlur(paramet.blurRadius, sigma);

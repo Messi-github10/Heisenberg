@@ -1,15 +1,12 @@
 #pragma once
 
-#include "VulkanImageResource.hpp"
-#include "VulkanLayer.hpp"
+#include "VulkanNode.hpp"
 
 #include <FilterGraph/Interface/ILayerFactory.hpp>
 
-#include <memory>
-
 namespace heisenberg::filtergraph {
 
-class VulkanInputLayer final : public VulkanLayer, public IInputLayer {
+class VulkanInputLayer final : public VulkanNode, public IInputLayer {
 public:
     VulkanInputLayer();
 
@@ -35,7 +32,7 @@ private:
     VulkanImageRef externalImage_ = {};
 };
 
-class VulkanOutputLayer final : public VulkanLayer, public IOutputLayer {
+class VulkanOutputLayer final : public VulkanNode, public IOutputLayer {
 public:
     VulkanOutputLayer();
 
@@ -57,21 +54,6 @@ protected:
 private:
     IOutputLayerObserver* observer_ = nullptr;
     VulkanSyncPoint consumerDone_ = {};
-};
-
-class VulkanPassthroughLayer final : public VulkanLayer {
-public:
-    VulkanPassthroughLayer();
-
-    bool prepare(const VulkanGraphContext& context) override;
-    void record(VkCommandBuffer commandBuffer,
-                const FrameContext& frame) override;
-
-protected:
-    bool configure(const std::vector<ImageFormat>& inputs) override;
-
-private:
-    std::unique_ptr<VulkanImageResource> outputImage_;
 };
 
 } // namespace heisenberg::filtergraph

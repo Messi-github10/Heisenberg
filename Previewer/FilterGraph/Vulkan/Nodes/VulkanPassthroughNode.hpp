@@ -1,29 +1,25 @@
 #pragma once
 
-#include "VulkanLayer.hpp"
+#include "VulkanImageResource.hpp"
+#include "VulkanNode.hpp"
 
 #include <memory>
-#include <vector>
 
 namespace heisenberg::filtergraph {
 
-/// A one-input, one-output layer composed of sequential internal Vulkan passes.
-class VulkanGroupLayer : public VulkanLayer {
+class VulkanPassthroughNode final : public VulkanNode {
 public:
-    ~VulkanGroupLayer() override;
+    VulkanPassthroughNode();
 
     bool prepare(const VulkanGraphContext& context) override;
     void record(VkCommandBuffer commandBuffer,
                 const FrameContext& frame) override;
 
 protected:
-    explicit VulkanGroupLayer(std::string mark);
-
-    VulkanLayer* addPass(std::unique_ptr<VulkanLayer> pass);
     bool configure(const std::vector<ImageFormat>& inputs) override;
 
 private:
-    std::vector<std::unique_ptr<VulkanLayer>> passes_;
+    std::unique_ptr<VulkanImageResource> outputImage_;
 };
 
 } // namespace heisenberg::filtergraph

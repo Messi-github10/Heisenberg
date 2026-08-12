@@ -1,4 +1,4 @@
-#include "VulkanBlendLayer.hpp"
+#include "VulkanBlendNode.hpp"
 
 #ifndef HEISENBERG_BLEND_SHADER_PATH
 #error HEISENBERG_BLEND_SHADER_PATH must be defined by CMake
@@ -6,26 +6,26 @@
 
 namespace heisenberg::filtergraph {
 
-VulkanBlendLayer::VulkanBlendLayer()
-    : VulkanComputeLayer("VulkanBlend", 2, 1) {
+VulkanBlendNode::VulkanBlendNode()
+    : VulkanComputeNode("VulkanBlend", 2, 1) {
     paramet = 0.5f;
     oldParamet = paramet;
     setUniformBufferSize(sizeof(paramet));
     updateUniformData(paramet);
 }
 
-bool VulkanBlendLayer::configureOutputs(
+bool VulkanBlendNode::configureOutputs(
     const std::vector<ImageFormat>& inputs) {
     if (inputs.size() != 2 || inputs[0] != inputs[1]) return false;
-    return VulkanComputeLayer::configureOutputs(inputs);
+    return VulkanComputeNode::configureOutputs(inputs);
 }
 
-void VulkanBlendLayer::onUpdateParamet() {
+void VulkanBlendNode::onUpdateParamet() {
     if (paramet == oldParamet) return;
     updateUniformData(paramet);
 }
 
-const char* VulkanBlendLayer::shaderPath() const {
+const char* VulkanBlendNode::shaderPath() const {
     return HEISENBERG_BLEND_SHADER_PATH;
 }
 
