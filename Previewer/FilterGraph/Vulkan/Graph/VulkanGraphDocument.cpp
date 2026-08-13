@@ -34,6 +34,9 @@ PinCounts pinCounts(VulkanGraphNodeType type) {
         case VulkanGraphNodeType::colorInvert:
         case VulkanGraphNodeType::exposure:
         case VulkanGraphNodeType::gaussianBlur:
+        case VulkanGraphNodeType::resize:
+        case VulkanGraphNodeType::lut:
+        case VulkanGraphNodeType::histogram:
             return {1, 1};
     }
     return {};
@@ -44,6 +47,8 @@ bool parameterMatches(const VulkanGraphNodeDesc& node) {
         case VulkanGraphNodeType::input:
         case VulkanGraphNodeType::output:
         case VulkanGraphNodeType::colorInvert:
+        case VulkanGraphNodeType::lut:
+        case VulkanGraphNodeType::histogram:
             return std::holds_alternative<std::monostate>(node.parameter);
         case VulkanGraphNodeType::exposure: {
             const auto* parameter = std::get_if<ExposureParamet>(&node.parameter);
@@ -62,6 +67,11 @@ bool parameterMatches(const VulkanGraphNodeDesc& node) {
                 && std::isfinite(parameter->sigma)
                 && parameter->sigma >= 0.0f;
         }
+        case VulkanGraphNodeType::resize: {
+            const auto* parameter = std::get_if<ResizeParams>(&node.parameter);
+            return parameter && parameter->width > 0 && parameter->height > 0
+                && parameter->width <= 16384 && parameter->height <= 16384;
+        }
     }
     return false;
 }
@@ -71,9 +81,12 @@ VulkanGraphParameter defaultParameter(VulkanGraphNodeType type) {
         case VulkanGraphNodeType::exposure: return ExposureParamet{};
         case VulkanGraphNodeType::blend: return BlendParamet{};
         case VulkanGraphNodeType::gaussianBlur: return GaussianBlurParams{};
+        case VulkanGraphNodeType::resize: return ResizeParams{};
         case VulkanGraphNodeType::input:
         case VulkanGraphNodeType::output:
         case VulkanGraphNodeType::colorInvert:
+        case VulkanGraphNodeType::lut:
+        case VulkanGraphNodeType::histogram:
             return std::monostate{};
     }
     return std::monostate{};
@@ -150,6 +163,12 @@ bool parseNodeType(const QString& name, VulkanGraphNodeType& type) {
         type = VulkanGraphNodeType::blend;
     } else if (name == QStringLiteral("gaussian_blur")) {
         type = VulkanGraphNodeType::gaussianBlur;
+    } else if (name == QStringLiteral("resize")) {
+        type = VulkanGraphNodeType::resize;
+    } else if (name == QStringLiteral("lut")) {
+        type = VulkanGraphNodeType::lut;
+    } else if (name == QStringLiteral("histogram")) {
+        type = VulkanGraphNodeType::histogram;
     } else {
         return false;
     }
@@ -183,6 +202,8 @@ bool parseParameter(VulkanGraphNodeType type, const QJsonObject& object,
         case VulkanGraphNodeType::input:
         case VulkanGraphNodeType::output:
         case VulkanGraphNodeType::colorInvert:
+        case VulkanGraphNodeType::lut:
+        case VulkanGraphNodeType::histogram:
             result = std::monostate{};
             return true;
         case VulkanGraphNodeType::exposure: {
@@ -228,6 +249,24 @@ bool parseParameter(VulkanGraphNodeType type, const QJsonObject& object,
             parameter.blurRadius = radius;
             parameter.sigma = sigma;
             result = parameter;
+            return true;
+        }
+        case VulkanGraphNodeType::resize: {
+            const QJsonValue width = object.value("width");
+            const QJsonValue height = object.value("height");
+            const auto validDimension = [](const QJsonValue& value) {
+                const double number = value.toDouble(-1.0);
+                return value.isDouble() && number >= 1.0 && number <= 16384.0
+                    && std::floor(number) == number;
+            };
+            if (!validDimension(width) || !validDimension(height)) {
+                setError(error, "Resize width and height must be integers from 1 to 16384");
+                return false;
+            }
+            result = ResizeParams{
+                static_cast<int32_t>(width.toDouble()),
+                static_cast<int32_t>(height.toDouble()),
+            };
             return true;
         }
     }

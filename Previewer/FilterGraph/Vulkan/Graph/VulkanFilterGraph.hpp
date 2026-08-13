@@ -4,6 +4,7 @@
 
 #include "VulkanNodeFactory.hpp"
 
+#include <array>
 #include <memory>
 
 namespace heisenberg::filtergraph {
@@ -22,6 +23,10 @@ public:
     IInputNode* input() const { return input_; }
     IOutputNode* output() const { return output_; }
     IBaseNode* node(VulkanGraphNodeId nodeId) const;
+    bool setLutImage(VulkanGraphNodeId nodeId,
+                     const VulkanImageRef& image);
+    bool histogramBins(VulkanGraphNodeId nodeId,
+                       std::array<uint32_t, 256>& bins) const;
 
 private:
     VulkanNodeFactory nodeFactory_;

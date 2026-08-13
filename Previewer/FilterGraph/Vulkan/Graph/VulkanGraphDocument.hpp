@@ -1,7 +1,8 @@
 #pragma once
 
-#include <FilterGraph/Common/FilterCommon.hpp>
-#include <FilterGraph/Vulkan/Filters/GaussianBlurParams.hpp>
+#include "FilterCommon.hpp"
+#include "GaussianBlurParams.hpp"
+#include "ResizeParams.hpp"
 #include <cstdint>
 #include <string>
 #include <variant>
@@ -21,6 +22,9 @@ enum class VulkanGraphNodeType : uint8_t {
     exposure,
     blend,
     gaussianBlur,
+    resize,
+    lut,
+    histogram,
 };
 
 struct ExposureParamet {
@@ -35,7 +39,8 @@ using VulkanGraphParameter = std::variant<
     std::monostate,
     ExposureParamet,
     BlendParamet,
-    GaussianBlurParams>;
+    GaussianBlurParams,
+    ResizeParams>;
 
 struct VulkanGraphPosition {
     float x = 0.0f;

@@ -1,6 +1,8 @@
 #include "VulkanFilterGraph.hpp"
 
 #include "VulkanPipeGraph.hpp"
+#include "VulkanHistogramNode.hpp"
+#include "VulkanLutNode.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -28,6 +30,18 @@ VulkanFilterGraph::~VulkanFilterGraph() = default;
 IBaseNode* VulkanFilterGraph::node(VulkanGraphNodeId nodeId) const {
     const auto found = nodes_.find(nodeId);
     return found == nodes_.end() ? nullptr : found->second;
+}
+
+bool VulkanFilterGraph::setLutImage(
+    VulkanGraphNodeId nodeId, const VulkanImageRef& image) {
+    auto* lut = dynamic_cast<VulkanLutNode*>(node(nodeId));
+    return lut && lut->setLutImage(image);
+}
+
+bool VulkanFilterGraph::histogramBins(
+    VulkanGraphNodeId nodeId, std::array<uint32_t, 256>& bins) const {
+    auto* histogram = dynamic_cast<VulkanHistogramNode*>(node(nodeId));
+    return histogram && histogram->readBins(bins);
 }
 
 } // namespace heisenberg::filtergraph

@@ -2,6 +2,7 @@
 
 #include "INode.hpp"
 #include "GaussianBlurParams.hpp"
+#include "ResizeParams.hpp"
 
 namespace heisenberg::filtergraph {
 
@@ -48,6 +49,9 @@ public:
     virtual ITNode<float>* createExposure() = 0;
     virtual ITNode<float>* createBlend() = 0;
     virtual ITNode<GaussianBlurParams>* createGaussianBlur() = 0;
+    virtual ITNode<ResizeParams>* createResize() = 0;
+    virtual INode* createLut() = 0;
+    virtual INode* createHistogram() = 0;
 };
 
 } // namespace heisenberg::filtergraph

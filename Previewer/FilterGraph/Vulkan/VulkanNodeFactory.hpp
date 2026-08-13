@@ -2,6 +2,7 @@
 
 #include <FilterGraph/Interface/INodeFactory.hpp>
 #include "GaussianBlurParams.hpp"
+#include "ResizeParams.hpp"
 #include <memory>
 #include <vector>
 
@@ -31,6 +32,9 @@ public:
     ITNode<float>* createExposure() override;
     ITNode<float>* createBlend() override;
     ITNode<GaussianBlurParams>* createGaussianBlur() override;
+    ITNode<ResizeParams>* createResize() override;
+    INode* createLut() override;
+    INode* createHistogram() override;
 
     VulkanNodeCreateResult createGraphNode(const VulkanGraphNodeDesc& node);
 

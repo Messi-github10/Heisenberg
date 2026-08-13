@@ -1,0 +1,18 @@
+#version 450
+
+// AOCE resize adapted for Heisenberg's linear BT.2020 RGBA16F contract.
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (binding = 0) uniform sampler2D inTex;
+layout (binding = 1, rgba16f) uniform writeonly image2D outTex;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outTex);
+    if (pixel.x >= size.x || pixel.y >= size.y) {
+        return;
+    }
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    imageStore(outTex, pixel, texture(inTex, uv));
+}

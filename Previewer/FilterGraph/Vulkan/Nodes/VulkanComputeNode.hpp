@@ -43,6 +43,11 @@ protected:
     virtual bool supportsFormat(ImageType format) const;
     virtual bool configureOutputs(const std::vector<ImageFormat>& inputs);
     virtual VulkanInputBinding inputBinding(int32_t inputIndex) const;
+    virtual int32_t extraInputCount() const;
+    virtual VulkanInputBinding extraInputBinding(int32_t inputIndex) const;
+    virtual VulkanImageRef extraInput(int32_t inputIndex) const;
+    virtual void setExtraInputLayout(int32_t inputIndex,
+                                     VkImageLayout layout);
     virtual VkExtent3D workGroupSize() const;
     virtual const char* shaderPath() const = 0;
 

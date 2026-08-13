@@ -6,6 +6,7 @@
 
 #include <QObject>
 #include <QString>
+#include <cstdint>
 #include <memory>
 
 struct AVFrame;
@@ -96,6 +97,7 @@ private:
 
     int videoWidth_  = 0;
     int videoHeight_ = 0;
+    uint64_t filterGraphVerificationFrame_ = 0;
     bool shutdownDone_ = false;
     std::shared_ptr<AVFrame> lastFrame_;
 };

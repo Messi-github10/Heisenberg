@@ -40,12 +40,18 @@ add_filter_shader(COLOR_INVERT_SHADER colorInvert.comp)
 add_filter_shader(EXPOSURE_SHADER exposure.comp)
 add_filter_shader(BLEND_SHADER blend.comp)
 add_filter_shader(GAUSSIAN_BLUR_SHADER gaussianBlur.comp)
+add_filter_shader(RESIZE_SHADER resize.comp)
+add_filter_shader(LUT_SHADER lut.comp)
+add_filter_shader(HISTOGRAM_SHADER histogram.comp)
 
 add_custom_target(HeisenbergFilterShaders DEPENDS
     "${COLOR_INVERT_SHADER}"
     "${EXPOSURE_SHADER}"
     "${BLEND_SHADER}"
     "${GAUSSIAN_BLUR_SHADER}"
+    "${RESIZE_SHADER}"
+    "${LUT_SHADER}"
+    "${HISTOGRAM_SHADER}"
 )
 
 add_library(HeisenbergPreviewer STATIC
@@ -92,6 +98,9 @@ target_compile_definitions(HeisenbergPreviewer PRIVATE
     HEISENBERG_EXPOSURE_SHADER_PATH="${EXPOSURE_SHADER}"
     HEISENBERG_BLEND_SHADER_PATH="${BLEND_SHADER}"
     HEISENBERG_GAUSSIAN_BLUR_SHADER_PATH="${GAUSSIAN_BLUR_SHADER}"
+    HEISENBERG_RESIZE_SHADER_PATH="${RESIZE_SHADER}"
+    HEISENBERG_LUT_SHADER_PATH="${LUT_SHADER}"
+    HEISENBERG_HISTOGRAM_SHADER_PATH="${HISTOGRAM_SHADER}"
     HEISENBERG_TEST_FILTER_GRAPH_PATH="${TEST_FILTER_GRAPH}"
 )
 

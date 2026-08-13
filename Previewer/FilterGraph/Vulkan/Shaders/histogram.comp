@@ -1,0 +1,25 @@
+#version 450
+
+// Luminance histogram for linear BT.2020 RGBA16F image input.
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (binding = 0, rgba16f) uniform readonly image2D inTex;
+layout (std430, binding = 1) buffer HistogramBins {
+    uint bins[256];
+};
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(inTex);
+    if (pixel.x >= size.x || pixel.y >= size.y) {
+        return;
+    }
+
+    vec3 color = imageLoad(inTex, pixel).rgb;
+    // Histogram binning needs a finite display domain. The graph itself keeps HDR
+    // values unclamped; values above one accumulate in the last bin.
+    float luminance = dot(max(color, vec3(0.0)),
+                          vec3(0.2627, 0.6780, 0.0593));
+    uint bin = uint(clamp(luminance * 255.0, 0.0, 255.0));
+    atomicAdd(bins[bin], 1);
+}

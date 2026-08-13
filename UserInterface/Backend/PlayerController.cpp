@@ -10,10 +10,13 @@
 #include <Renderer/VulkanContext.hpp>
 #include <Renderer/SwapChain.hpp>
 #include <FilterGraph/Vulkan/Graph/VulkanFilterGraph.hpp>
+#include <FilterGraph/Interface/INodeFactory.hpp>
 #include <MainWidget/VideoWidget.hpp>
 #include <Utiles/Logger.hpp>
 
 #include <stdexcept>
+#include <array>
+#include <numeric>
 #include <string>
 
 extern "C" {
@@ -172,7 +175,7 @@ void PlayerController::initPipeline(VideoWidget* widget) {
             throw std::runtime_error(
                 "Failed to load test filter graph: " + graphError);
         }
-        filterGraph_ = std::make_unique<filtergraph::VulkanFilterGraph>(
+    filterGraph_ = std::make_unique<filtergraph::VulkanFilterGraph>(
             graphContext, graphDocument);
         previewer_->setFilterGraph(filterGraph_->graph(), filterGraph_->input(),
                                    filterGraph_->output());
@@ -216,7 +219,24 @@ void PlayerController::onFrameDecoded(std::shared_ptr<AVFrame> frame) {
         videoHeight_ = frame->height;
     }
 
-    previewer_->presentFrame(frame.get());
+    if (!previewer_->presentFrame(frame.get())) return;
+
+    // Temporary runtime proof for the Resize -> Histogram test graph.
+    if (!filterGraph_ || (++filterGraphVerificationFrame_ % 60) != 0) return;
+
+    filtergraph::VulkanImageRef output;
+    std::array<uint32_t, 256> bins{};
+    if (!filterGraph_->output()->getVulkanOutput(output)
+        || !filterGraph_->histogramBins(4, bins)) {
+        LOG_WARN("FilterGraph verify: output or histogram is unavailable");
+        return;
+    }
+
+    const uint64_t total = std::accumulate(
+        bins.begin(), bins.end(), uint64_t{0});
+    LOG_INFO("FilterGraph verify: output={}x{}, histogram total={} (expected={})",
+             output.extent.width, output.extent.height, total,
+             static_cast<uint64_t>(output.extent.width) * output.extent.height);
 }
 
 // ============================================================

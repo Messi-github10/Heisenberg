@@ -3,8 +3,11 @@
 #include "VulkanColorInvertNode.hpp"
 #include "VulkanExposureNode.hpp"
 #include "VulkanGaussianBlurNode.hpp"
+#include "VulkanHistogramNode.hpp"
 #include "VulkanIONodes.hpp"
+#include "VulkanLutNode.hpp"
 #include "VulkanPassthroughNode.hpp"
+#include "VulkanResizeNode.hpp"
 #include "VulkanGraphDocument.hpp"
 #include <FilterGraph/Core/BaseNode.hpp>
 #include <unordered_map>
@@ -58,6 +61,26 @@ VulkanNodeCreateResult createGaussianBlurNode(
     return {node->getNode(), nullptr, nullptr};
 }
 
+VulkanNodeCreateResult createResizeNode(
+    VulkanNodeFactory& factory, const VulkanGraphNodeDesc& descriptor) {
+    auto* node = factory.createResize();
+    if (!node) return {};
+    node->updateParamet(std::get<ResizeParams>(descriptor.parameter));
+    return {node->getNode(), nullptr, nullptr};
+}
+
+VulkanNodeCreateResult createLutNode(
+    VulkanNodeFactory& factory, const VulkanGraphNodeDesc&) {
+    INode* node = factory.createLut();
+    return {node ? node->getNode() : nullptr, nullptr, nullptr};
+}
+
+VulkanNodeCreateResult createHistogramNode(
+    VulkanNodeFactory& factory, const VulkanGraphNodeDesc&) {
+    INode* node = factory.createHistogram();
+    return {node ? node->getNode() : nullptr, nullptr, nullptr};
+}
+
 const std::unordered_map<VulkanGraphNodeType, GraphNodeCreator>& graphNodeCreators() {
     static const std::unordered_map<VulkanGraphNodeType, GraphNodeCreator> creators{
         {VulkanGraphNodeType::input, createInputNode},
@@ -66,6 +89,9 @@ const std::unordered_map<VulkanGraphNodeType, GraphNodeCreator>& graphNodeCreato
         {VulkanGraphNodeType::exposure, createExposureNode},
         {VulkanGraphNodeType::blend, createBlendNode},
         {VulkanGraphNodeType::gaussianBlur, createGaussianBlurNode},
+        {VulkanGraphNodeType::resize, createResizeNode},
+        {VulkanGraphNodeType::lut, createLutNode},
+        {VulkanGraphNodeType::histogram, createHistogramNode},
     };
     return creators;
 }
@@ -110,6 +136,18 @@ ITNode<float>* VulkanNodeFactory::createBlend() {
 
 ITNode<GaussianBlurParams>* VulkanNodeFactory::createGaussianBlur() {
     return createNode<VulkanGaussianBlurNode>();
+}
+
+ITNode<ResizeParams>* VulkanNodeFactory::createResize() {
+    return createNode<VulkanResizeNode>();
+}
+
+INode* VulkanNodeFactory::createLut() {
+    return createNode<VulkanLutNode>();
+}
+
+INode* VulkanNodeFactory::createHistogram() {
+    return createNode<VulkanHistogramNode>();
 }
 
 VulkanNodeCreateResult VulkanNodeFactory::createGraphNode(

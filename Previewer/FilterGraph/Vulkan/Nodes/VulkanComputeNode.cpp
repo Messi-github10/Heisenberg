@@ -115,6 +115,20 @@ VulkanInputBinding VulkanComputeNode::inputBinding(int32_t) const {
     return VulkanInputBinding::storageImage;
 }
 
+int32_t VulkanComputeNode::extraInputCount() const {
+    return 0;
+}
+
+VulkanInputBinding VulkanComputeNode::extraInputBinding(int32_t) const {
+    return VulkanInputBinding::sampledLinear;
+}
+
+VulkanImageRef VulkanComputeNode::extraInput(int32_t) const {
+    return {};
+}
+
+void VulkanComputeNode::setExtraInputLayout(int32_t, VkImageLayout) {}
+
 VkExtent3D VulkanComputeNode::workGroupSize() const {
     return {16, 16, 1};
 }
@@ -230,6 +244,11 @@ bool VulkanComputeNode::initializeSamplers() {
         needsLinear |= binding == VulkanInputBinding::sampledLinear;
         needsNearest |= binding == VulkanInputBinding::sampledNearest;
     }
+    for (int32_t index = 0; index < extraInputCount(); ++index) {
+        const VulkanInputBinding binding = extraInputBinding(index);
+        needsLinear |= binding == VulkanInputBinding::sampledLinear;
+        needsNearest |= binding == VulkanInputBinding::sampledNearest;
+    }
 
     auto createSampler = [&](VkFilter filter, VkSampler* sampler) {
         VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -260,13 +279,23 @@ bool VulkanComputeNode::initializePipeline() {
     }
 
     std::vector<VkDescriptorSetLayoutBinding> bindings;
-    bindings.reserve(static_cast<size_t>(inputCount() + outputCount() + 1));
+    bindings.reserve(static_cast<size_t>(
+        inputCount() + extraInputCount() + outputCount() + 1));
     uint32_t storageCount = static_cast<uint32_t>(outputCount());
     uint32_t sampledCount = 0;
     uint32_t bindingIndex = 0;
 
     for (int32_t index = 0; index < inputCount(); ++index) {
         const VkDescriptorType type = isSampled(inputBinding(index))
+            ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+            : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings.push_back({bindingIndex++, type, 1,
+                            VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+        if (type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) ++storageCount;
+        else ++sampledCount;
+    }
+    for (int32_t index = 0; index < extraInputCount(); ++index) {
+        const VkDescriptorType type = isSampled(extraInputBinding(index))
             ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
             : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         bindings.push_back({bindingIndex++, type, 1,
@@ -424,8 +453,8 @@ VkSampler VulkanComputeNode::samplerFor(
 }
 
 bool VulkanComputeNode::updateDescriptors() {
-    const size_t imageCount =
-        static_cast<size_t>(inputCount() + outputCount());
+    const size_t imageCount = static_cast<size_t>(
+        inputCount() + extraInputCount() + outputCount());
     const size_t writeCount = imageCount + (uniformData_.empty() ? 0u : 1u);
     std::vector<VkDescriptorImageInfo> imageInfos(imageCount);
     std::vector<VkWriteDescriptorSet> writes(writeCount);
@@ -441,6 +470,35 @@ bool VulkanComputeNode::updateDescriptors() {
             ? VK_IMAGE_USAGE_SAMPLED_BIT : VK_IMAGE_USAGE_STORAGE_BIT;
         if (!source.view || !(source.usage & requiredUsage)) {
             LOG_ERROR("FilterGraph: input {} is missing required Vulkan usage",
+                      index);
+            return false;
+        }
+        VkDescriptorImageInfo& imageInfo = imageInfos[imageIndex++];
+        imageInfo.sampler = sampled ? samplerFor(binding) : VK_NULL_HANDLE;
+        imageInfo.imageView = source.view;
+        imageInfo.imageLayout = sampled
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_GENERAL;
+
+        VkWriteDescriptorSet& write = writes[writeIndex++];
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptorSet_;
+        write.dstBinding = bindingIndex++;
+        write.descriptorCount = 1;
+        write.descriptorType = sampled
+            ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+            : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        write.pImageInfo = &imageInfo;
+    }
+
+    for (int32_t index = 0; index < extraInputCount(); ++index) {
+        const VulkanImageRef source = extraInput(index);
+        const VulkanInputBinding binding = extraInputBinding(index);
+        const bool sampled = isSampled(binding);
+        const VkImageUsageFlagBits requiredUsage = sampled
+            ? VK_IMAGE_USAGE_SAMPLED_BIT : VK_IMAGE_USAGE_STORAGE_BIT;
+        if (!source.valid() || !source.view || !(source.usage & requiredUsage)) {
+            LOG_ERROR("FilterGraph: extra input {} is missing required Vulkan usage",
                       index);
             return false;
         }
@@ -533,6 +591,28 @@ void VulkanComputeNode::record(
                         VK_ACCESS_SHADER_READ_BIT);
     }
 
+    std::vector<VkImageLayout> extraOriginalLayouts(
+        static_cast<size_t>(extraInputCount()));
+    for (int32_t index = 0; index < extraInputCount(); ++index) {
+        const VulkanImageRef source = extraInput(index);
+        if (!source.valid() || !source.view
+            || source.contract != kWorkingImageContract) {
+            LOG_ERROR("FilterGraph: extra compute input {} violates the working contract",
+                      index);
+            return;
+        }
+        extraOriginalLayouts[static_cast<size_t>(index)] = source.layout;
+        const VkImageLayout targetLayout = isSampled(extraInputBinding(index))
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_GENERAL;
+        transitionImage(commandBuffer, source.image, source.layout, targetLayout,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                        VK_ACCESS_SHADER_READ_BIT);
+        setExtraInputLayout(index, targetLayout);
+    }
+
     for (int32_t index = 0; index < outputCount(); ++index) {
         VulkanImageResource& output =
             *outputImages_[static_cast<size_t>(index)];
@@ -576,6 +656,20 @@ void VulkanComputeNode::record(
                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                         VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT);
+    }
+
+    for (int32_t index = 0; index < extraInputCount(); ++index) {
+        const VulkanImageRef source = extraInput(index);
+        const VkImageLayout usedLayout = isSampled(extraInputBinding(index))
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_GENERAL;
+        const VkImageLayout originalLayout =
+            extraOriginalLayouts[static_cast<size_t>(index)];
+        transitionImage(commandBuffer, source.image, usedLayout, originalLayout,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT);
+        setExtraInputLayout(index, originalLayout);
     }
 
     for (int32_t index = 0; index < outputCount(); ++index) {

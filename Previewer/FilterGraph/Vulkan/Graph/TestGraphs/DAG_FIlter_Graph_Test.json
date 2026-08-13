@@ -9,30 +9,18 @@
     {
       "id": 2,
       "type": "output",
-      "position": { "x": 720.0, "y": 120.0 }
+      "position": { "x": 1220.0, "y": 120.0 }
     },
     {
       "id": 3,
-      "type": "exposure",
-      "parameters": { "exposure": -2.0 },
-      "position": { "x": 220.0, "y": 40.0 }
+      "type": "resize",
+      "parameters": { "width": 960, "height": 540 },
+      "position": { "x": 220.0, "y": 120.0 }
     },
     {
       "id": 4,
-      "type": "gaussian_blur",
-      "parameters": { "blurRadius": 12, "sigma": 0.0 },
-      "position": { "x": 220.0, "y": 200.0 }
-    },
-    {
-      "id": 5,
-      "type": "blend",
-      "parameters": { "factor": 0.5 },
+      "type": "histogram",
       "position": { "x": 480.0, "y": 120.0 }
-    },
-    {
-      "id": 6,
-      "type": "color_invert",
-      "position": { "x": 680.0, "y": 120.0 }
     }
   ],
   "edges": [
@@ -41,23 +29,11 @@
       "input": { "nodeId": 3, "pinIndex": 0 }
     },
     {
-      "output": { "nodeId": 1, "pinIndex": 0 },
+      "output": { "nodeId": 3, "pinIndex": 0 },
       "input": { "nodeId": 4, "pinIndex": 0 }
     },
     {
-      "output": { "nodeId": 3, "pinIndex": 0 },
-      "input": { "nodeId": 5, "pinIndex": 0 }
-    },
-    {
       "output": { "nodeId": 4, "pinIndex": 0 },
-      "input": { "nodeId": 5, "pinIndex": 1 }
-    },
-    {
-      "output": { "nodeId": 5, "pinIndex": 0 },
-      "input": { "nodeId": 6, "pinIndex": 0 }
-    },
-    {
-      "output": { "nodeId": 6, "pinIndex": 0 },
       "input": { "nodeId": 2, "pinIndex": 0 }
     }
   ]
