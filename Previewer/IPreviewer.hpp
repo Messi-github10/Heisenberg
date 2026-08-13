@@ -19,8 +19,8 @@ struct AVFrame;
 namespace heisenberg {
 
 namespace filtergraph {
-    class IInputLayer;
-    class IOutputLayer;
+    class IInputNode;
+    class IOutputNode;
     class IPipeGraph;
     struct VulkanImageRef;
 }
@@ -54,8 +54,8 @@ public:
     void setOnPresent(PresentCallback cb);
 
     void setFilterGraph(heisenberg::filtergraph::IPipeGraph* graph,
-                        heisenberg::filtergraph::IInputLayer*  input,
-                        heisenberg::filtergraph::IOutputLayer* output);
+                        heisenberg::filtergraph::IInputNode* input,
+                        heisenberg::filtergraph::IOutputNode* output);
 
     void shutdown();
 

@@ -1,7 +1,6 @@
 #pragma once
 
-#include <FilterGraph/Interface/ILayer.hpp>
-
+#include <FilterGraph/Interface/INode.hpp>
 #include <string>
 #include <vector>
 
@@ -9,24 +8,24 @@ namespace heisenberg::filtergraph {
 
 class PipeGraph;
 
-class BaseLayer : public virtual ILayer, public IBaseLayer {
+class BaseNode : public virtual INode, public IBaseNode {
 public:
-    BaseLayer(std::string mark, int32_t inputCount, int32_t outputCount);
-    ~BaseLayer() override = default;
+    BaseNode(std::string mark, int32_t inputCount, int32_t outputCount);
+    ~BaseNode() override = default;
 
-    IBaseLayer* getLayer() override { return this; }
+    IBaseNode* getNode() override { return this; }
     const char* getMark() override { return mark_.c_str(); }
     bool bAttachGraph() override { return graph_ != nullptr; }
     void setVisable(bool visible) override;
     void setEnable(bool enabled) override;
     int32_t getGraphIndex() override { return graphIndex_; }
 
-    void setStartNode(IBaseLayer* node, int32_t index = 0,
+    void setStartNode(IBaseNode* node, int32_t index = 0,
                       int32_t toInIndex = 0) override;
-    void setEndNode(IBaseLayer* node) override;
-    IBaseLayer* addNode(IBaseLayer* layer) override;
-    IBaseLayer* addNode(ILayer* layer) override;
-    IBaseLayer* addLine(IBaseLayer* to, int32_t fromOut = 0,
+    void setEndNode(IBaseNode* node) override;
+    IBaseNode* addNode(IBaseNode* node) override;
+    IBaseNode* addNode(INode* node) override;
+    IBaseNode* addLine(IBaseNode* to, int32_t fromOut = 0,
                         int32_t toIn = 0) override;
 
     int32_t inputCount() const { return inputCount_; }
@@ -59,8 +58,8 @@ private:
     bool enabled_        = true;
     bool visible_        = true;
     PipeGraph* graph_    = nullptr;
-    IBaseLayer* startNode_ = nullptr;
-    IBaseLayer* endNode_   = nullptr;
+    IBaseNode* startNode_ = nullptr;
+    IBaseNode* endNode_   = nullptr;
     std::vector<ImageFormat> inputFormats_;
     std::vector<ImageFormat> outputFormats_;
 };

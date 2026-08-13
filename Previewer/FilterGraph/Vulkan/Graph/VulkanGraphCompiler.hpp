@@ -1,21 +1,20 @@
 #pragma once
 
 #include "VulkanGraphDocument.hpp"
-
 #include <unordered_map>
 
 namespace heisenberg::filtergraph {
 
-class IBaseLayer;
-class IInputLayer;
-class IOutputLayer;
+class IBaseNode;
+class IInputNode;
+class IOutputNode;
 class IPipeGraph;
 class VulkanNodeFactory;
 
 struct VulkanCompiledGraph {
-    IInputLayer* input = nullptr;
-    IOutputLayer* output = nullptr;
-    std::unordered_map<VulkanGraphNodeId, IBaseLayer*> nodes;
+    IInputNode* input = nullptr;
+    IOutputNode* output = nullptr;
+    std::unordered_map<VulkanGraphNodeId, IBaseNode*> nodes;
 };
 
 class VulkanGraphCompiler {

@@ -1,8 +1,6 @@
 #include "VulkanComputeNode.hpp"
-
 #include <Utiles/Logger.hpp>
 #include <volk.h>
-
 #include <algorithm>
 #include <array>
 #include <cstring>

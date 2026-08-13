@@ -1,20 +1,20 @@
 #pragma once
 
 #include "VulkanGroupNode.hpp"
+#include "GaussianBlurParams.hpp"
 
 namespace heisenberg::filtergraph {
 
 class VulkanGaussianBlurPassNode;
 
-/// Separable Gaussian blur implemented as horizontal and vertical passes.
 class VulkanGaussianBlurNode final : public VulkanGroupNode,
-                                      public ITLayer<GaussianBlurParamet> {
+                                      public ITNode<GaussianBlurParams> {
 public:
     VulkanGaussianBlurNode();
     ~VulkanGaussianBlurNode() override;
 
-    IBaseLayer* getLayer() override {
-        return static_cast<BaseLayer*>(this);
+    IBaseNode* getNode() override {
+        return static_cast<BaseNode*>(this);
     }
 
 protected:

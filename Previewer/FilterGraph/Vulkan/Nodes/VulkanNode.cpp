@@ -1,12 +1,11 @@
 #include "VulkanNode.hpp"
-
 #include <stdexcept>
 #include <utility>
 
 namespace heisenberg::filtergraph {
 
 VulkanNode::VulkanNode(std::string mark, int32_t inputCount, int32_t outputCount)
-    : BaseLayer(std::move(mark), inputCount, outputCount),
+    : BaseNode(std::move(mark), inputCount, outputCount),
       inputs_(static_cast<size_t>(inputCount)),
       outputs_(static_cast<size_t>(outputCount)) {}
 

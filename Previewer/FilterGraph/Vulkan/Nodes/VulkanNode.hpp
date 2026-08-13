@@ -1,14 +1,13 @@
 #pragma once
 
-#include <FilterGraph/Core/BaseLayer.hpp>
-
+#include <FilterGraph/Core/BaseNode.hpp>
 #include <vector>
 
 namespace heisenberg::filtergraph {
 
 class VulkanGroupNode;
 
-class VulkanNode : public BaseLayer {
+class VulkanNode : public BaseNode {
 public:
     VulkanNode(std::string mark, int32_t inputCount, int32_t outputCount);
     ~VulkanNode() override = default;

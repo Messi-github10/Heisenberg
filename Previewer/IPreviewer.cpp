@@ -5,7 +5,7 @@
 #include "TextureContext/TextureManager.hpp"
 
 #include <Common/FrameTime.hpp>
-#include <FilterGraph/Interface/ILayerFactory.hpp>
+#include <FilterGraph/Interface/INodeFactory.hpp>
 #include <FilterGraph/Interface/IPipeGraph.hpp>
 #include <Utiles/Logger.hpp>
 
@@ -111,8 +111,8 @@ struct IPreviewer::Impl {
     filtergraph::VulkanSyncPoint intermediateReleaseWait = {};
 
     filtergraph::IPipeGraph* filterGraph = nullptr;
-    filtergraph::IInputLayer* dagInput = nullptr;
-    filtergraph::IOutputLayer* dagOutput = nullptr;
+    filtergraph::IInputNode* dagInput = nullptr;
+    filtergraph::IOutputNode* dagOutput = nullptr;
     pl_color_space workingColor = {};
 };
 
@@ -193,8 +193,8 @@ void IPreviewer::setOnPresent(PresentCallback callback) {
 }
 
 void IPreviewer::setFilterGraph(filtergraph::IPipeGraph* graph,
-                                filtergraph::IInputLayer* input,
-                                filtergraph::IOutputLayer* output) {
+                                filtergraph::IInputNode* input,
+                                filtergraph::IOutputNode* output) {
     impl_->filterGraph = graph;
     impl_->dagInput = input;
     impl_->dagOutput = output;

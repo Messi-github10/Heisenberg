@@ -2,7 +2,6 @@
 
 #include "VulkanImageResource.hpp"
 #include "VulkanNode.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -18,8 +17,6 @@ enum class VulkanInputBinding : uint8_t {
     sampledNearest,
 };
 
-/// Convention-based Vulkan compute node inspired by AOCE's VkLayer.
-/// Descriptor bindings are ordered as inputs, outputs, then an optional UBO.
 class VulkanComputeNode : public VulkanNode {
 public:
     ~VulkanComputeNode() override;
@@ -35,7 +32,6 @@ protected:
 
     bool configure(const std::vector<ImageFormat>& inputs) override;
 
-    /// Set once while constructing the node. A zero size disables the UBO.
     void setUniformBufferSize(size_t size);
     void updateUniformData(const void* data, size_t size);
 

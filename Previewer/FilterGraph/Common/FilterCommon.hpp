@@ -11,32 +11,24 @@
 namespace heisenberg {
 namespace filtergraph {
 
-// ============================================================
-// GPU 类型
-// ============================================================
-
 enum class GpuType : int32_t {
     other   = 0,
     vulkan  = 1,
 };
 
-// ============================================================
-// 图像类型（对应 shader 里的存储格式）
-// ============================================================
-
 enum class ImageType : int32_t {
     other    = 0,
-    r8       = 1,   // 单通道 8-bit
-    rgba8    = 2,   // 四通道 8-bit
-    r16      = 3,   // 单通道 16-bit
-    bgra8    = 4,   // BGRA 四通道 8-bit
-    rgba32f  = 5,   // 四通道 32-bit 浮点
-    r32f     = 6,   // 单通道 32-bit 浮点
-    rgb8     = 7,   // 三通道 8-bit
-    bgr8     = 8,   // 三通道 8-bit (BGR)
-    rgba32   = 9,   // 四通道 32-bit 整数
-    r32      = 10,  // 单通道 32-bit 整数
-    rgba16f  = 11,  // 四通道 16-bit 浮点
+    r8       = 1,
+    rgba8    = 2,
+    r16      = 3,
+    bgra8    = 4,
+    rgba32f  = 5,
+    r32f     = 6,
+    rgb8     = 7,
+    bgr8     = 8,
+    rgba32   = 9,
+    r32      = 10,
+    rgba16f  = 11,
 };
 
 enum class ColorPrimaries : int32_t {
@@ -54,32 +46,27 @@ enum class AlphaMode : int32_t {
     straight = 1,
 };
 
-/// Semantic contract for images crossing the Vulkan filter graph boundary.
-/// Extended range means valid RGB values are not restricted to [0, 1].
+// DAG 滤镜图内部的像素语义契约
 struct GraphImageContract {
-    VkFormat       format        = VK_FORMAT_UNDEFINED;
-    ImageType      imageType     = ImageType::other;
-    ColorPrimaries primaries     = ColorPrimaries::unknown;
-    ColorTransfer  transfer      = ColorTransfer::unknown;
-    AlphaMode      alpha         = AlphaMode::unknown;
-    bool           extendedRange = false;
+    VkFormat       format        = VK_FORMAT_UNDEFINED;         // Vulkan Image 的物理格式
+    ImageType      imageType     = ImageType::other;            // 图像格式
+    ColorPrimaries primaries     = ColorPrimaries::unknown;     // 色彩空间
+    ColorTransfer  transfer      = ColorTransfer::unknown;      // 传递函数
+    AlphaMode      alpha         = AlphaMode::unknown;          // Alpha 通道
 
     constexpr bool operator==(const GraphImageContract&) const = default;
 };
 
+// 运行时语义契约
 inline constexpr GraphImageContract kWorkingImageContract{
     VK_FORMAT_R16G16B16A16_SFLOAT,
     ImageType::rgba16f,
     ColorPrimaries::bt2020,
     ColorTransfer::linear,
     AlphaMode::straight,
-    true,
 };
 
-// ============================================================
-// 图像格式描述
-// ============================================================
-
+// 图像格式
 struct ImageFormat {
     int32_t  width     = 0;
     int32_t  height    = 0;
@@ -96,28 +83,6 @@ struct ImageFormat {
     }
 };
 
-struct GaussianBlurParamet {
-    int32_t blurRadius = 4;
-    float sigma = 0.0f;
-
-    bool operator==(const GaussianBlurParamet& right) const {
-        return blurRadius == right.blurRadius && sigma == right.sigma;
-    }
-};
-
-// ============================================================
-// 图内节点/引脚索引
-// ============================================================
-
-struct NodeIndex {
-    int32_t nodeIndex = -1;  // 图级节点索引
-    int32_t siteIndex = -1;  // 节点上的第几个输入/输出 pin
-};
-
-// ============================================================
-// 视频类型（输入层使用）
-// ============================================================
-
 enum class VideoType : int32_t {
     other   = 0,
     nv12    = 1,
@@ -131,21 +96,12 @@ enum class VideoType : int32_t {
     rgb8    = 9,
 };
 
-// ============================================================
-// 视频格式描述
-// ============================================================
-
 struct VideoFormat {
-    int32_t   index     = -1;
     int32_t   width     = 0;
     int32_t   height    = 0;
     int32_t   fps       = 0;
     VideoType videoType = VideoType::other;
 };
-
-// ============================================================
-// Vulkan 共享资源
-// ============================================================
 
 struct VulkanSyncPoint {
     VkSemaphore semaphore = VK_NULL_HANDLE;
@@ -154,8 +110,6 @@ struct VulkanSyncPoint {
     bool valid() const { return semaphore != VK_NULL_HANDLE; }
 };
 
-/// A borrowed Vulkan image. The receiver must not destroy image or view.
-/// `ready` is signaled when `layout` and `queueFamilyIndex` become valid.
 struct VulkanImageRef {
     VkImage           image            = VK_NULL_HANDLE;
     VkImageView       view             = VK_NULL_HANDLE;
@@ -176,7 +130,6 @@ struct VulkanImageRef {
     }
 };
 
-/// Vulkan objects are borrowed from the renderer and outlive the graph.
 struct VulkanGraphContext {
     VkInstance       instance          = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice    = VK_NULL_HANDLE;
@@ -191,19 +144,6 @@ struct FrameContext {
     int32_t timeBaseDen  = 1;
     int64_t frameIndex   = -1;
     double  timeSeconds  = 0.0;
-};
-
-// ============================================================
-// CPU 视频帧
-// ============================================================
-
-struct VideoFrame {
-    int32_t   width;
-    int32_t   height;
-    int64_t   timeStamp;
-    VideoType videoType = VideoType::other;
-    uint8_t*  data[4]       = {};
-    int32_t   dataAlign[4]  = {};
 };
 
 } // namespace filtergraph

@@ -1,11 +1,8 @@
 #include "VulkanPipeGraph.hpp"
-
 #include "VulkanNode.hpp"
-
-#include <FilterGraph/Core/BaseLayer.hpp>
+#include <FilterGraph/Core/BaseNode.hpp>
 #include <Utiles/Logger.hpp>
 #include <volk.h>
-
 #include <algorithm>
 #include <stdexcept>
 
@@ -103,9 +100,9 @@ bool VulkanPipeGraph::onGraphRebuilt() {
     // Structural changes are rare. Waiting here keeps old node images alive
     // until libplacebo has returned every borrowed graph output.
     vkQueueWaitIdle(context_.queue);
-    for (BaseLayer* base : nodes()) {
-        auto* layer = dynamic_cast<VulkanNode*>(base);
-        if (!layer || !layer->prepare(context_)) {
+    for (BaseNode* base : nodes()) {
+        auto* node = dynamic_cast<VulkanNode*>(base);
+        if (!node || !node->prepare(context_)) {
             LOG_ERROR("FilterGraph: failed to prepare Vulkan node '{}'",
                       base ? base->getMark() : "<null>");
             return false;
@@ -139,9 +136,9 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
     }
 
     std::vector<VulkanSyncPoint> waits;
-    for (BaseLayer* base : nodes()) {
-        auto* layer = static_cast<VulkanNode*>(base);
-        appendWait(waits, layer->takeConsumerDone());
+    for (BaseNode* base : nodes()) {
+        auto* node = static_cast<VulkanNode*>(base);
+        appendWait(waits, node->takeConsumerDone());
     }
 
     vkResetFences(context_.device, 1, &fence_);
@@ -154,12 +151,12 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
     }
 
     for (int32_t nodeIndex : executionOrder()) {
-        auto* layer = static_cast<VulkanNode*>(
+        auto* node = static_cast<VulkanNode*>(
             nodes()[static_cast<size_t>(nodeIndex)]);
         std::vector<VulkanImageRef> inputs;
-        inputs.reserve(static_cast<size_t>(layer->inputCount()));
-        for (int32_t pin = 0; pin < layer->inputCount(); ++pin) {
-            const GraphEdge* edge = inputEdge(nodeIndex, pin);
+        inputs.reserve(static_cast<size_t>(node->inputCount()));
+        for (int32_t pin = 0; pin < node->inputCount(); ++pin) {
+            const RuntimeGraphEdge* edge = inputEdge(nodeIndex, pin);
             if (!edge) return false;
             auto* source = static_cast<VulkanNode*>(
                 nodes()[static_cast<size_t>(edge->fromNode)]);
@@ -167,13 +164,13 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
             if (!sourceImage.valid()) return false;
             inputs.push_back(sourceImage);
         }
-        layer->bindInputs(std::move(inputs));
-        if (layer->beginFrame(frame)) {
-            layer->record(commandBuffer_, frame);
+        node->bindInputs(std::move(inputs));
+        if (node->beginFrame(frame)) {
+            node->record(commandBuffer_, frame);
         }
 
-        for (int32_t outputPin = 0; outputPin < layer->outputCount(); ++outputPin) {
-            appendWait(waits, layer->output(outputPin).ready);
+        for (int32_t outputPin = 0; outputPin < node->outputCount(); ++outputPin) {
+            appendWait(waits, node->output(outputPin).ready);
         }
     }
 
@@ -221,7 +218,7 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
     submitted_ = true;
 
     const VulkanSyncPoint completion{timeline_, signalValue};
-    for (BaseLayer* base : nodes()) {
+    for (BaseNode* base : nodes()) {
         static_cast<VulkanNode*>(base)->setCompletion(completion);
     }
     return true;

@@ -1,5 +1,4 @@
 #include "VulkanPassthroughNode.hpp"
-
 #include <volk.h>
 
 namespace heisenberg::filtergraph {

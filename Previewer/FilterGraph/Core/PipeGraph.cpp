@@ -1,9 +1,6 @@
 #include "PipeGraph.hpp"
-
-#include "BaseLayer.hpp"
-
+#include "BaseNode.hpp"
 #include <Utiles/Logger.hpp>
-
 #include <algorithm>
 #include <queue>
 
@@ -20,22 +17,22 @@ void PipeGraph::reset() {
     dirty_ = true;
 }
 
-IBaseLayer* PipeGraph::getNode(int32_t index) {
+IBaseNode* PipeGraph::getNode(int32_t index) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (index < 0 || index >= static_cast<int32_t>(nodes_.size())) return nullptr;
     return nodes_[static_cast<size_t>(index)];
 }
 
-IBaseLayer* PipeGraph::addNode(IBaseLayer* layer) {
-    auto* base = dynamic_cast<BaseLayer*>(layer);
+IBaseNode* PipeGraph::addNode(IBaseNode* node) {
+    auto* base = dynamic_cast<BaseNode*>(node);
     if (!base) {
-        LOG_ERROR("FilterGraph: node is not a BaseLayer");
+        LOG_ERROR("FilterGraph: node is not a BaseNode");
         return nullptr;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (base->bAttachGraph()) {
-        LOG_ERROR("FilterGraph: layer '{}' is already attached", base->getMark());
+        LOG_ERROR("FilterGraph: node '{}' is already attached", base->getMark());
         return nullptr;
     }
     base->attach(this, static_cast<int32_t>(nodes_.size()));
@@ -44,11 +41,11 @@ IBaseLayer* PipeGraph::addNode(IBaseLayer* layer) {
     return base;
 }
 
-IBaseLayer* PipeGraph::addNode(ILayer* layer) {
-    return layer ? addNode(layer->getLayer()) : nullptr;
+IBaseNode* PipeGraph::addNode(INode* node) {
+    return node ? addNode(node->getNode()) : nullptr;
 }
 
-bool PipeGraph::validateEdge(const GraphEdge& edge) const {
+bool PipeGraph::validateEdge(const RuntimeGraphEdge& edge) const {
     if (edge.fromNode < 0 || edge.toNode < 0 || edge.fromNode == edge.toNode
         || edge.fromNode >= static_cast<int32_t>(nodes_.size())
         || edge.toNode >= static_cast<int32_t>(nodes_.size())) {
@@ -63,7 +60,7 @@ bool PipeGraph::validateEdge(const GraphEdge& edge) const {
 bool PipeGraph::addLine(int32_t from, int32_t to, int32_t fromOut,
                         int32_t toIn) {
     std::lock_guard<std::mutex> lock(mutex_);
-    GraphEdge edge{from, fromOut, to, toIn};
+    RuntimeGraphEdge edge{from, fromOut, to, toIn};
     if (!validateEdge(edge)) {
         LOG_ERROR("FilterGraph: invalid edge {}:{} -> {}:{}",
                   from, fromOut, to, toIn);
@@ -71,14 +68,14 @@ bool PipeGraph::addLine(int32_t from, int32_t to, int32_t fromOut,
     }
 
     const auto duplicate = std::find_if(edges_.begin(), edges_.end(),
-        [&](const GraphEdge& item) {
+        [&](const RuntimeGraphEdge& item) {
             return item.fromNode == from && item.fromPin == fromOut
                 && item.toNode == to && item.toPin == toIn;
         });
     if (duplicate != edges_.end()) return true;
 
     const auto occupied = std::find_if(edges_.begin(), edges_.end(),
-        [&](const GraphEdge& item) {
+        [&](const RuntimeGraphEdge& item) {
             return item.toNode == to && item.toPin == toIn;
         });
     if (occupied != edges_.end()) {
@@ -91,13 +88,13 @@ bool PipeGraph::addLine(int32_t from, int32_t to, int32_t fromOut,
     return true;
 }
 
-bool PipeGraph::addLine(IBaseLayer* from, IBaseLayer* to, int32_t fromOut,
+bool PipeGraph::addLine(IBaseNode* from, IBaseNode* to, int32_t fromOut,
                         int32_t toIn) {
     if (!from || !to) return false;
     return addLine(from->getGraphIndex(), to->getGraphIndex(), fromOut, toIn);
 }
 
-bool PipeGraph::getLayerOutFormat(int32_t nodeIndex, int32_t outputIndex,
+bool PipeGraph::getNodeOutFormat(int32_t nodeIndex, int32_t outputIndex,
                                   ImageFormat& format) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (nodeIndex < 0 || nodeIndex >= static_cast<int32_t>(nodes_.size())) return false;
@@ -107,7 +104,7 @@ bool PipeGraph::getLayerOutFormat(int32_t nodeIndex, int32_t outputIndex,
     return true;
 }
 
-bool PipeGraph::getLayerInFormat(int32_t nodeIndex, int32_t inputIndex,
+bool PipeGraph::getNodeInFormat(int32_t nodeIndex, int32_t inputIndex,
                                  ImageFormat& format) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (nodeIndex < 0 || nodeIndex >= static_cast<int32_t>(nodes_.size())) return false;
@@ -129,16 +126,17 @@ void PipeGraph::clear() {
     onGraphCleared();
     edges_.clear();
     executionOrder_.clear();
-    for (BaseLayer* node : nodes_) {
+    for (BaseNode* node : nodes_) {
         if (node) node->detach();
     }
     nodes_.clear();
     dirty_ = true;
 }
 
-const GraphEdge* PipeGraph::inputEdge(int32_t nodeIndex, int32_t inputPin) const {
+const RuntimeGraphEdge* PipeGraph::inputEdge(
+    int32_t nodeIndex, int32_t inputPin) const {
     const auto found = std::find_if(edges_.begin(), edges_.end(),
-        [&](const GraphEdge& edge) {
+        [&](const RuntimeGraphEdge& edge) {
             return edge.toNode == nodeIndex && edge.toPin == inputPin;
         });
     return found == edges_.end() ? nullptr : &*found;
@@ -148,7 +146,7 @@ bool PipeGraph::rebuild() {
     std::vector<int32_t> indegree(nodes_.size(), 0);
     std::vector<std::vector<int32_t>> outgoing(nodes_.size());
 
-    for (const GraphEdge& edge : edges_) {
+    for (const RuntimeGraphEdge& edge : edges_) {
         if (!validateEdge(edge)) return false;
         ++indegree[static_cast<size_t>(edge.toNode)];
         outgoing[static_cast<size_t>(edge.fromNode)].push_back(edge.toNode);
@@ -176,12 +174,12 @@ bool PipeGraph::rebuild() {
     }
 
     for (int32_t nodeIndex : executionOrder_) {
-        BaseLayer* node = nodes_[static_cast<size_t>(nodeIndex)];
+        BaseNode* node = nodes_[static_cast<size_t>(nodeIndex)];
         std::vector<ImageFormat> inputs(static_cast<size_t>(node->inputCount()));
         for (int32_t pin = 0; pin < node->inputCount(); ++pin) {
-            const GraphEdge* edge = inputEdge(nodeIndex, pin);
+            const RuntimeGraphEdge* edge = inputEdge(nodeIndex, pin);
             if (!edge) {
-                LOG_ERROR("FilterGraph: layer '{}' input pin {} is not connected",
+                LOG_ERROR("FilterGraph: node '{}' input pin {} is not connected",
                           node->getMark(), pin);
                 return false;
             }
@@ -191,7 +189,7 @@ bool PipeGraph::rebuild() {
                 sourceFormats[static_cast<size_t>(edge->fromPin)];
         }
         if (!node->configure(inputs)) {
-            LOG_ERROR("FilterGraph: failed to configure layer '{}'", node->getMark());
+            LOG_ERROR("FilterGraph: failed to configure node '{}'", node->getMark());
             return false;
         }
     }

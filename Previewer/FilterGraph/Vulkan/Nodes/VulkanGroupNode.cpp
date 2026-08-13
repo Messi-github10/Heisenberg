@@ -1,7 +1,5 @@
 #include "VulkanGroupNode.hpp"
-
 #include <Utiles/Logger.hpp>
-
 #include <stdexcept>
 #include <utility>
 

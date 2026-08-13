@@ -1,31 +1,32 @@
 #pragma once
 
-#include <FilterGraph/Interface/ILayerFactory.hpp>
+#include <FilterGraph/Interface/INodeFactory.hpp>
+#include "GaussianBlurParams.hpp"
 #include <memory>
 #include <vector>
 
 namespace heisenberg::filtergraph {
 
-class BaseLayer;
+class BaseNode;
 
-class VulkanNodeFactory final : public LayerFactory {
+class VulkanNodeFactory final : public NodeFactory {
 public:
     VulkanNodeFactory();
     ~VulkanNodeFactory() override;
 
-    IInputLayer* createInput() override;
-    IOutputLayer* createOutput() override;
-    ILayer* createPassthrough() override;
-    ILayer* createColorInvert() override;
-    ITLayer<float>* createExposure() override;
-    ITLayer<float>* createBlend() override;
-    ITLayer<GaussianBlurParamet>* createGaussianBlur() override;
+    IInputNode* createInput() override;
+    IOutputNode* createOutput() override;
+    INode* createPassthrough() override;
+    INode* createColorInvert() override;
+    ITNode<float>* createExposure() override;
+    ITNode<float>* createBlend() override;
+    ITNode<GaussianBlurParams>* createGaussianBlur() override;
 
 private:
     template<typename T>
     T* createNode();
 
-    std::vector<std::unique_ptr<BaseLayer>> nodes_;
+    std::vector<std::unique_ptr<BaseNode>> nodes_;
 };
 
 } // namespace heisenberg::filtergraph

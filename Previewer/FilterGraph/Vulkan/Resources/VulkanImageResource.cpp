@@ -1,5 +1,4 @@
 #include "VulkanImageResource.hpp"
-
 #include <Utiles/Logger.hpp>
 #include <volk.h>
 

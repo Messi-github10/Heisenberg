@@ -1,13 +1,11 @@
 #pragma once
 
 #include "VulkanNode.hpp"
-
 #include <memory>
 #include <vector>
 
 namespace heisenberg::filtergraph {
 
-/// A one-input, one-output node composed of sequential internal Vulkan passes.
 class VulkanGroupNode : public VulkanNode {
 public:
     ~VulkanGroupNode() override;

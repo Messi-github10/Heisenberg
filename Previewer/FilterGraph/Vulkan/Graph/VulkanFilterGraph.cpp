@@ -25,7 +25,7 @@ VulkanFilterGraph::VulkanFilterGraph(
 
 VulkanFilterGraph::~VulkanFilterGraph() = default;
 
-IBaseLayer* VulkanFilterGraph::node(VulkanGraphNodeId nodeId) const {
+IBaseNode* VulkanFilterGraph::node(VulkanGraphNodeId nodeId) const {
     const auto found = nodes_.find(nodeId);
     return found == nodes_.end() ? nullptr : found->second;
 }

@@ -1,21 +1,16 @@
 #pragma once
 
 #include "VulkanNode.hpp"
-
-#include <FilterGraph/Interface/ILayerFactory.hpp>
+#include <FilterGraph/Interface/INodeFactory.hpp>
 
 namespace heisenberg::filtergraph {
 
-class VulkanInputLayer final : public VulkanNode, public IInputLayer {
+class VulkanInputNode final : public VulkanNode, public IInputNode {
 public:
-    VulkanInputLayer();
+    VulkanInputNode();
 
     void setImage(const ImageFormat& format) override;
     void setImage(const VideoFormat& format) override;
-    void inputCpuData(uint8_t* data, bool separateRun = false) override;
-    void inputCpuData(const VideoFrame& frame, bool separateRun = false) override;
-    void inputCpuData(uint8_t* data, const ImageFormat& format,
-                      bool separateRun = false) override;
     bool setVulkanInput(const VulkanImageRef& image,
                         int32_t inputIndex = 0) override;
 
@@ -32,11 +27,11 @@ private:
     VulkanImageRef externalImage_ = {};
 };
 
-class VulkanOutputLayer final : public VulkanNode, public IOutputLayer {
+class VulkanOutputNode final : public VulkanNode, public IOutputNode {
 public:
-    VulkanOutputLayer();
+    VulkanOutputNode();
 
-    void setObserver(IOutputLayerObserver* observer) override;
+    void setObserver(IOutputNodeObserver* observer) override;
     bool getVulkanOutput(VulkanImageRef& image,
                          int32_t outputIndex = 0) const override;
     void releaseVulkanOutput(const VulkanImageRef& image,
@@ -52,7 +47,7 @@ protected:
     bool configure(const std::vector<ImageFormat>& inputs) override;
 
 private:
-    IOutputLayerObserver* observer_ = nullptr;
+    IOutputNodeObserver* observer_ = nullptr;
     VulkanSyncPoint consumerDone_ = {};
 };
 

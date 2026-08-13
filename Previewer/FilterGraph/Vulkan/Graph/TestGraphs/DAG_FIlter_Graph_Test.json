@@ -36,11 +36,29 @@
     }
   ],
   "edges": [
-    { "fromNode": 1, "fromPin": 0, "toNode": 3, "toPin": 0 },
-    { "fromNode": 1, "fromPin": 0, "toNode": 4, "toPin": 0 },
-    { "fromNode": 3, "fromPin": 0, "toNode": 5, "toPin": 0 },
-    { "fromNode": 4, "fromPin": 0, "toNode": 5, "toPin": 1 },
-    { "fromNode": 5, "fromPin": 0, "toNode": 6, "toPin": 0 },
-    { "fromNode": 6, "fromPin": 0, "toNode": 2, "toPin": 0 }
+    {
+      "output": { "nodeId": 1, "pinIndex": 0 },
+      "input": { "nodeId": 3, "pinIndex": 0 }
+    },
+    {
+      "output": { "nodeId": 1, "pinIndex": 0 },
+      "input": { "nodeId": 4, "pinIndex": 0 }
+    },
+    {
+      "output": { "nodeId": 3, "pinIndex": 0 },
+      "input": { "nodeId": 5, "pinIndex": 0 }
+    },
+    {
+      "output": { "nodeId": 4, "pinIndex": 0 },
+      "input": { "nodeId": 5, "pinIndex": 1 }
+    },
+    {
+      "output": { "nodeId": 5, "pinIndex": 0 },
+      "input": { "nodeId": 6, "pinIndex": 0 }
+    },
+    {
+      "output": { "nodeId": 6, "pinIndex": 0 },
+      "input": { "nodeId": 2, "pinIndex": 0 }
+    }
   ]
 }

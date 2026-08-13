@@ -1,7 +1,6 @@
 #pragma once
 
 #include <FilterGraph/Core/PipeGraph.hpp>
-
 #include <cstdint>
 #include <vector>
 

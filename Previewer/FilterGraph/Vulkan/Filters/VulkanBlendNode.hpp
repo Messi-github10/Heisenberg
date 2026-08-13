@@ -4,14 +4,13 @@
 
 namespace heisenberg::filtergraph {
 
-/// Linear crossfade between two images with identical working formats.
 class VulkanBlendNode final : public VulkanComputeNode,
-                               public ITLayer<float> {
+                               public ITNode<float> {
 public:
     VulkanBlendNode();
 
-    IBaseLayer* getLayer() override {
-        return static_cast<BaseLayer*>(this);
+    IBaseNode* getNode() override {
+        return static_cast<BaseNode*>(this);
     }
 
 protected:

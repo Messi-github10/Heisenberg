@@ -2,7 +2,6 @@
 
 #include "VulkanImageResource.hpp"
 #include "VulkanNode.hpp"
-
 #include <memory>
 
 namespace heisenberg::filtergraph {

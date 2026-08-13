@@ -1,5 +1,4 @@
-#include "VulkanIOLayer.hpp"
-
+#include "VulkanIONodes.hpp"
 #include <Utiles/Logger.hpp>
 #include <volk.h>
 
@@ -21,16 +20,16 @@ ImageType imageTypeFromVkFormat(VkFormat format) {
 
 } // namespace
 
-VulkanInputLayer::VulkanInputLayer()
+VulkanInputNode::VulkanInputNode()
     : VulkanNode("VulkanInput", 0, 1) {}
 
-void VulkanInputLayer::setImage(const ImageFormat& format) {
+void VulkanInputNode::setImage(const ImageFormat& format) {
     if (declaredFormat_ == format) return;
     declaredFormat_ = format;
     invalidateGraph();
 }
 
-void VulkanInputLayer::setImage(const VideoFormat& format) {
+void VulkanInputNode::setImage(const VideoFormat& format) {
     ImageFormat image;
     image.width = format.width;
     image.height = format.height;
@@ -39,19 +38,7 @@ void VulkanInputLayer::setImage(const VideoFormat& format) {
     setImage(image);
 }
 
-void VulkanInputLayer::inputCpuData(uint8_t*, bool) {
-    LOG_WARN("FilterGraph: VulkanInput only accepts Vulkan images");
-}
-
-void VulkanInputLayer::inputCpuData(const VideoFrame&, bool) {
-    LOG_WARN("FilterGraph: VulkanInput only accepts Vulkan images");
-}
-
-void VulkanInputLayer::inputCpuData(uint8_t*, const ImageFormat&, bool) {
-    LOG_WARN("FilterGraph: VulkanInput only accepts Vulkan images");
-}
-
-bool VulkanInputLayer::setVulkanInput(
+bool VulkanInputNode::setVulkanInput(
     const VulkanImageRef& image, int32_t inputIndex) {
     if (inputIndex != 0 || !image.valid()) return false;
     if (image.format != kWorkingImageContract.format
@@ -69,7 +56,7 @@ bool VulkanInputLayer::setVulkanInput(
     return true;
 }
 
-bool VulkanInputLayer::configure(const std::vector<ImageFormat>& inputs) {
+bool VulkanInputNode::configure(const std::vector<ImageFormat>& inputs) {
     if (!inputs.empty() || !externalImage_.valid()
         || externalImage_.contract != kWorkingImageContract) {
         return false;
@@ -87,26 +74,26 @@ bool VulkanInputLayer::configure(const std::vector<ImageFormat>& inputs) {
     return true;
 }
 
-bool VulkanInputLayer::prepare(const VulkanGraphContext&) {
+bool VulkanInputNode::prepare(const VulkanGraphContext&) {
     return true;
 }
 
-bool VulkanInputLayer::beginFrame(const FrameContext& frame) {
+bool VulkanInputNode::beginFrame(const FrameContext& frame) {
     if (!externalImage_.valid()) return false;
     setOutput(0, externalImage_);
     return VulkanNode::beginFrame(frame);
 }
 
-void VulkanInputLayer::record(VkCommandBuffer, const FrameContext&) {}
+void VulkanInputNode::record(VkCommandBuffer, const FrameContext&) {}
 
-VulkanOutputLayer::VulkanOutputLayer()
+VulkanOutputNode::VulkanOutputNode()
     : VulkanNode("VulkanOutput", 1, 1) {}
 
-void VulkanOutputLayer::setObserver(IOutputLayerObserver* observer) {
+void VulkanOutputNode::setObserver(IOutputNodeObserver* observer) {
     observer_ = observer;
 }
 
-bool VulkanOutputLayer::configure(const std::vector<ImageFormat>& inputs) {
+bool VulkanOutputNode::configure(const std::vector<ImageFormat>& inputs) {
     if (inputs.size() != 1 || inputs[0].imageType == ImageType::other) return false;
     setInputFormat(0, inputs[0]);
     setOutputFormat(0, inputs[0]);
@@ -114,26 +101,26 @@ bool VulkanOutputLayer::configure(const std::vector<ImageFormat>& inputs) {
     return true;
 }
 
-bool VulkanOutputLayer::prepare(const VulkanGraphContext&) {
+bool VulkanOutputNode::prepare(const VulkanGraphContext&) {
     return true;
 }
 
-bool VulkanOutputLayer::beginFrame(const FrameContext& frame) {
+bool VulkanOutputNode::beginFrame(const FrameContext& frame) {
     if (!input(0).valid()) return false;
     setOutput(0, input(0));
     return VulkanNode::beginFrame(frame);
 }
 
-void VulkanOutputLayer::record(VkCommandBuffer, const FrameContext&) {}
+void VulkanOutputNode::record(VkCommandBuffer, const FrameContext&) {}
 
-bool VulkanOutputLayer::getVulkanOutput(
+bool VulkanOutputNode::getVulkanOutput(
     VulkanImageRef& image, int32_t outputIndex) const {
     if (outputIndex != 0 || !output(0).valid()) return false;
     image = output(0);
     return true;
 }
 
-void VulkanOutputLayer::releaseVulkanOutput(
+void VulkanOutputNode::releaseVulkanOutput(
     const VulkanImageRef& image, int32_t outputIndex) {
     if (outputIndex != 0 || !image.valid() || image.image != output(0).image
         || image.generation != output(0).generation) {
@@ -143,7 +130,7 @@ void VulkanOutputLayer::releaseVulkanOutput(
     consumerDone_ = image.ready;
 }
 
-VulkanSyncPoint VulkanOutputLayer::takeConsumerDone() {
+VulkanSyncPoint VulkanOutputNode::takeConsumerDone() {
     const VulkanSyncPoint result = consumerDone_;
     consumerDone_ = {};
     return result;

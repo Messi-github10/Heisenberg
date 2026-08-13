@@ -1,7 +1,7 @@
 #pragma once
 
 #include <FilterGraph/Common/FilterCommon.hpp>
-
+#include <FilterGraph/Vulkan/Filters/GaussianBlurParams.hpp>
 #include <cstdint>
 #include <string>
 #include <variant>
@@ -35,7 +35,7 @@ using VulkanGraphParameter = std::variant<
     std::monostate,
     ExposureParamet,
     BlendParamet,
-    GaussianBlurParamet>;
+    GaussianBlurParams>;
 
 struct VulkanGraphPosition {
     float x = 0.0f;
@@ -49,11 +49,18 @@ struct VulkanGraphNodeDesc {
     VulkanGraphPosition position = {};
 };
 
-struct VulkanGraphEdgeDesc {
-    VulkanGraphNodeId fromNode = 0;
-    int32_t fromPin = 0;
-    VulkanGraphNodeId toNode = 0;
-    int32_t toPin = 0;
+struct NodePin {
+    uint64_t nodeId = 0;
+    int32_t pinIndex = -1;
+
+    constexpr bool operator==(const NodePin&) const = default;
+};
+
+struct GraphEdge {
+    NodePin output;
+    NodePin input;
+
+    constexpr bool operator==(const GraphEdge&) const = default;
 };
 
 /// Editable graph data. Vulkan objects and shader paths never live here.
@@ -67,17 +74,15 @@ public:
 
     uint32_t version() const { return version_; }
     const std::vector<VulkanGraphNodeDesc>& nodes() const { return nodes_; }
-    const std::vector<VulkanGraphEdgeDesc>& edges() const { return edges_; }
+    const std::vector<GraphEdge>& edges() const { return edges_; }
 
     VulkanGraphNodeId addNode(
         VulkanGraphNodeType type,
         VulkanGraphParameter parameter = {},
         VulkanGraphPosition position = {});
     bool removeNode(VulkanGraphNodeId nodeId);
-    bool connect(VulkanGraphNodeId fromNode, int32_t fromPin,
-                 VulkanGraphNodeId toNode, int32_t toPin);
-    bool disconnect(VulkanGraphNodeId fromNode, int32_t fromPin,
-                    VulkanGraphNodeId toNode, int32_t toPin);
+    bool connect(NodePin output, NodePin input);
+    bool disconnect(NodePin output, NodePin input);
     bool updateParameter(VulkanGraphNodeId nodeId,
                          VulkanGraphParameter parameter);
     bool moveNode(VulkanGraphNodeId nodeId, VulkanGraphPosition position);
@@ -93,7 +98,7 @@ private:
     uint32_t version_ = 1;
     VulkanGraphNodeId nextNodeId_ = 3;
     std::vector<VulkanGraphNodeDesc> nodes_;
-    std::vector<VulkanGraphEdgeDesc> edges_;
+    std::vector<GraphEdge> edges_;
 };
 
 } // namespace heisenberg::filtergraph

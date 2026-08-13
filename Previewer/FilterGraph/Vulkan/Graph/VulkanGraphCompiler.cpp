@@ -1,10 +1,7 @@
 #include "VulkanGraphCompiler.hpp"
-
 #include "VulkanNodeFactory.hpp"
-
-#include <FilterGraph/Interface/ILayerFactory.hpp>
+#include <FilterGraph/Interface/INodeFactory.hpp>
 #include <FilterGraph/Interface/IPipeGraph.hpp>
-
 #include <utility>
 #include <variant>
 
@@ -15,40 +12,40 @@ void setError(std::string* error, const char* message) {
     if (error) *error = message;
 }
 
-IBaseLayer* createRuntimeNode(
+IBaseNode* createRuntimeNode(
     const VulkanGraphNodeDesc& node,
     VulkanNodeFactory& nodeFactory,
-    IInputLayer*& input,
-    IOutputLayer*& output) {
+    IInputNode*& input,
+    IOutputNode*& output) {
     switch (node.type) {
         case VulkanGraphNodeType::input:
             input = nodeFactory.createInput();
-            return input ? input->getLayer() : nullptr;
+            return input ? input->getNode() : nullptr;
         case VulkanGraphNodeType::output:
             output = nodeFactory.createOutput();
-            return output ? output->getLayer() : nullptr;
+            return output ? output->getNode() : nullptr;
         case VulkanGraphNodeType::colorInvert: {
-            ILayer* layer = nodeFactory.createColorInvert();
-            return layer ? layer->getLayer() : nullptr;
+            INode* runtimeNode = nodeFactory.createColorInvert();
+            return runtimeNode ? runtimeNode->getNode() : nullptr;
         }
         case VulkanGraphNodeType::exposure: {
-            auto* layer = nodeFactory.createExposure();
-            if (!layer) return nullptr;
-            layer->updateParamet(std::get<ExposureParamet>(node.parameter).exposure);
-            return layer->getLayer();
+            auto* runtimeNode = nodeFactory.createExposure();
+            if (!runtimeNode) return nullptr;
+            runtimeNode->updateParamet(std::get<ExposureParamet>(node.parameter).exposure);
+            return runtimeNode->getNode();
         }
         case VulkanGraphNodeType::blend: {
-            auto* layer = nodeFactory.createBlend();
-            if (!layer) return nullptr;
-            layer->updateParamet(std::get<BlendParamet>(node.parameter).factor);
-            return layer->getLayer();
+            auto* runtimeNode = nodeFactory.createBlend();
+            if (!runtimeNode) return nullptr;
+            runtimeNode->updateParamet(std::get<BlendParamet>(node.parameter).factor);
+            return runtimeNode->getNode();
         }
         case VulkanGraphNodeType::gaussianBlur: {
-            auto* layer = nodeFactory.createGaussianBlur();
-            if (!layer) return nullptr;
-            layer->updateParamet(
-                std::get<GaussianBlurParamet>(node.parameter));
-            return layer->getLayer();
+            auto* runtimeNode = nodeFactory.createGaussianBlur();
+            if (!runtimeNode) return nullptr;
+            runtimeNode->updateParamet(
+                std::get<GaussianBlurParams>(node.parameter));
+            return runtimeNode->getNode();
         }
     }
     return nullptr;
@@ -67,7 +64,7 @@ bool VulkanGraphCompiler::compile(
     VulkanCompiledGraph compiled;
     compiled.nodes.reserve(document.nodes().size());
     for (const VulkanGraphNodeDesc& node : document.nodes()) {
-        IBaseLayer* runtimeNode = createRuntimeNode(
+        IBaseNode* runtimeNode = createRuntimeNode(
             node, nodeFactory, compiled.input, compiled.output);
         if (!runtimeNode || !graph.addNode(runtimeNode)) {
             setError(error, "Failed to create or add a Vulkan graph node");
@@ -76,13 +73,13 @@ bool VulkanGraphCompiler::compile(
         compiled.nodes.emplace(node.id, runtimeNode);
     }
 
-    for (const VulkanGraphEdgeDesc& edge : document.edges()) {
-        const auto source = compiled.nodes.find(edge.fromNode);
-        const auto destination = compiled.nodes.find(edge.toNode);
+    for (const GraphEdge& edge : document.edges()) {
+        const auto source = compiled.nodes.find(edge.output.nodeId);
+        const auto destination = compiled.nodes.find(edge.input.nodeId);
         if (source == compiled.nodes.end()
             || destination == compiled.nodes.end()
             || !graph.addLine(source->second, destination->second,
-                              edge.fromPin, edge.toPin)) {
+                              edge.output.pinIndex, edge.input.pinIndex)) {
             setError(error, "Failed to connect a Vulkan graph edge");
             return false;
         }

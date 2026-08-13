@@ -5,12 +5,12 @@
 namespace heisenberg::filtergraph {
 
 class VulkanExposureNode final : public VulkanComputeNode,
-                                  public ITLayer<float> {
+                                  public ITNode<float> {
 public:
     VulkanExposureNode();
 
-    IBaseLayer* getLayer() override {
-        return static_cast<BaseLayer*>(this);
+    IBaseNode* getNode() override {
+        return static_cast<BaseNode*>(this);
     }
 
 protected:

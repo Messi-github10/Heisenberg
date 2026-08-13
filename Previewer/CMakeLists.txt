@@ -60,11 +60,12 @@ set_target_properties(HeisenbergPreviewer PROPERTIES
 
 target_include_directories(HeisenbergPreviewer PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Common
     ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan
     ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/Filters
     ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/Graph
     ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/Nodes
-    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/IOLayer
+    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/IONodes
     ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/Resources
 )
 

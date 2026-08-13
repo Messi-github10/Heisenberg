@@ -1,12 +1,10 @@
 #include "VulkanGraphDocument.hpp"
-
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QString>
-
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -58,7 +56,7 @@ bool parameterMatches(const VulkanGraphNodeDesc& node) {
         }
         case VulkanGraphNodeType::gaussianBlur: {
             const auto* parameter =
-                std::get_if<GaussianBlurParamet>(&node.parameter);
+                std::get_if<GaussianBlurParams>(&node.parameter);
             return parameter && parameter->blurRadius >= 0
                 && parameter->blurRadius <= 32
                 && std::isfinite(parameter->sigma)
@@ -72,7 +70,7 @@ VulkanGraphParameter defaultParameter(VulkanGraphNodeType type) {
     switch (type) {
         case VulkanGraphNodeType::exposure: return ExposureParamet{};
         case VulkanGraphNodeType::blend: return BlendParamet{};
-        case VulkanGraphNodeType::gaussianBlur: return GaussianBlurParamet{};
+        case VulkanGraphNodeType::gaussianBlur: return GaussianBlurParams{};
         case VulkanGraphNodeType::input:
         case VulkanGraphNodeType::output:
         case VulkanGraphNodeType::colorInvert:
@@ -81,17 +79,10 @@ VulkanGraphParameter defaultParameter(VulkanGraphNodeType type) {
     return std::monostate{};
 }
 
-struct InputPin {
-    VulkanGraphNodeId nodeId = 0;
-    int32_t pin = 0;
-
-    bool operator==(const InputPin&) const = default;
-};
-
-struct InputPinHash {
-    size_t operator()(const InputPin& input) const {
-        const size_t nodeHash = std::hash<VulkanGraphNodeId>{}(input.nodeId);
-        const size_t pinHash = std::hash<int32_t>{}(input.pin);
+struct NodePinHash {
+    size_t operator()(const NodePin& pin) const {
+        const size_t nodeHash = std::hash<uint64_t>{}(pin.nodeId);
+        const size_t pinHash = std::hash<int32_t>{}(pin.pinIndex);
         return nodeHash ^ (pinHash + 0x9e3779b9u + (nodeHash << 6)
             + (nodeHash >> 2));
     }
@@ -133,6 +124,19 @@ bool readPin(const QJsonObject& object, const char* key,
     }
     result = static_cast<int32_t>(number);
     return true;
+}
+
+bool readNodePin(const QJsonObject& edgeObject, const char* key,
+                 NodePin& result, std::string* error) {
+    const QJsonValue value = edgeObject.value(QLatin1String(key));
+    if (!value.isObject()) {
+        setError(error, QStringLiteral("JSON field '%1' must be an object")
+            .arg(QLatin1String(key)));
+        return false;
+    }
+    const QJsonObject object = value.toObject();
+    return readNodeId(object, "nodeId", result.nodeId, error)
+        && readPin(object, "pinIndex", result.pinIndex, error);
 }
 
 bool parseNodeType(const QString& name, VulkanGraphNodeType& type) {
@@ -202,7 +206,7 @@ bool parseParameter(VulkanGraphNodeType type, const QJsonObject& object,
             return true;
         }
         case VulkanGraphNodeType::gaussianBlur: {
-            GaussianBlurParamet parameter;
+            GaussianBlurParams parameter;
             int32_t radius = parameter.blurRadius;
             const QJsonValue radiusValue = object.value("blurRadius");
             if (!radiusValue.isUndefined()) {
@@ -311,11 +315,9 @@ bool VulkanGraphDocument::loadFromJsonFile(
             return false;
         }
         const QJsonObject edgeObject = edgeValue.toObject();
-        VulkanGraphEdgeDesc edge;
-        if (!readNodeId(edgeObject, "fromNode", edge.fromNode, error)
-            || !readPin(edgeObject, "fromPin", edge.fromPin, error)
-            || !readNodeId(edgeObject, "toNode", edge.toNode, error)
-            || !readPin(edgeObject, "toPin", edge.toPin, error)) {
+        GraphEdge edge;
+        if (!readNodePin(edgeObject, "output", edge.output, error)
+            || !readNodePin(edgeObject, "input", edge.input, error)) {
             return false;
         }
         parsed.edges_.push_back(edge);
@@ -372,8 +374,8 @@ bool VulkanGraphDocument::removeNode(VulkanGraphNodeId nodeId) {
         [nodeId](const VulkanGraphNodeDesc& node) { return node.id == nodeId; });
     if (found == nodes_.end()) return false;
     nodes_.erase(found);
-    std::erase_if(edges_, [nodeId](const VulkanGraphEdgeDesc& edge) {
-        return edge.fromNode == nodeId || edge.toNode == nodeId;
+    std::erase_if(edges_, [nodeId](const GraphEdge& edge) {
+        return edge.output.nodeId == nodeId || edge.input.nodeId == nodeId;
     });
     return true;
 }
@@ -387,43 +389,41 @@ bool VulkanGraphDocument::wouldCreateCycle(
         pending.pop_back();
         if (current == fromNode) return true;
         if (!visited.insert(current).second) continue;
-        for (const VulkanGraphEdgeDesc& edge : edges_) {
-            if (edge.fromNode == current) pending.push_back(edge.toNode);
+        for (const GraphEdge& edge : edges_) {
+            if (edge.output.nodeId == current) {
+                pending.push_back(edge.input.nodeId);
+            }
         }
     }
     return false;
 }
 
-bool VulkanGraphDocument::connect(
-    VulkanGraphNodeId fromNode, int32_t fromPin,
-    VulkanGraphNodeId toNode, int32_t toPin) {
-    const VulkanGraphNodeDesc* source = findNode(fromNode);
-    const VulkanGraphNodeDesc* destination = findNode(toNode);
-    if (!source || !destination || fromNode == toNode) return false;
+bool VulkanGraphDocument::connect(NodePin output, NodePin input) {
+    const VulkanGraphNodeDesc* source = findNode(output.nodeId);
+    const VulkanGraphNodeDesc* destination = findNode(input.nodeId);
+    if (!source || !destination || output.nodeId == input.nodeId) return false;
     const PinCounts sourcePins = pinCounts(source->type);
     const PinCounts destinationPins = pinCounts(destination->type);
-    if (fromPin < 0 || fromPin >= sourcePins.outputs
-        || toPin < 0 || toPin >= destinationPins.inputs) {
+    if (output.pinIndex < 0 || output.pinIndex >= sourcePins.outputs
+        || input.pinIndex < 0 || input.pinIndex >= destinationPins.inputs) {
         return false;
     }
     const auto occupied = std::find_if(edges_.begin(), edges_.end(),
-        [toNode, toPin](const VulkanGraphEdgeDesc& edge) {
-            return edge.toNode == toNode && edge.toPin == toPin;
+        [input](const GraphEdge& edge) {
+            return edge.input == input;
         });
-    if (occupied != edges_.end() || wouldCreateCycle(fromNode, toNode)) {
+    if (occupied != edges_.end()
+        || wouldCreateCycle(output.nodeId, input.nodeId)) {
         return false;
     }
-    edges_.push_back({fromNode, fromPin, toNode, toPin});
+    edges_.push_back({output, input});
     return true;
 }
 
-bool VulkanGraphDocument::disconnect(
-    VulkanGraphNodeId fromNode, int32_t fromPin,
-    VulkanGraphNodeId toNode, int32_t toPin) {
+bool VulkanGraphDocument::disconnect(NodePin output, NodePin input) {
     const auto found = std::find_if(edges_.begin(), edges_.end(),
-        [&](const VulkanGraphEdgeDesc& edge) {
-            return edge.fromNode == fromNode && edge.fromPin == fromPin
-                && edge.toNode == toNode && edge.toPin == toPin;
+        [output, input](const GraphEdge& edge) {
+            return edge.output == output && edge.input == input;
         });
     if (found == edges_.end()) return false;
     edges_.erase(found);
@@ -475,34 +475,36 @@ bool VulkanGraphDocument::validate(std::string* error) const {
     std::unordered_map<VulkanGraphNodeId, int32_t> indegree;
     std::unordered_map<VulkanGraphNodeId, std::vector<VulkanGraphNodeId>> outgoing;
     std::unordered_map<VulkanGraphNodeId, std::vector<VulkanGraphNodeId>> incoming;
-    std::unordered_set<InputPin, InputPinHash> occupiedInputs;
+    std::unordered_set<NodePin, NodePinHash> occupiedInputs;
     for (const auto& [nodeId, node] : nodesById) {
         static_cast<void>(node);
         indegree[nodeId] = 0;
     }
 
-    for (const VulkanGraphEdgeDesc& edge : edges_) {
-        const auto source = nodesById.find(edge.fromNode);
-        const auto destination = nodesById.find(edge.toNode);
+    for (const GraphEdge& edge : edges_) {
+        const auto source = nodesById.find(edge.output.nodeId);
+        const auto destination = nodesById.find(edge.input.nodeId);
         if (source == nodesById.end() || destination == nodesById.end()
-            || edge.fromNode == edge.toNode) {
+            || edge.output.nodeId == edge.input.nodeId) {
             setError(error, "Vulkan graph edge references an invalid node");
             return false;
         }
         const PinCounts sourcePins = pinCounts(source->second->type);
         const PinCounts destinationPins = pinCounts(destination->second->type);
-        if (edge.fromPin < 0 || edge.fromPin >= sourcePins.outputs
-            || edge.toPin < 0 || edge.toPin >= destinationPins.inputs) {
+        if (edge.output.pinIndex < 0
+            || edge.output.pinIndex >= sourcePins.outputs
+            || edge.input.pinIndex < 0
+            || edge.input.pinIndex >= destinationPins.inputs) {
             setError(error, "Vulkan graph edge references an invalid pin");
             return false;
         }
-        if (!occupiedInputs.insert({edge.toNode, edge.toPin}).second) {
+        if (!occupiedInputs.insert(edge.input).second) {
             setError(error, "Vulkan graph input pin has more than one connection");
             return false;
         }
-        ++indegree[edge.toNode];
-        outgoing[edge.fromNode].push_back(edge.toNode);
-        incoming[edge.toNode].push_back(edge.fromNode);
+        ++indegree[edge.input.nodeId];
+        outgoing[edge.output.nodeId].push_back(edge.input.nodeId);
+        incoming[edge.input.nodeId].push_back(edge.output.nodeId);
     }
 
     for (const auto& [nodeId, node] : nodesById) {
