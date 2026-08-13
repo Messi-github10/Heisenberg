@@ -8,6 +8,16 @@
 namespace heisenberg::filtergraph {
 
 class BaseNode;
+class IBaseNode;
+class IInputNode;
+class IOutputNode;
+struct VulkanGraphNodeDesc;
+
+struct VulkanNodeCreateResult {
+    IBaseNode* node = nullptr;
+    IInputNode* input = nullptr;
+    IOutputNode* output = nullptr;
+};
 
 class VulkanNodeFactory final : public NodeFactory {
 public:
@@ -21,6 +31,8 @@ public:
     ITNode<float>* createExposure() override;
     ITNode<float>* createBlend() override;
     ITNode<GaussianBlurParams>* createGaussianBlur() override;
+
+    VulkanNodeCreateResult createGraphNode(const VulkanGraphNodeDesc& node);
 
 private:
     template<typename T>

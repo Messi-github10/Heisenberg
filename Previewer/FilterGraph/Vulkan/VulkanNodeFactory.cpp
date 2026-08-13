@@ -5,9 +5,72 @@
 #include "VulkanGaussianBlurNode.hpp"
 #include "VulkanIONodes.hpp"
 #include "VulkanPassthroughNode.hpp"
+#include "VulkanGraphDocument.hpp"
 #include <FilterGraph/Core/BaseNode.hpp>
+#include <unordered_map>
+#include <variant>
 
 namespace heisenberg::filtergraph {
+namespace {
+
+using GraphNodeCreator = VulkanNodeCreateResult (*) (
+    VulkanNodeFactory&, const VulkanGraphNodeDesc&);
+
+VulkanNodeCreateResult createInputNode(
+    VulkanNodeFactory& factory, const VulkanGraphNodeDesc&) {
+    IInputNode* input = factory.createInput();
+    return {input ? input->getNode() : nullptr, input, nullptr};
+}
+
+VulkanNodeCreateResult createOutputNode(
+    VulkanNodeFactory& factory, const VulkanGraphNodeDesc&) {
+    IOutputNode* output = factory.createOutput();
+    return {output ? output->getNode() : nullptr, nullptr, output};
+}
+
+VulkanNodeCreateResult createColorInvertNode(
+    VulkanNodeFactory& factory, const VulkanGraphNodeDesc&) {
+    INode* node = factory.createColorInvert();
+    return {node ? node->getNode() : nullptr, nullptr, nullptr};
+}
+
+VulkanNodeCreateResult createExposureNode(
+    VulkanNodeFactory& factory, const VulkanGraphNodeDesc& descriptor) {
+    auto* node = factory.createExposure();
+    if (!node) return {};
+    node->updateParamet(std::get<ExposureParamet>(descriptor.parameter).exposure);
+    return {node->getNode(), nullptr, nullptr};
+}
+
+VulkanNodeCreateResult createBlendNode(
+    VulkanNodeFactory& factory, const VulkanGraphNodeDesc& descriptor) {
+    auto* node = factory.createBlend();
+    if (!node) return {};
+    node->updateParamet(std::get<BlendParamet>(descriptor.parameter).factor);
+    return {node->getNode(), nullptr, nullptr};
+}
+
+VulkanNodeCreateResult createGaussianBlurNode(
+    VulkanNodeFactory& factory, const VulkanGraphNodeDesc& descriptor) {
+    auto* node = factory.createGaussianBlur();
+    if (!node) return {};
+    node->updateParamet(std::get<GaussianBlurParams>(descriptor.parameter));
+    return {node->getNode(), nullptr, nullptr};
+}
+
+const std::unordered_map<VulkanGraphNodeType, GraphNodeCreator>& graphNodeCreators() {
+    static const std::unordered_map<VulkanGraphNodeType, GraphNodeCreator> creators{
+        {VulkanGraphNodeType::input, createInputNode},
+        {VulkanGraphNodeType::output, createOutputNode},
+        {VulkanGraphNodeType::colorInvert, createColorInvertNode},
+        {VulkanGraphNodeType::exposure, createExposureNode},
+        {VulkanGraphNodeType::blend, createBlendNode},
+        {VulkanGraphNodeType::gaussianBlur, createGaussianBlurNode},
+    };
+    return creators;
+}
+
+} // namespace
 
 VulkanNodeFactory::VulkanNodeFactory() = default;
 
@@ -47,6 +110,14 @@ ITNode<float>* VulkanNodeFactory::createBlend() {
 
 ITNode<GaussianBlurParams>* VulkanNodeFactory::createGaussianBlur() {
     return createNode<VulkanGaussianBlurNode>();
+}
+
+VulkanNodeCreateResult VulkanNodeFactory::createGraphNode(
+    const VulkanGraphNodeDesc& node) {
+    const auto& creators = graphNodeCreators();
+    const auto creator = creators.find(node.type);
+    return creator != creators.end() ? creator->second(*this, node)
+                                    : VulkanNodeCreateResult{};
 }
 
 } // namespace heisenberg::filtergraph
