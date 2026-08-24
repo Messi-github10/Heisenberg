@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "name": "Exposure then Blend GPU Test",
+  "description": "The original input is blended 50% with a +2 EV exposure result.",
+  "nodes": [
+    {
+      "id": 1,
+      "type": "input",
+      "name": "Original Input",
+      "position": { "x": 0.0, "y": 120.0 }
+    },
+    {
+      "id": 2,
+      "type": "output",
+      "name": "Preview Output",
+      "position": { "x": 960.0, "y": 120.0 }
+    },
+    {
+      "id": 3,
+      "type": "exposure",
+      "name": "Exposure +2 EV",
+      "parameters": { "exposure": 2.0 },
+      "position": { "x": 240.0, "y": 40.0 }
+    },
+    {
+      "id": 4,
+      "type": "blend",
+      "name": "Blend 50%",
+      "parameters": { "factor": 0.5 },
+      "position": { "x": 560.0, "y": 120.0 }
+    }
+  ],
+  "edges": [
+    {
+      "output": { "nodeId": 1, "pinIndex": 0 },
+      "input": { "nodeId": 3, "pinIndex": 0 },
+      "label": "Original -> Exposure input"
+    },
+    {
+      "output": { "nodeId": 1, "pinIndex": 0 },
+      "input": { "nodeId": 4, "pinIndex": 0 },
+      "label": "Original -> Blend original input"
+    },
+    {
+      "output": { "nodeId": 3, "pinIndex": 0 },
+      "input": { "nodeId": 4, "pinIndex": 1 },
+      "label": "Exposure -> Blend effect input"
+    },
+    {
+      "output": { "nodeId": 4, "pinIndex": 0 },
+      "input": { "nodeId": 2, "pinIndex": 0 },
+      "label": "Blend -> Preview"
+    }
+  ]
+}

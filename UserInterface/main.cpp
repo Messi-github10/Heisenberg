@@ -65,6 +65,14 @@ int main(int argc, char* argv[])
                      &playerCtrl, &heisenberg::ui::PlayerController::endScrub);
     QObject::connect(&mainWindow, &MainWindow::openFileRequested,
                      &playerCtrl, &heisenberg::ui::PlayerController::openFile);
+    QObject::connect(&mainWindow, &MainWindow::openFilterGraphRequested,
+                     &playerCtrl, &heisenberg::ui::PlayerController::openFilterGraph);
+    QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::filterGraphPathChanged,
+                     &mainWindow, [&]() {
+                         mainWindow.setFilterGraphPath(playerCtrl.filterGraphPath());
+                     });
+    QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::filterGraphLoadFailed,
+                     &mainWindow, &MainWindow::setFilterGraphError);
 
     // 回写 UI 状态
     QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::isPlayingChanged,

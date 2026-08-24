@@ -1,5 +1,7 @@
 #include "VulkanBlendNode.hpp"
 
+#include "../ShaderUniforms.hpp"
+
 #ifndef HEISENBERG_BLEND_SHADER_PATH
 #error HEISENBERG_BLEND_SHADER_PATH must be defined by CMake
 #endif
@@ -10,8 +12,8 @@ VulkanBlendNode::VulkanBlendNode()
     : VulkanComputeNode("VulkanBlend", 2, 1) {
     paramet = 0.5f;
     oldParamet = paramet;
-    setUniformBufferSize(sizeof(paramet));
-    updateUniformData(paramet);
+    setUniformBufferSize(sizeof(shader_abi::ScalarUniform));
+    updateUniformData(shader_abi::ScalarUniform{paramet});
 }
 
 bool VulkanBlendNode::configureOutputs(
@@ -22,7 +24,7 @@ bool VulkanBlendNode::configureOutputs(
 
 void VulkanBlendNode::onUpdateParamet() {
     if (paramet == oldParamet) return;
-    updateUniformData(paramet);
+    updateUniformData(shader_abi::ScalarUniform{paramet});
 }
 
 const char* VulkanBlendNode::shaderPath() const {

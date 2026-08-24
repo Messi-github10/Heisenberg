@@ -15,8 +15,6 @@
 #include <Utiles/Logger.hpp>
 
 #include <stdexcept>
-#include <array>
-#include <numeric>
 #include <string>
 
 extern "C" {
@@ -109,6 +107,67 @@ void PlayerController::bindVideoOutput(VideoWidget* widget) {
     initPipeline(widget);
 }
 
+bool PlayerController::loadFilterGraph(const QString& path, QString* error) {
+    if (path.trimmed().isEmpty()) {
+        if (error) *error = QStringLiteral("Filter graph path is empty");
+        return false;
+    }
+    if (!previewer_ || !gpuCtx_) {
+        if (error) *error = QStringLiteral("Vulkan previewer is not initialized");
+        return false;
+    }
+
+    auto& vkCtx = renderer::VulkanContext::instance();
+    filtergraph::VulkanGraphContext graphContext;
+    graphContext.instance = static_cast<VkInstance>(vkCtx.vkInstance());
+    graphContext.physicalDevice =
+        static_cast<VkPhysicalDevice>(vkCtx.physicalDevice());
+    graphContext.device = static_cast<VkDevice>(vkCtx.device());
+    graphContext.queue = static_cast<VkQueue>(vkCtx.graphicsQueue());
+    graphContext.queueFamilyIndex = vkCtx.graphicsQueueFamily();
+
+    filtergraph::VulkanGraphDocument graphDocument;
+    std::string graphError;
+    if (!graphDocument.loadFromJsonFile(path.toStdString(), &graphError)) {
+        if (error) *error = QString::fromStdString(graphError);
+        return false;
+    }
+
+    std::unique_ptr<filtergraph::VulkanFilterGraph> nextGraph;
+    try {
+        nextGraph = std::make_unique<filtergraph::VulkanFilterGraph>(
+            graphContext, graphDocument);
+    } catch (const std::exception& exception) {
+        if (error) *error = QString::fromUtf8(exception.what());
+        return false;
+    }
+
+    // Do not destroy resources that may still be referenced by the queue.
+    vkCtx.device().waitIdle();
+    previewer_->setFilterGraph(nullptr, nullptr, nullptr);
+    filterGraph_.reset();
+    filterGraph_ = std::move(nextGraph);
+    previewer_->setFilterGraph(filterGraph_->graph(), filterGraph_->input(),
+                               filterGraph_->output());
+
+    filterGraphVerificationFrame_ = 0;
+    filterGraphPath_ = path;
+    emit filterGraphPathChanged();
+    if (lastFrame_) previewer_->presentFrame(lastFrame_.get());
+    return true;
+}
+
+void PlayerController::openFilterGraph(const QString& path) {
+    QString error;
+    if (!loadFilterGraph(path, &error)) {
+        LOG_ERROR("PlayerController: filter graph load failed: {}",
+                  error.toStdString());
+        emit filterGraphLoadFailed(error);
+        return;
+    }
+    LOG_INFO("PlayerController: loaded filter graph '{}'", path.toStdString());
+}
+
 void PlayerController::initPipeline(VideoWidget* widget) {
     HWND hwnd = widget->nativeWindow();
     if (!hwnd) {
@@ -160,31 +219,6 @@ void PlayerController::initPipeline(VideoWidget* widget) {
         return;
     }
 
-    filtergraph::VulkanGraphContext graphContext;
-    graphContext.instance = static_cast<VkInstance>(vkInst);
-    graphContext.physicalDevice = static_cast<VkPhysicalDevice>(vkPhysDev);
-    graphContext.device = static_cast<VkDevice>(vkDev);
-    graphContext.queue = static_cast<VkQueue>(vkQueue);
-    graphContext.queueFamilyIndex = qf;
-    try {
-        filtergraph::VulkanGraphDocument graphDocument;
-        std::string graphError;
-        if (!graphDocument.loadFromJsonFile(
-                filtergraph::VulkanGraphDocument::testGraphPath(),
-                &graphError)) {
-            throw std::runtime_error(
-                "Failed to load test filter graph: " + graphError);
-        }
-    filterGraph_ = std::make_unique<filtergraph::VulkanFilterGraph>(
-            graphContext, graphDocument);
-        previewer_->setFilterGraph(filterGraph_->graph(), filterGraph_->input(),
-                                   filterGraph_->output());
-    } catch (const std::exception& error) {
-        LOG_ERROR("PlayerController: filter graph initialization failed: {}",
-                  error.what());
-        filterGraph_.reset();
-    }
-
     // ---- 尺寸跟随 ----
     connect(widget, &VideoWidget::windowResized, this, [this](int w, int h) {
         if (previewer_) {
@@ -221,22 +255,17 @@ void PlayerController::onFrameDecoded(std::shared_ptr<AVFrame> frame) {
 
     if (!previewer_->presentFrame(frame.get())) return;
 
-    // Temporary runtime proof for the Resize -> Histogram test graph.
+    // Runtime smoke check for the graph selected by the UI.
     if (!filterGraph_ || (++filterGraphVerificationFrame_ % 60) != 0) return;
 
     filtergraph::VulkanImageRef output;
-    std::array<uint32_t, 256> bins{};
-    if (!filterGraph_->output()->getVulkanOutput(output)
-        || !filterGraph_->histogramBins(4, bins)) {
-        LOG_WARN("FilterGraph verify: output or histogram is unavailable");
+    if (!filterGraph_->output()->getVulkanOutput(output)) {
+        LOG_WARN("FilterGraph verify: output is unavailable");
         return;
     }
 
-    const uint64_t total = std::accumulate(
-        bins.begin(), bins.end(), uint64_t{0});
-    LOG_INFO("FilterGraph verify: output={}x{}, histogram total={} (expected={})",
-             output.extent.width, output.extent.height, total,
-             static_cast<uint64_t>(output.extent.width) * output.extent.height);
+    LOG_INFO("FilterGraph verify: output={}x{} is ready",
+             output.extent.width, output.extent.height);
 }
 
 // ============================================================

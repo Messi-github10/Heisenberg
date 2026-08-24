@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFileDialog>
+#include <QFileInfo>
 
 #include <algorithm>
 #include <cmath>
@@ -51,11 +52,17 @@ void MainWindow::setupUi() {
     timeLabel_ = new QLabel("00:00 / 00:00", controlBar);
 
     openFileBtn_ = new QPushButton("Open", controlBar);
+    openFilterGraphBtn_ = new QPushButton("Open Graph", controlBar);
+    filterGraphLabel_ = new QLabel("Graph: none", controlBar);
+    filterGraphLabel_->setMinimumWidth(150);
+    filterGraphLabel_->setToolTip("No filter graph loaded");
 
     controlLayout->addWidget(playPauseBtn_);
     controlLayout->addWidget(progressBar_, 1);
     controlLayout->addWidget(timeLabel_);
     controlLayout->addWidget(openFileBtn_);
+    controlLayout->addWidget(openFilterGraphBtn_);
+    controlLayout->addWidget(filterGraphLabel_);
 
     mainLayout->addWidget(controlBar);
     setCentralWidget(central);
@@ -81,6 +88,14 @@ void MainWindow::setupConnections() {
             "Video Files (*.mp4 *.mkv *.avi *.mov *.webm);;All Files (*)");
         if (!path.isEmpty()) {
             emit openFileRequested(path);
+        }
+    });
+
+    connect(openFilterGraphBtn_, &QPushButton::clicked, this, [this]() {
+        QString path = QFileDialog::getOpenFileName(this, "Open Filter Graph", "",
+            "Filter Graphs (*.json);;All Files (*)");
+        if (!path.isEmpty()) {
+            emit openFilterGraphRequested(path);
         }
     });
 }
@@ -114,6 +129,19 @@ void MainWindow::setCurrentTime(double seconds) {
         return QString("%1:%2").arg(m, 2, 10, QChar('0')).arg(sec, 2, 10, QChar('0'));
     };
     timeLabel_->setText(fmt(seconds) + " / " + fmt(duration_));
+}
+
+void MainWindow::setFilterGraphPath(const QString& path) {
+    const QString name = QFileInfo(path).fileName();
+    filterGraphLabel_->setText("Graph: " + (name.isEmpty() ? path : name));
+    filterGraphLabel_->setToolTip(path);
+    filterGraphLabel_->setStyleSheet(QString());
+}
+
+void MainWindow::setFilterGraphError(const QString& message) {
+    filterGraphLabel_->setText("Graph: load failed");
+    filterGraphLabel_->setToolTip(message);
+    filterGraphLabel_->setStyleSheet("color: #c0392b;");
 }
 
 void MainWindow::setPlayingState(bool playing) {

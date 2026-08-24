@@ -1,4 +1,5 @@
 #include "VulkanComputeNode.hpp"
+#include "../ShaderBindingContract.hpp"
 #include <Utiles/Logger.hpp>
 #include <volk.h>
 #include <algorithm>
@@ -283,13 +284,18 @@ bool VulkanComputeNode::initializePipeline() {
         inputCount() + extraInputCount() + outputCount() + 1));
     uint32_t storageCount = static_cast<uint32_t>(outputCount());
     uint32_t sampledCount = 0;
-    uint32_t bindingIndex = 0;
+    const uint32_t inputCountValue = static_cast<uint32_t>(inputCount());
+    const uint32_t extraInputCountValue =
+        static_cast<uint32_t>(extraInputCount());
+    const uint32_t outputCountValue = static_cast<uint32_t>(outputCount());
 
     for (int32_t index = 0; index < inputCount(); ++index) {
         const VkDescriptorType type = isSampled(inputBinding(index))
             ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
             : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        bindings.push_back({bindingIndex++, type, 1,
+        bindings.push_back({shader_abi::inputBinding(
+                                static_cast<uint32_t>(index)),
+                            type, 1,
                             VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
         if (type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) ++storageCount;
         else ++sampledCount;
@@ -298,17 +304,26 @@ bool VulkanComputeNode::initializePipeline() {
         const VkDescriptorType type = isSampled(extraInputBinding(index))
             ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
             : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        bindings.push_back({bindingIndex++, type, 1,
+        bindings.push_back({shader_abi::extraInputBinding(
+                                inputCountValue,
+                                static_cast<uint32_t>(index)),
+                            type, 1,
                             VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
         if (type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) ++storageCount;
         else ++sampledCount;
     }
     for (int32_t index = 0; index < outputCount(); ++index) {
-        bindings.push_back({bindingIndex++, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+        bindings.push_back({shader_abi::outputBinding(
+                                inputCountValue, extraInputCountValue,
+                                static_cast<uint32_t>(index)),
+                            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
                             VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
     }
     if (!uniformData_.empty()) {
-        bindings.push_back({bindingIndex, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+        bindings.push_back({shader_abi::uniformBinding(
+                                inputCountValue, extraInputCountValue,
+                                outputCountValue),
+                            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                             VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
     }
 
@@ -460,7 +475,10 @@ bool VulkanComputeNode::updateDescriptors() {
     std::vector<VkWriteDescriptorSet> writes(writeCount);
     size_t imageIndex = 0;
     size_t writeIndex = 0;
-    uint32_t bindingIndex = 0;
+    const uint32_t inputCountValue = static_cast<uint32_t>(inputCount());
+    const uint32_t extraInputCountValue =
+        static_cast<uint32_t>(extraInputCount());
+    const uint32_t outputCountValue = static_cast<uint32_t>(outputCount());
 
     for (int32_t index = 0; index < inputCount(); ++index) {
         const VulkanImageRef& source = input(index);
@@ -483,7 +501,8 @@ bool VulkanComputeNode::updateDescriptors() {
         VkWriteDescriptorSet& write = writes[writeIndex++];
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write.dstSet = descriptorSet_;
-        write.dstBinding = bindingIndex++;
+        write.dstBinding = shader_abi::inputBinding(
+            static_cast<uint32_t>(index));
         write.descriptorCount = 1;
         write.descriptorType = sampled
             ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
@@ -512,7 +531,8 @@ bool VulkanComputeNode::updateDescriptors() {
         VkWriteDescriptorSet& write = writes[writeIndex++];
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write.dstSet = descriptorSet_;
-        write.dstBinding = bindingIndex++;
+        write.dstBinding = shader_abi::extraInputBinding(
+            inputCountValue, static_cast<uint32_t>(index));
         write.descriptorCount = 1;
         write.descriptorType = sampled
             ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
@@ -530,7 +550,9 @@ bool VulkanComputeNode::updateDescriptors() {
         VkWriteDescriptorSet& write = writes[writeIndex++];
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write.dstSet = descriptorSet_;
-        write.dstBinding = bindingIndex++;
+        write.dstBinding = shader_abi::outputBinding(
+            inputCountValue, extraInputCountValue,
+            static_cast<uint32_t>(index));
         write.descriptorCount = 1;
         write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         write.pImageInfo = &imageInfo;
@@ -543,7 +565,8 @@ bool VulkanComputeNode::updateDescriptors() {
         VkWriteDescriptorSet& write = writes[writeIndex];
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write.dstSet = descriptorSet_;
-        write.dstBinding = bindingIndex;
+        write.dstBinding = shader_abi::uniformBinding(
+            inputCountValue, extraInputCountValue, outputCountValue);
         write.descriptorCount = 1;
         write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         write.pBufferInfo = &uniformInfo;

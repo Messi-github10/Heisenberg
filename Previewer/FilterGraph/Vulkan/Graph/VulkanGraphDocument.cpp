@@ -14,10 +14,6 @@
 #include <unordered_set>
 #include <utility>
 
-#ifndef HEISENBERG_TEST_FILTER_GRAPH_PATH
-#error HEISENBERG_TEST_FILTER_GRAPH_PATH must be defined by CMake
-#endif
-
 namespace heisenberg::filtergraph {
 namespace {
 
@@ -274,10 +270,6 @@ bool parseParameter(VulkanGraphNodeType type, const QJsonObject& object,
 }
 
 } // namespace
-
-const char* VulkanGraphDocument::testGraphPath() {
-    return HEISENBERG_TEST_FILTER_GRAPH_PATH;
-}
 
 bool VulkanGraphDocument::loadFromJsonFile(
     const std::string& path, std::string* error) {

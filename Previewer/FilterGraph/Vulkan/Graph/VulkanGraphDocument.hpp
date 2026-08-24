@@ -73,7 +73,6 @@ class VulkanGraphDocument {
 public:
     VulkanGraphDocument() = default;
 
-    static const char* testGraphPath();
     bool loadFromJsonFile(const std::string& path,
                           std::string* error = nullptr);
 

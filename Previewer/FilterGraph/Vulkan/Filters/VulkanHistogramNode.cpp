@@ -1,5 +1,8 @@
 #include "VulkanHistogramNode.hpp"
 
+#include "../ShaderBindingContract.hpp"
+#include "../ShaderUniforms.hpp"
+
 #include <Utiles/Logger.hpp>
 #include <volk.h>
 
@@ -16,7 +19,8 @@
 namespace heisenberg::filtergraph {
 namespace {
 
-constexpr VkDeviceSize kHistogramBufferSize = 256 * sizeof(uint32_t);
+constexpr VkDeviceSize kHistogramBufferSize =
+    shader_abi::kHistogramBufferSize;
 
 std::vector<uint32_t> loadShaderCode(const char* path) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -120,8 +124,10 @@ bool VulkanHistogramNode::initializeBuffer() {
 
 bool VulkanHistogramNode::initializePipeline() {
     const std::array<VkDescriptorSetLayoutBinding, 2> bindings{{
-        {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {shader_abi::kHistogramInputBinding,
+         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {shader_abi::kHistogramBinsBinding,
+         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
     }};
     VkDescriptorSetLayoutCreateInfo layoutInfo{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -244,13 +250,13 @@ void VulkanHistogramNode::record(VkCommandBuffer commandBuffer,
     std::array<VkWriteDescriptorSet, 2> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = descriptorSet_;
-    writes[0].dstBinding = 0;
+    writes[0].dstBinding = shader_abi::kHistogramInputBinding;
     writes[0].descriptorCount = 1;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[0].pImageInfo = &imageInfo;
     writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[1].dstSet = descriptorSet_;
-    writes[1].dstBinding = 1;
+    writes[1].dstBinding = shader_abi::kHistogramBinsBinding;
     writes[1].descriptorCount = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[1].pBufferInfo = &bufferInfo;

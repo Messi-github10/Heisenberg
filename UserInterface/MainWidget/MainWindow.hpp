@@ -26,12 +26,15 @@ signals:
     void scrubFrameRequested(qint64 frameIndex);
     void scrubFinished(qint64 frameIndex);
     void openFileRequested(const QString& path);
+    void openFilterGraphRequested(const QString& path);
 
 public slots:
     void setDuration(double seconds);
     void setFrameCount(qint64 frameCount);
     void setCurrentTime(double seconds);
     void setPlayingState(bool playing);
+    void setFilterGraphPath(const QString& path);
+    void setFilterGraphError(const QString& message);
 
 private:
     void setupUi();
@@ -44,7 +47,9 @@ private:
     QSlider*     progressBar_ = nullptr;
     QPushButton* playPauseBtn_ = nullptr;
     QPushButton* openFileBtn_  = nullptr;
+    QPushButton* openFilterGraphBtn_ = nullptr;
     QLabel*      timeLabel_    = nullptr;
+    QLabel*      filterGraphLabel_ = nullptr;
 
     double duration_ = 0.0;
     qint64 frameCount_ = 0;

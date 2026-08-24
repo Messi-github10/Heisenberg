@@ -31,6 +31,8 @@ class PlayerController : public QObject {
     Q_PROPERTY(qint64  frameCount  READ frameCount  NOTIFY frameCountChanged)
     Q_PROPERTY(bool    isSeekable  READ isSeekable  NOTIFY isSeekableChanged)
     Q_PROPERTY(QString currentFile READ currentFile NOTIFY currentFileChanged)
+    Q_PROPERTY(QString filterGraphPath READ filterGraphPath
+               NOTIFY filterGraphPathChanged)
 
 public:
     explicit PlayerController(QObject* parent = nullptr);
@@ -42,6 +44,7 @@ public:
     qint64  frameCount()  const { return frameCount_; }
     bool    isSeekable()  const { return isSeekable_; }
     QString currentFile() const { return currentFile_; }
+    QString filterGraphPath() const { return filterGraphPath_; }
 
     void setPlaybackController(heisenberg::ctrl::PlaybackController* ctrl);
 
@@ -59,6 +62,7 @@ public slots:
     void goToEnd();
 
     bool openFile(const QString& path);
+    void openFilterGraph(const QString& path);
     void closeFile();
 
     /// 显式释放 GPU 资源（程序退出前调用）
@@ -74,12 +78,15 @@ signals:
     void frameCountChanged();
     void isSeekableChanged();
     void currentFileChanged();
+    void filterGraphPathChanged();
+    void filterGraphLoadFailed(const QString& message);
 
 private slots:
     void onFrameDecoded(std::shared_ptr<AVFrame> frame);
 
 private:
     void initPipeline(VideoWidget* widget);
+    bool loadFilterGraph(const QString& path, QString* error);
 
     bool    isPlaying_   = false;
     double  currentTime_ = 0.0;
@@ -87,6 +94,7 @@ private:
     qint64  frameCount_  = 0;
     bool    isSeekable_  = false;
     QString currentFile_;
+    QString filterGraphPath_;
 
     heisenberg::ctrl::PlaybackController* ctrl_ = nullptr;
 

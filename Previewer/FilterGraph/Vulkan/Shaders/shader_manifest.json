@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "shaders": [
+    {
+      "source": "colorInvert.comp",
+      "spirv": "colorInvert.comp.spv",
+      "node": "color_invert",
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "readwrite", "format": "rgba16f" }
+      ]
+    },
+    {
+      "source": "exposure.comp",
+      "spirv": "exposure.comp.spv",
+      "node": "exposure",
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "readwrite", "format": "rgba16f" },
+        { "name": "ExposureParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 4, "cpp_size": 16, "members": { "exposure": 0 } }
+      ]
+    },
+    {
+      "source": "blend.comp",
+      "spirv": "blend.comp.spv",
+      "node": "blend",
+      "resources": [
+        { "name": "originalTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "effectTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 2, "kind": "storage_image", "access": "readwrite", "format": "rgba16f" },
+        { "name": "BlendParams", "set": 0, "binding": 3, "kind": "ubo", "block_size": 4, "cpp_size": 16, "members": { "factor": 0 } }
+      ]
+    },
+    {
+      "source": "gaussianBlur.comp",
+      "spirv": "gaussianBlur.comp.spv",
+      "node": "gaussian_blur",
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "sampled_image" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "readwrite", "format": "rgba16f" },
+        { "name": "GaussianBlurParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 16, "cpp_size": 16, "members": { "direction": 0, "radius": 8, "sigma": 12 } }
+      ]
+    },
+    {
+      "source": "resize.comp",
+      "spirv": "resize.comp.spv",
+      "node": "resize",
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "sampled_image" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" }
+      ]
+    },
+    {
+      "source": "lut.comp",
+      "spirv": "lut.comp.spv",
+      "node": "lut",
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "lutTex", "set": 0, "binding": 1, "kind": "sampled_image" },
+        { "name": "outTex", "set": 0, "binding": 2, "kind": "storage_image", "access": "write", "format": "rgba16f" }
+      ]
+    },
+    {
+      "source": "histogram.comp",
+      "spirv": "histogram.comp.spv",
+      "node": "histogram",
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "HistogramBins", "set": 0, "binding": 1, "kind": "ssbo", "block_size": 1024, "members": { "bins": 0 }, "array_stride": 4 }
+      ]
+    }
+  ]
+}

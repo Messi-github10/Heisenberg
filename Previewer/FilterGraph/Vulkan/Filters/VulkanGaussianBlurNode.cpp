@@ -1,6 +1,7 @@
 #include "VulkanGaussianBlurNode.hpp"
 
 #include "VulkanComputeNode.hpp"
+#include "../ShaderUniforms.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -17,15 +18,6 @@ namespace heisenberg::filtergraph {
 namespace {
 
 constexpr int32_t kMaximumBlurRadius = 32;
-
-struct alignas(16) GaussianBlurPassUniform {
-    int32_t directionX = 0;
-    int32_t directionY = 0;
-    int32_t radius = 0;
-    float sigma = 1.0f;
-};
-
-static_assert(sizeof(GaussianBlurPassUniform) == 16);
 
 float automaticSigma(int32_t radius) {
     return std::max(0.1f, (static_cast<float>(radius) - 1.0f) * 0.3f + 0.8f);
@@ -60,7 +52,7 @@ protected:
     }
 
 private:
-    GaussianBlurPassUniform uniform_ = {};
+    shader_abi::GaussianBlurUniform uniform_ = {};
 };
 
 VulkanGaussianBlurNode::VulkanGaussianBlurNode()
