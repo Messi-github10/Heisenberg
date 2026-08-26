@@ -3,23 +3,6 @@
 #include <volk.h>
 
 namespace heisenberg::filtergraph {
-namespace {
-
-ImageType imageTypeFromVkFormat(VkFormat format) {
-    switch (format) {
-        case VK_FORMAT_R8_UNORM: return ImageType::r8;
-        case VK_FORMAT_R16_UNORM: return ImageType::r16;
-        case VK_FORMAT_R16G16B16A16_SFLOAT: return ImageType::rgba16f;
-        case VK_FORMAT_R32_SFLOAT: return ImageType::r32f;
-        case VK_FORMAT_R32G32B32A32_SFLOAT: return ImageType::rgba32f;
-        case VK_FORMAT_B8G8R8A8_UNORM: return ImageType::bgra8;
-        case VK_FORMAT_R8G8B8A8_UNORM: return ImageType::rgba8;
-        default: return ImageType::other;
-    }
-}
-
-} // namespace
-
 VulkanInputNode::VulkanInputNode()
     : VulkanNode("VulkanInput", 0, 1) {}
 
@@ -33,22 +16,22 @@ void VulkanInputNode::setImage(const VideoFormat& format) {
     ImageFormat image;
     image.width = format.width;
     image.height = format.height;
-    image.imageType = format.format == toFormatId(ImageType::bgra8)
-        ? ImageType::bgra8 : ImageType::rgba8;
+    image.format = format.format;
     setImage(image);
 }
 
 bool VulkanInputNode::setVulkanInput(
     const VulkanImageRef& image, int32_t inputIndex) {
     if (inputIndex != 0 || !image.valid()) return false;
-    if (image.format != kWorkingImageContract.format
+    if (image.vkFormat != imageFormatToVkFormat(kWorkingImageContract.format)
         || image.contract != kWorkingImageContract) {
         LOG_ERROR("FilterGraph: Vulkan input violates the linear BT.2020 "
                   "RGBA16F straight-alpha working contract");
         return false;
     }
     const bool formatChanged = !externalImage_.valid()
-        || externalImage_.format != image.format
+        || externalImage_.vkFormat != image.vkFormat
+        || externalImage_.contract.format != image.contract.format
         || externalImage_.extent.width != image.extent.width
         || externalImage_.extent.height != image.extent.height;
     externalImage_ = image;
@@ -64,8 +47,8 @@ bool VulkanInputNode::configure(const std::vector<ImageFormat>& inputs) {
     ImageFormat format;
     format.width = static_cast<int32_t>(externalImage_.extent.width);
     format.height = static_cast<int32_t>(externalImage_.extent.height);
-    format.imageType = imageTypeFromVkFormat(externalImage_.format);
-    if (format.imageType == ImageType::other) return false;
+    format.format = externalImage_.contract.format;
+    if (format.format == toFormatId(ImageType::none)) return false;
     if (declaredFormat_.width > 0 && declaredFormat_ != format) {
         LOG_ERROR("FilterGraph: external input does not match declared format");
         return false;
@@ -94,7 +77,8 @@ void VulkanOutputNode::setObserver(IOutputNodeObserver* observer) {
 }
 
 bool VulkanOutputNode::configure(const std::vector<ImageFormat>& inputs) {
-    if (inputs.size() != 1 || inputs[0].imageType == ImageType::other) return false;
+    if (inputs.size() != 1
+        || inputs[0].format == toFormatId(ImageType::none)) return false;
     setInputFormat(0, inputs[0]);
     setOutputFormat(0, inputs[0]);
     if (observer_) observer_->onFormatChanged(inputs[0], 0);

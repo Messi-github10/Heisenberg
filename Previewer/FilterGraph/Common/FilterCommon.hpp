@@ -171,6 +171,7 @@ struct ImageFormatComponentDesc {
 struct ImageFormatDesc {
     FormatId id = toFormatId(ImageType::none);
     const char* name = nullptr;
+    VkFormat vkFormat = VK_FORMAT_UNDEFINED;
     uint32_t flags = 0;
     int8_t numPlanes = 0;
     int8_t chromaXs = 0;
@@ -187,6 +188,8 @@ FormatId imageFormatFromName(std::string_view name);
 const char* imageFormatName(FormatId id);
 FormatId imageFormatFromAvPixelFormat(int32_t pixelFormat);
 int32_t imageFormatToAvPixelFormat(FormatId id);
+FormatId imageFormatFromVkFormat(VkFormat vkFormat);
+VkFormat imageFormatToVkFormat(FormatId id);
 ImageFormatDesc imageFormatGetDesc(FormatId id);
 
 enum class ColorPrimaries : int32_t {
@@ -244,8 +247,7 @@ enum class AlphaMode : int32_t {
 
 // DAG 滤镜图内部的像素语义契约
 struct GraphImageContract {
-    VkFormat       format        = VK_FORMAT_UNDEFINED;         // Vulkan Image 的物理格式
-    ImageType      imageType     = ImageType::other;            // 图像格式
+    FormatId       format        = toFormatId(ImageType::none); // 图像格式句柄
     ColorPrimaries primaries     = ColorPrimaries::unknown;     // 色彩空间
     ColorTransfer  transfer      = ColorTransfer::unknown;      // 传递函数
     AlphaMode      alpha         = AlphaMode::unknown;          // Alpha 通道
@@ -255,8 +257,7 @@ struct GraphImageContract {
 
 // 运行时语义契约
 inline constexpr GraphImageContract kWorkingImageContract{
-    VK_FORMAT_R16G16B16A16_SFLOAT,
-    ImageType::rgba16f,
+    toFormatId(ImageType::rgba16f),
     ColorPrimaries::bt2020,
     ColorTransfer::linear,
     AlphaMode::straight,
@@ -264,14 +265,14 @@ inline constexpr GraphImageContract kWorkingImageContract{
 
 // 图像格式
 struct ImageFormat {
-    int32_t  width     = 0;
-    int32_t  height    = 0;
-    ImageType imageType = ImageType::other;
+    int32_t  width  = 0;
+    int32_t  height = 0;
+    FormatId format = toFormatId(ImageType::none);
 
     inline bool operator==(const ImageFormat& right) const {
         return this->width     == right.width
             && this->height    == right.height
-            && this->imageType == right.imageType;
+            && this->format    == right.format;
     }
 
     inline bool operator!=(const ImageFormat& right) const {
@@ -296,7 +297,7 @@ struct VulkanSyncPoint {
 struct VulkanImageRef {
     VkImage           image            = VK_NULL_HANDLE;
     VkImageView       view             = VK_NULL_HANDLE;
-    VkFormat          format           = VK_FORMAT_UNDEFINED;
+    VkFormat          vkFormat         = VK_FORMAT_UNDEFINED;
     VkExtent2D        extent           = {};
     VkImageUsageFlags usage            = 0;
     VkImageLayout     layout           = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -307,7 +308,7 @@ struct VulkanImageRef {
 
     bool valid() const {
         return image != VK_NULL_HANDLE
-            && format != VK_FORMAT_UNDEFINED
+            && vkFormat != VK_FORMAT_UNDEFINED
             && extent.width > 0
             && extent.height > 0;
     }

@@ -40,7 +40,7 @@ protected:
         updateUniformData(&value, sizeof(T));
     }
 
-    virtual bool supportsFormat(ImageType format) const;
+    virtual bool supportsFormat(FormatId format) const;
     virtual bool configureOutputs(const std::vector<ImageFormat>& inputs);
     virtual VulkanInputBinding inputBinding(int32_t inputIndex) const;
     virtual int32_t extraInputCount() const;

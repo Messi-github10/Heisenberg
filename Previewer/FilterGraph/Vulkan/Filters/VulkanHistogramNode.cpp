@@ -71,7 +71,7 @@ VulkanHistogramNode::~VulkanHistogramNode() {
 }
 
 bool VulkanHistogramNode::configure(const std::vector<ImageFormat>& inputs) {
-    if (inputs.size() != 1 || inputs[0].imageType != kWorkingImageContract.imageType) {
+    if (inputs.size() != 1 || inputs[0].format != kWorkingImageContract.format) {
         return false;
     }
     setInputFormat(0, inputs[0]);

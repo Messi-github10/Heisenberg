@@ -27,23 +27,24 @@ uint32_t VulkanImageResource::findMemoryType(
 }
 
 bool VulkanImageResource::ensure(
-    VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
+    VkExtent2D extent, VkImageUsageFlags usage,
     const GraphImageContract& contract) {
+    const VkFormat vkFormat = imageFormatToVkFormat(contract.format);
     if (image_ && extent_.width == extent.width && extent_.height == extent.height
-        && format_ == format && usage_ == usage) {
+        && vkFormat_ == vkFormat && usage_ == usage) {
         contract_ = contract;
         return true;
     }
 
     reset();
     if (!context_.device || extent.width == 0 || extent.height == 0
-        || format == VK_FORMAT_UNDEFINED) {
+        || vkFormat == VK_FORMAT_UNDEFINED) {
         return false;
     }
 
     VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.format = format;
+    imageInfo.format = vkFormat;
     imageInfo.extent = {extent.width, extent.height, 1};
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
@@ -81,7 +82,7 @@ bool VulkanImageResource::ensure(
     VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     viewInfo.image = image_;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = format;
+    viewInfo.format = vkFormat;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.layerCount = 1;
@@ -92,7 +93,7 @@ bool VulkanImageResource::ensure(
     }
 
     extent_ = extent;
-    format_ = format;
+    vkFormat_ = vkFormat;
     usage_ = usage;
     contract_ = contract;
     layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -109,7 +110,7 @@ void VulkanImageResource::reset() {
     image_ = VK_NULL_HANDLE;
     memory_ = VK_NULL_HANDLE;
     extent_ = {};
-    format_ = VK_FORMAT_UNDEFINED;
+    vkFormat_ = VK_FORMAT_UNDEFINED;
     usage_ = 0;
     contract_ = {};
     layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -119,7 +120,7 @@ VulkanImageRef VulkanImageResource::ref(VulkanSyncPoint ready) const {
     VulkanImageRef result;
     result.image = image_;
     result.view = view_;
-    result.format = format_;
+    result.vkFormat = vkFormat_;
     result.extent = extent_;
     result.usage = usage_;
     result.layout = layout_;

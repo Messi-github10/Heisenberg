@@ -85,8 +85,8 @@ VulkanComputeNode::~VulkanComputeNode() {
     destroyPipeline();
 }
 
-bool VulkanComputeNode::supportsFormat(ImageType format) const {
-    return format == kWorkingImageContract.imageType;
+bool VulkanComputeNode::supportsFormat(FormatId format) const {
+    return format == kWorkingImageContract.format;
 }
 
 bool VulkanComputeNode::configure(
@@ -95,7 +95,7 @@ bool VulkanComputeNode::configure(
     for (int32_t index = 0; index < inputCount(); ++index) {
         const ImageFormat& format = inputs[static_cast<size_t>(index)];
         if (format.width <= 0 || format.height <= 0
-            || !supportsFormat(format.imageType)) {
+            || !supportsFormat(format.format)) {
             return false;
         }
         setInputFormat(index, format);
@@ -175,12 +175,11 @@ bool VulkanComputeNode::prepare(const VulkanGraphContext& context) {
     for (int32_t index = 0; index < outputCount(); ++index) {
         const ImageFormat& format =
             outputFormats()[static_cast<size_t>(index)];
-        if (!supportsFormat(format.imageType)
+        if (!supportsFormat(format.format)
             || !outputImages_[static_cast<size_t>(index)]->ensure(
                 {static_cast<uint32_t>(format.width),
                  static_cast<uint32_t>(format.height)},
-                kWorkingImageContract.format, usage,
-                kWorkingImageContract)) {
+                usage, kWorkingImageContract)) {
             return false;
         }
     }

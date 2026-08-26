@@ -371,7 +371,7 @@ bool IPreviewer::presentFrame(const AVFrame* avframe) {
     filtergraph::VulkanImageRef graphInput;
     graphInput.image = toC(impl_->intermediateImg);
     graphInput.view = toC(impl_->intermediateView);
-    graphInput.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    graphInput.vkFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
     graphInput.extent = {
         static_cast<uint32_t>(workWidth), static_cast<uint32_t>(workHeight)};
     graphInput.usage = toCUsage(usage);
@@ -423,7 +423,7 @@ bool IPreviewer::renderToSwapChain(
     wrapParams.image = image.image;
     wrapParams.width = static_cast<int>(image.extent.width);
     wrapParams.height = static_cast<int>(image.extent.height);
-    wrapParams.format = image.format;
+    wrapParams.format = image.vkFormat;
     wrapParams.usage = image.usage;
     pl_tex sourceTexture = pl_vulkan_wrap(impl_->gpu, &wrapParams);
     if (!sourceTexture) return false;

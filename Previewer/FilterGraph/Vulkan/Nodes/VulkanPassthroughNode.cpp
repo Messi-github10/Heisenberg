@@ -4,19 +4,6 @@
 namespace heisenberg::filtergraph {
 namespace {
 
-VkFormat vkFormatFromImageType(ImageType type) {
-    switch (type) {
-        case ImageType::r8: return VK_FORMAT_R8_UNORM;
-        case ImageType::r16: return VK_FORMAT_R16_UNORM;
-        case ImageType::rgba16f: return VK_FORMAT_R16G16B16A16_SFLOAT;
-        case ImageType::r32f: return VK_FORMAT_R32_SFLOAT;
-        case ImageType::rgba32f: return VK_FORMAT_R32G32B32A32_SFLOAT;
-        case ImageType::bgra8: return VK_FORMAT_B8G8R8A8_UNORM;
-        case ImageType::rgba8: return VK_FORMAT_R8G8B8A8_UNORM;
-        default: return VK_FORMAT_UNDEFINED;
-    }
-}
-
 void transitionImage(VkCommandBuffer commandBuffer, VkImage image,
                      VkImageLayout oldLayout, VkImageLayout newLayout,
                      VkPipelineStageFlags sourceStage,
@@ -46,7 +33,8 @@ VulkanPassthroughNode::VulkanPassthroughNode()
 
 bool VulkanPassthroughNode::configure(
     const std::vector<ImageFormat>& inputs) {
-    if (inputs.size() != 1 || inputs[0].imageType == ImageType::other) {
+    if (inputs.size() != 1
+        || inputs[0].format == toFormatId(ImageType::none)) {
         return false;
     }
     setInputFormat(0, inputs[0]);
@@ -59,14 +47,15 @@ bool VulkanPassthroughNode::prepare(const VulkanGraphContext& context) {
         outputImage_ = std::make_unique<VulkanImageResource>(context);
     }
     const ImageFormat& outputFormat = outputFormats()[0];
-    const VkFormat format = vkFormatFromImageType(outputFormat.imageType);
     const VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT
         | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
         | VK_IMAGE_USAGE_STORAGE_BIT;
+    GraphImageContract contract = kWorkingImageContract;
+    contract.format = outputFormat.format;
     return outputImage_->ensure(
         {static_cast<uint32_t>(outputFormat.width),
          static_cast<uint32_t>(outputFormat.height)},
-        format, usage, kWorkingImageContract);
+        usage, contract);
 }
 
 void VulkanPassthroughNode::record(
