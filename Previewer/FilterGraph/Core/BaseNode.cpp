@@ -30,14 +30,6 @@ void BaseNode::setEnable(bool enabled) {
     if (graph_) graph_->reset();
 }
 
-void BaseNode::setStartNode(IBaseNode* node, int32_t, int32_t) {
-    startNode_ = node;
-}
-
-void BaseNode::setEndNode(IBaseNode* node) {
-    endNode_ = node;
-}
-
 IBaseNode* BaseNode::addNode(IBaseNode* node) {
     return graph_ ? graph_->addNode(node) : nullptr;
 }

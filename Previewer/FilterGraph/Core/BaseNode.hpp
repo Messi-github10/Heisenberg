@@ -20,9 +20,6 @@ public:
     void setEnable(bool enabled) override;
     int32_t getGraphIndex() override { return graphIndex_; }
 
-    void setStartNode(IBaseNode* node, int32_t index = 0,
-                      int32_t toInIndex = 0) override;
-    void setEndNode(IBaseNode* node) override;
     IBaseNode* addNode(IBaseNode* node) override;
     IBaseNode* addNode(INode* node) override;
     IBaseNode* addLine(IBaseNode* to, int32_t fromOut = 0,
@@ -58,8 +55,6 @@ private:
     bool enabled_        = true;
     bool visible_        = true;
     PipeGraph* graph_    = nullptr;
-    IBaseNode* startNode_ = nullptr;
-    IBaseNode* endNode_   = nullptr;
     std::vector<ImageFormat> inputFormats_;
     std::vector<ImageFormat> outputFormats_;
 };

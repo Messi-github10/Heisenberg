@@ -18,10 +18,6 @@ public:
     virtual void setEnable(bool enabled) = 0;
     virtual int32_t getGraphIndex() = 0;
 
-    virtual void setStartNode(IBaseNode* node, int32_t index = 0,
-                              int32_t toInIndex = 0) = 0;
-    virtual void setEndNode(IBaseNode* node) = 0;
-
     virtual IBaseNode* addNode(IBaseNode* node) = 0;
     virtual IBaseNode* addNode(INode* node) = 0;
 
