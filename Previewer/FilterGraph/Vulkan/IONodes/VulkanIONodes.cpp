@@ -33,7 +33,7 @@ void VulkanInputNode::setImage(const VideoFormat& format) {
     ImageFormat image;
     image.width = format.width;
     image.height = format.height;
-    image.imageType = format.videoType == VideoType::bgra8
+    image.imageType = format.format == toFormatId(ImageType::bgra8)
         ? ImageType::bgra8 : ImageType::rgba8;
     setImage(image);
 }

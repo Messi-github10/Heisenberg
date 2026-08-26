@@ -14,7 +14,7 @@ class IPipeGraph {
 public:
     virtual ~IPipeGraph() = default;
 
-    virtual GpuType getGpuType()   = 0;
+    virtual GraphicApiBackend getGpuType()   = 0;
     virtual void    reset()        = 0;
 
     virtual IBaseNode* getNode(int32_t index) = 0;

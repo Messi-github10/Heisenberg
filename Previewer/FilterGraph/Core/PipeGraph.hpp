@@ -17,10 +17,10 @@ struct RuntimeGraphEdge {
 
 class PipeGraph : public IPipeGraph {
 public:
-    explicit PipeGraph(GpuType gpuType);
+    explicit PipeGraph(GraphicApiBackend gpuType);
     ~PipeGraph() override;
 
-    GpuType getGpuType() override { return gpuType_; }
+    GraphicApiBackend getGpuType() override { return gpuType_; }
     void reset() override;
     IBaseNode* getNode(int32_t index) override;
     IBaseNode* addNode(IBaseNode* node) override;
@@ -52,7 +52,7 @@ private:
     bool rebuild();
     bool validateEdge(const RuntimeGraphEdge& edge) const;
 
-    GpuType gpuType_ = GpuType::other;
+    GraphicApiBackend gpuType_ = GraphicApiBackend::other;
     std::vector<BaseNode*> nodes_;
     std::vector<RuntimeGraphEdge> edges_;
     std::vector<int32_t> executionOrder_;

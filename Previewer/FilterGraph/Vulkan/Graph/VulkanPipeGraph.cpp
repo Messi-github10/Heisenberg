@@ -9,7 +9,7 @@
 namespace heisenberg::filtergraph {
 
 VulkanPipeGraph::VulkanPipeGraph(const VulkanGraphContext& context)
-    : PipeGraph(GpuType::vulkan), context_(context) {
+    : PipeGraph(GraphicApiBackend::vulkan), context_(context) {
     if (!initialize()) {
         throw std::runtime_error("Failed to initialize Vulkan filter graph");
     }

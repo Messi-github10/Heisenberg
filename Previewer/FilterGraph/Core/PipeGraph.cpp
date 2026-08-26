@@ -6,7 +6,7 @@
 
 namespace heisenberg::filtergraph {
 
-PipeGraph::PipeGraph(GpuType gpuType) : gpuType_(gpuType) {}
+PipeGraph::PipeGraph(GraphicApiBackend gpuType) : gpuType_(gpuType) {}
 
 PipeGraph::~PipeGraph() {
     clear();
