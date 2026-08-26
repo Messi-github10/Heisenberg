@@ -18,6 +18,7 @@
 *.pdb
 
 !Dependence/**/*.pdb
+.vscode
 
 # Compiled Dynamic libraries
 *.so
