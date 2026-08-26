@@ -27,14 +27,14 @@ public:
 
     IInputNode* createInput() override;
     IOutputNode* createOutput() override;
-    INode* createPassthrough() override;
-    INode* createColorInvert() override;
+    IFilterNode* createPassthrough() override;
+    IFilterNode* createColorInvert() override;
     ITNode<float>* createExposure() override;
     ITNode<float>* createBlend() override;
     ITNode<GaussianBlurParams>* createGaussianBlur() override;
     ITNode<ResizeParams>* createResize() override;
-    INode* createLut() override;
-    INode* createHistogram() override;
+    IFilterNode* createLut() override;
+    IFilterNode* createHistogram() override;
 
     VulkanNodeCreateResult createGraphNode(const VulkanGraphNodeDesc& node);
 

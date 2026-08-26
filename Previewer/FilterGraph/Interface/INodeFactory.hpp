@@ -17,7 +17,7 @@ public:
                                  int32_t outIndex) {}
 };
 
-class IInputNode : virtual public INode {
+class IInputNode : virtual public IFilterNode {
 public:
     ~IInputNode() override = default;
 
@@ -27,7 +27,7 @@ public:
                                 int32_t inputIndex = 0) = 0;
 };
 
-class IOutputNode : virtual public INode {
+class IOutputNode : virtual public IFilterNode {
 public:
     ~IOutputNode() override = default;
 
@@ -44,14 +44,14 @@ public:
 
     virtual IInputNode* createInput() = 0;
     virtual IOutputNode* createOutput() = 0;
-    virtual INode* createPassthrough() = 0;
-    virtual INode* createColorInvert() = 0;
+    virtual IFilterNode* createPassthrough() = 0;
+    virtual IFilterNode* createColorInvert() = 0;
     virtual ITNode<float>* createExposure() = 0;
     virtual ITNode<float>* createBlend() = 0;
     virtual ITNode<GaussianBlurParams>* createGaussianBlur() = 0;
     virtual ITNode<ResizeParams>* createResize() = 0;
-    virtual INode* createLut() = 0;
-    virtual INode* createHistogram() = 0;
+    virtual IFilterNode* createLut() = 0;
+    virtual IFilterNode* createHistogram() = 0;
 };
 
 } // namespace heisenberg::filtergraph

@@ -41,7 +41,7 @@ IBaseNode* PipeGraph::addNode(IBaseNode* node) {
     return base;
 }
 
-IBaseNode* PipeGraph::addNode(INode* node) {
+IBaseNode* PipeGraph::addNode(IFilterNode* node) {
     return node ? addNode(node->getNode()) : nullptr;
 }
 

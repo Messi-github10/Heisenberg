@@ -20,7 +20,7 @@ public:
     virtual IBaseNode* getNode(int32_t index) = 0;
 
     virtual IBaseNode* addNode(IBaseNode* node) = 0;
-    virtual IBaseNode* addNode(INode* node) = 0;
+    virtual IBaseNode* addNode(IFilterNode* node) = 0;
 
     virtual bool addLine(int32_t from, int32_t to,
                          int32_t fromOut = 0, int32_t toIn = 0) = 0;

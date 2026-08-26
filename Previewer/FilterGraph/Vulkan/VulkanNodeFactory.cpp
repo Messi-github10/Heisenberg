@@ -4,7 +4,8 @@
 #include "VulkanExposureNode.hpp"
 #include "VulkanGaussianBlurNode.hpp"
 #include "VulkanHistogramNode.hpp"
-#include "VulkanIONodes.hpp"
+#include "VulkanInputAdapter.hpp"
+#include "VulkanOutputAdapter.hpp"
 #include "VulkanLutNode.hpp"
 #include "VulkanPassthroughNode.hpp"
 #include "VulkanResizeNode.hpp"
@@ -33,7 +34,7 @@ VulkanNodeCreateResult createOutputNode(
 
 VulkanNodeCreateResult createColorInvertNode(
     VulkanNodeFactory& factory, const VulkanGraphNodeDesc&) {
-    INode* node = factory.createColorInvert();
+    IFilterNode* node = factory.createColorInvert();
     return {node ? node->getNode() : nullptr, nullptr, nullptr};
 }
 
@@ -71,13 +72,13 @@ VulkanNodeCreateResult createResizeNode(
 
 VulkanNodeCreateResult createLutNode(
     VulkanNodeFactory& factory, const VulkanGraphNodeDesc&) {
-    INode* node = factory.createLut();
+    IFilterNode* node = factory.createLut();
     return {node ? node->getNode() : nullptr, nullptr, nullptr};
 }
 
 VulkanNodeCreateResult createHistogramNode(
     VulkanNodeFactory& factory, const VulkanGraphNodeDesc&) {
-    INode* node = factory.createHistogram();
+    IFilterNode* node = factory.createHistogram();
     return {node ? node->getNode() : nullptr, nullptr, nullptr};
 }
 
@@ -111,18 +112,18 @@ T* VulkanNodeFactory::createNode() {
 }
 
 IInputNode* VulkanNodeFactory::createInput() {
-    return createNode<VulkanInputNode>();
+    return createNode<VulkanInputAdapter>();
 }
 
 IOutputNode* VulkanNodeFactory::createOutput() {
-    return createNode<VulkanOutputNode>();
+    return createNode<VulkanOutputAdapter>();
 }
 
-INode* VulkanNodeFactory::createPassthrough() {
+IFilterNode* VulkanNodeFactory::createPassthrough() {
     return createNode<VulkanPassthroughNode>();
 }
 
-INode* VulkanNodeFactory::createColorInvert() {
+IFilterNode* VulkanNodeFactory::createColorInvert() {
     return createNode<VulkanColorInvertNode>();
 }
 
@@ -142,11 +143,11 @@ ITNode<ResizeParams>* VulkanNodeFactory::createResize() {
     return createNode<VulkanResizeNode>();
 }
 
-INode* VulkanNodeFactory::createLut() {
+IFilterNode* VulkanNodeFactory::createLut() {
     return createNode<VulkanLutNode>();
 }
 
-INode* VulkanNodeFactory::createHistogram() {
+IFilterNode* VulkanNodeFactory::createHistogram() {
     return createNode<VulkanHistogramNode>();
 }
 

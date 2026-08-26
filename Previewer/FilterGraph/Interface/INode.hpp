@@ -6,7 +6,7 @@ namespace heisenberg::filtergraph {
 
 class IBaseNode;
 class IPipeGraph;
-class INode;
+class IFilterNode;
 
 class IBaseNode {
 public:
@@ -19,7 +19,7 @@ public:
     virtual int32_t getGraphIndex() = 0;
 
     virtual IBaseNode* addNode(IBaseNode* node) = 0;
-    virtual IBaseNode* addNode(INode* node) = 0;
+    virtual IBaseNode* addNode(IFilterNode* node) = 0;
 
     virtual IBaseNode* addLine(IBaseNode* to, int32_t fromOut = 0,
                                int32_t toIn = 0) = 0;
@@ -30,14 +30,14 @@ protected:
     virtual void onUpdateParamet() = 0;
 };
 
-class INode {
+class IFilterNode {
 public:
-    virtual ~INode() = default;
+    virtual ~IFilterNode() = default;
     virtual IBaseNode* getNode() = 0;
 };
 
 template<typename T>
-class ITNode : public INode {
+class ITNode : public IFilterNode {
 protected:
     T oldParamet = {};
     T paramet = {};

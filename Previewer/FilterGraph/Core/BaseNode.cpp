@@ -34,7 +34,7 @@ IBaseNode* BaseNode::addNode(IBaseNode* node) {
     return graph_ ? graph_->addNode(node) : nullptr;
 }
 
-IBaseNode* BaseNode::addNode(INode* node) {
+IBaseNode* BaseNode::addNode(IFilterNode* node) {
     return graph_ ? graph_->addNode(node) : nullptr;
 }
 

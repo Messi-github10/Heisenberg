@@ -24,7 +24,7 @@ public:
     void reset() override;
     IBaseNode* getNode(int32_t index) override;
     IBaseNode* addNode(IBaseNode* node) override;
-    IBaseNode* addNode(INode* node) override;
+    IBaseNode* addNode(IFilterNode* node) override;
     bool addLine(int32_t from, int32_t to, int32_t fromOut = 0,
                  int32_t toIn = 0) override;
     bool addLine(IBaseNode* from, IBaseNode* to, int32_t fromOut = 0,

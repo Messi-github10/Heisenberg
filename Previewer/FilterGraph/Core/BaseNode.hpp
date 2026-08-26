@@ -8,7 +8,7 @@ namespace heisenberg::filtergraph {
 
 class PipeGraph;
 
-class BaseNode : public virtual INode, public IBaseNode {
+class BaseNode : public virtual IFilterNode, public IBaseNode {
 public:
     BaseNode(std::string mark, int32_t inputCount, int32_t outputCount);
     ~BaseNode() override = default;
@@ -21,7 +21,7 @@ public:
     int32_t getGraphIndex() override { return graphIndex_; }
 
     IBaseNode* addNode(IBaseNode* node) override;
-    IBaseNode* addNode(INode* node) override;
+    IBaseNode* addNode(IFilterNode* node) override;
     IBaseNode* addLine(IBaseNode* to, int32_t fromOut = 0,
                         int32_t toIn = 0) override;
 
