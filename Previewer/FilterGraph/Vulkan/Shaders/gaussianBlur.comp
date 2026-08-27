@@ -35,7 +35,10 @@ void main() {
     vec2 uv = (vec2(pixel) + 0.5) * inverseSize;
     vec2 texelStep = vec2(params.direction) * inverseSize;
     int radius = clamp(params.radius, 0, MAX_RADIUS);
-    float sigma = max(params.sigma, 0.0001);
+    // A zero sigma keeps the historical automatic radius-based kernel width.
+    float sigma = params.sigma > 0.0
+        ? params.sigma
+        : max(0.1, (float(radius) - 1.0) * 0.3 + 0.8);
     float gaussianScale = 1.0 / (2.0 * sigma * sigma);
 
     vec3 premultipliedRgb = vec3(0.0);

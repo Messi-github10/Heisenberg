@@ -5,6 +5,14 @@
       "source": "colorInvert.comp",
       "spirv": "colorInvert.comp.spv",
       "node": "color_invert",
+      "id": "color_invert",
+      "name": "Color Invert",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 0,
+      "parameters": [],
       "resources": [
         { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
         { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "readwrite", "format": "rgba16f" }
@@ -14,6 +22,16 @@
       "source": "exposure.comp",
       "spirv": "exposure.comp.spv",
       "node": "exposure",
+      "id": "exposure",
+      "name": "Exposure",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "exposure", "type": "float", "offset": 0, "default": 0.0 }
+      ],
       "resources": [
         { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
         { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "readwrite", "format": "rgba16f" },
@@ -24,6 +42,16 @@
       "source": "blend.comp",
       "spirv": "blend.comp.spv",
       "node": "blend",
+      "id": "blend",
+      "name": "Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": ["storage", "storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "factor", "type": "float", "offset": 0, "default": 0.5, "min": 0.0, "max": 1.0 }
+      ],
       "resources": [
         { "name": "originalTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
         { "name": "effectTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "read", "format": "rgba16f" },
@@ -35,6 +63,23 @@
       "source": "gaussianBlur.comp",
       "spirv": "gaussianBlur.comp.spv",
       "node": "gaussian_blur",
+      "id": "gaussian_blur",
+      "name": "Gaussian Blur",
+      "kind": "multi_pass",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["sampled_linear"],
+      "uniform_size": 16,
+      "passes": [
+        { "name": "horizontal", "direction": [1, 0] },
+        { "name": "vertical", "direction": [0, 1] }
+      ],
+      "parameters": [
+        { "name": "directionX", "type": "int", "offset": 0, "default": 0, "exposed": false },
+        { "name": "directionY", "type": "int", "offset": 4, "default": 0, "exposed": false },
+        { "name": "blurRadius", "type": "int", "offset": 8, "default": 4, "min": 0, "max": 32 },
+        { "name": "sigma", "type": "float", "offset": 12, "default": 0.0, "min": 0.0 }
+      ],
       "resources": [
         { "name": "inTex", "set": 0, "binding": 0, "kind": "sampled_image" },
         { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "readwrite", "format": "rgba16f" },
@@ -45,6 +90,18 @@
       "source": "resize.comp",
       "spirv": "resize.comp.spv",
       "node": "resize",
+      "id": "resize",
+      "name": "Resize",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["sampled_linear"],
+      "uniform_size": 0,
+      "output_size": "parameters",
+      "parameters": [
+        { "name": "width", "type": "int", "offset": 0, "default": 1, "min": 1, "max": 16384 },
+        { "name": "height", "type": "int", "offset": 4, "default": 1, "min": 1, "max": 16384 }
+      ],
       "resources": [
         { "name": "inTex", "set": 0, "binding": 0, "kind": "sampled_image" },
         { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" }
@@ -54,6 +111,23 @@
       "source": "lut.comp",
       "spirv": "lut.comp.spv",
       "node": "lut",
+      "id": "lut",
+      "name": "LUT",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "extra_inputs": [
+        {
+          "name": "lutTex",
+          "binding_type": "sampled_linear"
+        }
+      ],
+      "auxiliary_source": "identity_lut",
+      "auxiliary_width": 512,
+      "auxiliary_height": 512,
+      "uniform_size": 0,
+      "parameters": [],
       "resources": [
         { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
         { "name": "lutTex", "set": 0, "binding": 1, "kind": "sampled_image" },
@@ -64,6 +138,16 @@
       "source": "histogram.comp",
       "spirv": "histogram.comp.spv",
       "node": "histogram",
+      "id": "histogram",
+      "name": "Histogram",
+      "kind": "readback",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "output": "passthrough",
+      "readback": { "binding": 1, "size": 1024, "clear": true },
+      "uniform_size": 0,
+      "parameters": [],
       "resources": [
         { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
         { "name": "HistogramBins", "set": 0, "binding": 1, "kind": "ssbo", "block_size": 1024, "members": { "bins": 0 }, "array_stride": 4 }

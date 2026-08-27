@@ -30,7 +30,4 @@ constexpr uint32_t uniformBinding(uint32_t inputCount,
     return kFirstInputBinding + inputCount + extraInputCount + outputCount;
 }
 
-inline constexpr uint32_t kHistogramInputBinding = 0;
-inline constexpr uint32_t kHistogramBinsBinding = 1;
-
 } // namespace heisenberg::filtergraph::shader_abi

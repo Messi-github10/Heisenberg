@@ -82,6 +82,7 @@ vcpkg_installed/
 .idea/
 .vs/
 .claude
+.codex
 
 # test output & cache
 Testing/

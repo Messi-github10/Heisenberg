@@ -1,8 +1,8 @@
 #include "VulkanFilterGraph.hpp"
 
 #include "VulkanPipeGraph.hpp"
-#include "VulkanHistogramNode.hpp"
-#include "VulkanLutNode.hpp"
+#include "../Nodes/VulkanManifestComputeNode.hpp"
+#include "../Nodes/VulkanReadbackNode.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -34,14 +34,15 @@ IBaseNode* VulkanFilterGraph::node(VulkanGraphNodeId nodeId) const {
 
 bool VulkanFilterGraph::setLutImage(
     VulkanGraphNodeId nodeId, const VulkanImageRef& image) {
-    auto* lut = dynamic_cast<VulkanLutNode*>(node(nodeId));
-    return lut && lut->setLutImage(image);
+    auto* lut = dynamic_cast<VulkanManifestComputeNode*>(node(nodeId));
+    return lut && lut->setExternalInput(0, image);
 }
 
 bool VulkanFilterGraph::histogramBins(
     VulkanGraphNodeId nodeId, std::array<uint32_t, 256>& bins) const {
-    auto* histogram = dynamic_cast<VulkanHistogramNode*>(node(nodeId));
-    return histogram && histogram->readBins(bins);
+    auto* readback = dynamic_cast<VulkanReadbackNode*>(node(nodeId));
+    return readback
+        && readback->readback(bins.data(), bins.size() * sizeof(uint32_t));
 }
 
 } // namespace heisenberg::filtergraph

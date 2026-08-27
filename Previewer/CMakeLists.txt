@@ -46,15 +46,18 @@ function(add_filter_shader output_variable source_name)
     set(${output_variable} "${shader_output}" PARENT_SCOPE)
 endfunction()
 
-set(FILTER_SHADER_SPECS
-    "COLOR_INVERT|colorInvert.comp"
-    "EXPOSURE|exposure.comp"
-    "BLEND|blend.comp"
-    "GAUSSIAN_BLUR|gaussianBlur.comp"
-    "RESIZE|resize.comp"
-    "LUT|lut.comp"
-    "HISTOGRAM|histogram.comp"
-)
+set(FILTER_SHADER_SPECS)
+
+# Compile newly registered shaders automatically. The small compatibility list
+# remains only for special nodes that still consume shader path macros.
+file(GLOB FILTER_SHADER_SOURCES CONFIGURE_DEPENDS
+    "${FILTER_SHADER_SOURCE_DIR}/*.comp")
+set(FILTER_SHADER_KNOWN_SOURCES)
+foreach(shader_spec IN LISTS FILTER_SHADER_SPECS)
+    string(REPLACE "|" ";" shader_parts "${shader_spec}")
+    list(GET shader_parts 1 shader_source_name)
+    list(APPEND FILTER_SHADER_KNOWN_SOURCES "${shader_source_name}")
+endforeach()
 
 set(FILTER_SHADER_OUTPUTS)
 set(FILTER_SHADER_DEFINITIONS)
@@ -67,6 +70,14 @@ foreach(shader_spec IN LISTS FILTER_SHADER_SPECS)
     list(APPEND FILTER_SHADER_OUTPUTS "${${shader_variable}}")
     list(APPEND FILTER_SHADER_DEFINITIONS
         "HEISENBERG_${shader_id}_SHADER_PATH=\"${${shader_variable}}\"")
+endforeach()
+
+foreach(shader_source_path IN LISTS FILTER_SHADER_SOURCES)
+    get_filename_component(shader_source_name "${shader_source_path}" NAME)
+    if(NOT shader_source_name IN_LIST FILTER_SHADER_KNOWN_SOURCES)
+        add_filter_shader(shader_output "${shader_source_name}")
+        list(APPEND FILTER_SHADER_OUTPUTS "${shader_output}")
+    endif()
 endforeach()
 
 add_custom_target(HeisenbergFilterShaders DEPENDS
@@ -150,6 +161,8 @@ target_compile_definitions(HeisenbergPreviewer PUBLIC
 
 target_compile_definitions(HeisenbergPreviewer PRIVATE
     ${FILTER_SHADER_DEFINITIONS}
+    HEISENBERG_SHADER_MANIFEST_PATH="${SHADER_CONTRACT_MANIFEST}"
+    HEISENBERG_FILTER_SHADER_BINARY_DIR="${FILTER_SHADER_BINARY_DIR}"
 )
 
 if(MSVC)

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "nodes": [
+    { "id": 1, "type": "input" },
+    { "id": 2, "type": "output" },
+    { "id": 3, "type": "lut" }
+  ],
+  "edges": [
+    { "output": { "nodeId": 1, "pinIndex": 0 }, "input": { "nodeId": 3, "pinIndex": 0 } },
+    { "output": { "nodeId": 3, "pinIndex": 0 }, "input": { "nodeId": 2, "pinIndex": 0 } }
+  ]
+}

@@ -1,43 +1,45 @@
 #pragma once
 
+#include "../VulkanFilterRegistry.hpp"
 #include "VulkanNode.hpp"
 
-#include <array>
+#include <cstddef>
 
 namespace heisenberg::filtergraph {
 
-class VulkanHistogramNode final : public VulkanNode {
+class VulkanReadbackNode final : public VulkanNode {
 public:
-    VulkanHistogramNode();
-    ~VulkanHistogramNode() override;
+    explicit VulkanReadbackNode(const VulkanFilterDescriptor& descriptor);
+    ~VulkanReadbackNode() override;
 
     bool prepare(const VulkanGraphContext& context) override;
     void record(VkCommandBuffer commandBuffer,
                 const FrameContext& frame) override;
     void setCompletion(VulkanSyncPoint completion) override;
 
-    bool readBins(std::array<uint32_t, 256>& bins) const;
+    bool readback(void* destination, size_t size) const;
 
 protected:
     bool configure(const std::vector<ImageFormat>& inputs) override;
 
 private:
-    bool initializePipeline();
     bool initializeBuffer();
+    bool initializePipeline();
     void destroyResources();
     uint32_t findMemoryType(uint32_t bits,
                             VkMemoryPropertyFlags flags) const;
 
+    VulkanFilterDescriptor descriptor_;
     VulkanGraphContext context_ = {};
     VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
-    VkBuffer binsBuffer_ = VK_NULL_HANDLE;
-    VkDeviceMemory binsMemory_ = VK_NULL_HANDLE;
-    void* binsMapped_ = nullptr;
-    VulkanSyncPoint binsReady_ = {};
+    VkBuffer readbackBuffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory readbackMemory_ = VK_NULL_HANDLE;
+    void* readbackMapped_ = nullptr;
+    VulkanSyncPoint readbackReady_ = {};
 };
 
 } // namespace heisenberg::filtergraph

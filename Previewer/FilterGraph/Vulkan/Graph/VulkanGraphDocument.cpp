@@ -1,4 +1,5 @@
 #include "VulkanGraphDocument.hpp"
+#include "../VulkanFilterRegistry.hpp"
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -22,70 +23,28 @@ struct PinCounts {
     int32_t outputs = 0;
 };
 
-PinCounts pinCounts(VulkanGraphNodeType type) {
-    switch (type) {
-        case VulkanGraphNodeType::input: return {0, 1};
-        case VulkanGraphNodeType::output: return {1, 0};
-        case VulkanGraphNodeType::blend: return {2, 1};
-        case VulkanGraphNodeType::colorInvert:
-        case VulkanGraphNodeType::exposure:
-        case VulkanGraphNodeType::gaussianBlur:
-        case VulkanGraphNodeType::resize:
-        case VulkanGraphNodeType::lut:
-        case VulkanGraphNodeType::histogram:
-            return {1, 1};
-    }
-    return {};
+const VulkanFilterDescriptor* descriptorFor(
+    const VulkanGraphNodeDesc& node, std::string* error = nullptr) {
+    return VulkanFilterRegistry::instance().find(node.filterId, error);
+}
+
+PinCounts pinCounts(const VulkanGraphNodeDesc& node) {
+    if (node.filterId == "input") return {0, 1};
+    if (node.filterId == "output") return {1, 0};
+    const auto* descriptor = descriptorFor(node);
+    return descriptor ? PinCounts{descriptor->inputCount, descriptor->outputCount}
+                      : PinCounts{};
 }
 
 bool parameterMatches(const VulkanGraphNodeDesc& node) {
-    switch (node.type) {
-        case VulkanGraphNodeType::input:
-        case VulkanGraphNodeType::output:
-        case VulkanGraphNodeType::colorInvert:
-        case VulkanGraphNodeType::lut:
-        case VulkanGraphNodeType::histogram:
-            return std::holds_alternative<std::monostate>(node.parameter);
-        case VulkanGraphNodeType::exposure: {
-            const auto* parameter = std::get_if<ExposureParamet>(&node.parameter);
-            return parameter && std::isfinite(parameter->exposure);
-        }
-        case VulkanGraphNodeType::blend: {
-            const auto* parameter = std::get_if<BlendParamet>(&node.parameter);
-            return parameter && std::isfinite(parameter->factor)
-                && parameter->factor >= 0.0f && parameter->factor <= 1.0f;
-        }
-        case VulkanGraphNodeType::gaussianBlur: {
-            const auto* parameter =
-                std::get_if<GaussianBlurParams>(&node.parameter);
-            return parameter && parameter->blurRadius >= 0
-                && parameter->blurRadius <= 32
-                && std::isfinite(parameter->sigma)
-                && parameter->sigma >= 0.0f;
-        }
-        case VulkanGraphNodeType::resize: {
-            const auto* parameter = std::get_if<ResizeParams>(&node.parameter);
-            return parameter && parameter->width > 0 && parameter->height > 0
-                && parameter->width <= 16384 && parameter->height <= 16384;
-        }
+    if (node.filterId == "input" || node.filterId == "output") {
+        return std::holds_alternative<std::monostate>(node.parameter);
     }
-    return false;
-}
-
-VulkanGraphParameter defaultParameter(VulkanGraphNodeType type) {
-    switch (type) {
-        case VulkanGraphNodeType::exposure: return ExposureParamet{};
-        case VulkanGraphNodeType::blend: return BlendParamet{};
-        case VulkanGraphNodeType::gaussianBlur: return GaussianBlurParams{};
-        case VulkanGraphNodeType::resize: return ResizeParams{};
-        case VulkanGraphNodeType::input:
-        case VulkanGraphNodeType::output:
-        case VulkanGraphNodeType::colorInvert:
-        case VulkanGraphNodeType::lut:
-        case VulkanGraphNodeType::histogram:
-            return std::monostate{};
-    }
-    return std::monostate{};
+    std::string error;
+    const auto* descriptor = descriptorFor(node, &error);
+    if (!descriptor) return false;
+    return VulkanFilterRegistry::instance().validateParameters(
+        *descriptor, node.parameter, &error);
 }
 
 struct NodePinHash {
@@ -149,25 +108,37 @@ bool readNodePin(const QJsonObject& edgeObject, const char* key,
 }
 
 bool parseNodeType(const QString& name, VulkanGraphNodeType& type) {
-    if (name == QStringLiteral("input")) type = VulkanGraphNodeType::input;
-    else if (name == QStringLiteral("output")) type = VulkanGraphNodeType::output;
-    else if (name == QStringLiteral("color_invert")) {
-        type = VulkanGraphNodeType::colorInvert;
-    } else if (name == QStringLiteral("exposure")) {
-        type = VulkanGraphNodeType::exposure;
-    } else if (name == QStringLiteral("blend")) {
-        type = VulkanGraphNodeType::blend;
-    } else if (name == QStringLiteral("gaussian_blur")) {
-        type = VulkanGraphNodeType::gaussianBlur;
-    } else if (name == QStringLiteral("resize")) {
-        type = VulkanGraphNodeType::resize;
-    } else if (name == QStringLiteral("lut")) {
-        type = VulkanGraphNodeType::lut;
-    } else if (name == QStringLiteral("histogram")) {
-        type = VulkanGraphNodeType::histogram;
-    } else {
+    constexpr VulkanGraphNodeType types[] = {
+        VulkanGraphNodeType::input, VulkanGraphNodeType::output,
+        VulkanGraphNodeType::colorInvert, VulkanGraphNodeType::exposure,
+        VulkanGraphNodeType::blend, VulkanGraphNodeType::gaussianBlur,
+        VulkanGraphNodeType::resize, VulkanGraphNodeType::lut,
+        VulkanGraphNodeType::histogram,
+    };
+    for (const VulkanGraphNodeType candidate : types) {
+        if (name == QLatin1String(vulkanGraphNodeTypeName(candidate))) {
+            type = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool parseFilterId(const QString& name, std::string& filterId,
+                   VulkanGraphNodeType& type, std::string* error) {
+    if (name.isEmpty()) {
+        setError(error, "Vulkan graph node has an empty filter id");
         return false;
     }
+    filterId = name.toStdString();
+    if (parseNodeType(name, type)) return true;
+    std::string lookupError;
+    if (!VulkanFilterRegistry::instance().find(filterId, &lookupError)) {
+        setError(error, QStringLiteral("Vulkan graph node has an unregistered filter id '%1'")
+            .arg(name));
+        return false;
+    }
+    type = VulkanGraphNodeType::colorInvert;
     return true;
 }
 
@@ -192,81 +163,16 @@ bool readFiniteFloat(const QJsonObject& object, const char* key,
     return true;
 }
 
-bool parseParameter(VulkanGraphNodeType type, const QJsonObject& object,
+bool parseParameter(const std::string& filterId, const QJsonObject& object,
                     VulkanGraphParameter& result, std::string* error) {
-    switch (type) {
-        case VulkanGraphNodeType::input:
-        case VulkanGraphNodeType::output:
-        case VulkanGraphNodeType::colorInvert:
-        case VulkanGraphNodeType::lut:
-        case VulkanGraphNodeType::histogram:
-            result = std::monostate{};
-            return true;
-        case VulkanGraphNodeType::exposure: {
-            ExposureParamet parameter;
-            if (!readFiniteFloat(object, "exposure", 0.0f,
-                                 parameter.exposure, error)) {
-                return false;
-            }
-            result = parameter;
-            return true;
-        }
-        case VulkanGraphNodeType::blend: {
-            BlendParamet parameter;
-            if (!readFiniteFloat(object, "factor", 0.5f,
-                                 parameter.factor, error)
-                || parameter.factor < 0.0f || parameter.factor > 1.0f) {
-                setError(error, "Blend factor must be between 0 and 1");
-                return false;
-            }
-            result = parameter;
-            return true;
-        }
-        case VulkanGraphNodeType::gaussianBlur: {
-            GaussianBlurParams parameter;
-            int32_t radius = parameter.blurRadius;
-            const QJsonValue radiusValue = object.value("blurRadius");
-            if (!radiusValue.isUndefined()) {
-                const double number = radiusValue.toDouble(-1.0);
-                if (!radiusValue.isDouble() || number < 0.0 || number > 32.0
-                    || std::floor(number) != number) {
-                    setError(error, "Gaussian blurRadius must be an integer from 0 to 32");
-                    return false;
-                }
-                radius = static_cast<int32_t>(number);
-            }
-            float sigma = parameter.sigma;
-            if (!readFiniteFloat(object, "sigma", parameter.sigma,
-                                 sigma, error)
-                || sigma < 0.0f) {
-                setError(error, "Gaussian sigma must be a nonnegative number");
-                return false;
-            }
-            parameter.blurRadius = radius;
-            parameter.sigma = sigma;
-            result = parameter;
-            return true;
-        }
-        case VulkanGraphNodeType::resize: {
-            const QJsonValue width = object.value("width");
-            const QJsonValue height = object.value("height");
-            const auto validDimension = [](const QJsonValue& value) {
-                const double number = value.toDouble(-1.0);
-                return value.isDouble() && number >= 1.0 && number <= 16384.0
-                    && std::floor(number) == number;
-            };
-            if (!validDimension(width) || !validDimension(height)) {
-                setError(error, "Resize width and height must be integers from 1 to 16384");
-                return false;
-            }
-            result = ResizeParams{
-                static_cast<int32_t>(width.toDouble()),
-                static_cast<int32_t>(height.toDouble()),
-            };
-            return true;
-        }
+    if (filterId == "input" || filterId == "output") {
+        result = std::monostate{};
+        return object.isEmpty();
     }
-    return false;
+    std::string lookupError;
+    const auto* descriptor = VulkanFilterRegistry::instance().find(filterId, &lookupError);
+    return descriptor && VulkanFilterRegistry::instance().parseParameters(
+        *descriptor, object, result, error);
 }
 
 } // namespace
@@ -313,8 +219,11 @@ bool VulkanGraphDocument::loadFromJsonFile(
         const QJsonObject nodeObject = nodeValue.toObject();
         VulkanGraphNodeDesc node;
         if (!readNodeId(nodeObject, "id", node.id, error)) return false;
-        if (!parseNodeType(nodeObject.value("type").toString(), node.type)) {
-            setError(error, "Vulkan graph node has an unknown type");
+        const QJsonValue filterValue = nodeObject.contains("filterId")
+            ? nodeObject.value("filterId") : nodeObject.value("type");
+        if (!filterValue.isString()
+            || !parseFilterId(filterValue.toString(), node.filterId,
+                              node.type, error)) {
             return false;
         }
         const QJsonValue parametersValue = nodeObject.value("parameters");
@@ -322,7 +231,7 @@ bool VulkanGraphDocument::loadFromJsonFile(
             setError(error, "Vulkan graph node parameters must be an object");
             return false;
         }
-        if (!parseParameter(node.type, parametersValue.toObject(),
+        if (!parseParameter(node.filterId, parametersValue.toObject(),
                             node.parameter, error)) {
             return false;
         }
@@ -381,16 +290,44 @@ const VulkanGraphNodeDesc* VulkanGraphDocument::findNode(
 VulkanGraphNodeId VulkanGraphDocument::addNode(
     VulkanGraphNodeType type, VulkanGraphParameter parameter,
     VulkanGraphPosition position) {
-    if (type == VulkanGraphNodeType::input
-        || type == VulkanGraphNodeType::output) {
-        return 0;
+    return addNode(std::string(vulkanGraphNodeTypeName(type)),
+                   std::move(parameter), position);
+}
+
+VulkanGraphNodeId VulkanGraphDocument::addNode(
+    std::string filterId, VulkanGraphParameter parameter,
+    VulkanGraphPosition position) {
+    if (filterId == "input" || filterId == "output") return 0;
+
+    std::string error;
+    const VulkanFilterDescriptor* descriptor =
+        VulkanFilterRegistry::instance().find(filterId, &error);
+    if (!descriptor) return 0;
+
+    VulkanGraphNodeType legacyType = VulkanGraphNodeType::colorInvert;
+    for (int value = 0; value <= static_cast<int>(VulkanGraphNodeType::histogram); ++value) {
+        const auto candidate = static_cast<VulkanGraphNodeType>(value);
+        if (filterId == vulkanGraphNodeTypeName(candidate)) {
+            legacyType = candidate;
+            break;
+        }
     }
 
     if (std::holds_alternative<std::monostate>(parameter)) {
-        parameter = defaultParameter(type);
+        VulkanGraphParameter defaults;
+        if (!VulkanFilterRegistry::instance().parseParameters(
+                *descriptor, QJsonObject{}, defaults, &error)) {
+            return 0;
+        }
+        parameter = std::move(defaults);
     }
 
-    VulkanGraphNodeDesc node{nextNodeId_, type, std::move(parameter), position};
+    VulkanGraphNodeDesc node;
+    node.id = nextNodeId_;
+    node.type = legacyType;
+    node.filterId = std::move(filterId);
+    node.parameter = std::move(parameter);
+    node.position = position;
     if (!parameterMatches(node)) return 0;
     nodes_.push_back(std::move(node));
     return nextNodeId_++;
@@ -433,8 +370,8 @@ bool VulkanGraphDocument::connect(NodePin output, NodePin input) {
     const VulkanGraphNodeDesc* source = findNode(output.nodeId);
     const VulkanGraphNodeDesc* destination = findNode(input.nodeId);
     if (!source || !destination || output.nodeId == input.nodeId) return false;
-    const PinCounts sourcePins = pinCounts(source->type);
-    const PinCounts destinationPins = pinCounts(destination->type);
+    const PinCounts sourcePins = pinCounts(*source);
+    const PinCounts destinationPins = pinCounts(*destination);
     if (output.pinIndex < 0 || output.pinIndex >= sourcePins.outputs
         || input.pinIndex < 0 || input.pinIndex >= destinationPins.inputs) {
         return false;
@@ -520,8 +457,8 @@ bool VulkanGraphDocument::validate(std::string* error) const {
             setError(error, "Vulkan graph edge references an invalid node");
             return false;
         }
-        const PinCounts sourcePins = pinCounts(source->second->type);
-        const PinCounts destinationPins = pinCounts(destination->second->type);
+        const PinCounts sourcePins = pinCounts(*source->second);
+        const PinCounts destinationPins = pinCounts(*destination->second);
         if (edge.output.pinIndex < 0
             || edge.output.pinIndex >= sourcePins.outputs
             || edge.input.pinIndex < 0
@@ -539,7 +476,7 @@ bool VulkanGraphDocument::validate(std::string* error) const {
     }
 
     for (const auto& [nodeId, node] : nodesById) {
-        const PinCounts pins = pinCounts(node->type);
+        const PinCounts pins = pinCounts(*node);
         for (int32_t pin = 0; pin < pins.inputs; ++pin) {
             if (!occupiedInputs.contains({nodeId, pin})) {
                 setError(error, "Vulkan graph has an unconnected input pin");

@@ -17,7 +17,7 @@ static_assert(alignof(ScalarUniform) == 16);
 static_assert(offsetof(ScalarUniform, value) == 0);
 static_assert(sizeof(ScalarUniform) == 16);
 
-// Matches GaussianBlurParams in gaussianBlur.comp under std140.
+// Matches the Gaussian blur UBO in gaussianBlur.comp under std140.
 struct alignas(16) GaussianBlurUniform {
     int32_t directionX = 0;
     int32_t directionY = 0;
@@ -31,18 +31,5 @@ static_assert(offsetof(GaussianBlurUniform, directionY) == 4);
 static_assert(offsetof(GaussianBlurUniform, radius) == 8);
 static_assert(offsetof(GaussianBlurUniform, sigma) == 12);
 static_assert(sizeof(GaussianBlurUniform) == 16);
-
-inline constexpr size_t kHistogramBinCount = 256;
-
-// std430 keeps the uint array stride at four bytes. The explicit alignment
-// documents the block's 16-byte base alignment at descriptor offset zero.
-struct alignas(16) HistogramBins {
-    uint32_t bins[kHistogramBinCount]{};
-};
-
-static_assert(alignof(HistogramBins) == 16);
-static_assert(sizeof(HistogramBins) == kHistogramBinCount * sizeof(uint32_t));
-
-inline constexpr size_t kHistogramBufferSize = sizeof(HistogramBins);
 
 } // namespace heisenberg::filtergraph::shader_abi

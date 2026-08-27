@@ -1,8 +1,7 @@
 #pragma once
 
 #include "FilterCommon.hpp"
-#include "GaussianBlurParams.hpp"
-#include "ResizeParams.hpp"
+#include <QJsonObject>
 #include <cstdint>
 #include <string>
 #include <variant>
@@ -27,20 +26,13 @@ enum class VulkanGraphNodeType : uint8_t {
     histogram,
 };
 
-struct ExposureParamet {
-    float exposure = 0.0f;
-};
-
-struct BlendParamet {
-    float factor = 0.5f;
+struct VulkanJsonParameter {
+    QJsonObject object;
 };
 
 using VulkanGraphParameter = std::variant<
     std::monostate,
-    ExposureParamet,
-    BlendParamet,
-    GaussianBlurParams,
-    ResizeParams>;
+    VulkanJsonParameter>;
 
 struct VulkanGraphPosition {
     float x = 0.0f;
@@ -50,6 +42,7 @@ struct VulkanGraphPosition {
 struct VulkanGraphNodeDesc {
     VulkanGraphNodeId id = 0;
     VulkanGraphNodeType type = VulkanGraphNodeType::colorInvert;
+    std::string filterId = "color_invert";
     VulkanGraphParameter parameter = {};
     VulkanGraphPosition position = {};
 };
@@ -82,6 +75,10 @@ public:
 
     VulkanGraphNodeId addNode(
         VulkanGraphNodeType type,
+        VulkanGraphParameter parameter = {},
+        VulkanGraphPosition position = {});
+    VulkanGraphNodeId addNode(
+        std::string filterId,
         VulkanGraphParameter parameter = {},
         VulkanGraphPosition position = {});
     bool removeNode(VulkanGraphNodeId nodeId);

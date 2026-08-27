@@ -1,9 +1,8 @@
 #pragma once
 
 #include <FilterGraph/Interface/INodeFactory.hpp>
-#include "GaussianBlurParams.hpp"
-#include "ResizeParams.hpp"
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace heisenberg::filtergraph {
@@ -28,19 +27,12 @@ public:
     IInputNode* createInput() override;
     IOutputNode* createOutput() override;
     IFilterNode* createPassthrough() override;
-    IFilterNode* createColorInvert() override;
-    ITNode<float>* createExposure() override;
-    ITNode<float>* createBlend() override;
-    ITNode<GaussianBlurParams>* createGaussianBlur() override;
-    ITNode<ResizeParams>* createResize() override;
-    IFilterNode* createLut() override;
-    IFilterNode* createHistogram() override;
 
     VulkanNodeCreateResult createGraphNode(const VulkanGraphNodeDesc& node);
 
 private:
-    template<typename T>
-    T* createNode();
+    template<typename T, typename... Args>
+    T* createNode(Args&&... args);
 
     std::vector<std::unique_ptr<BaseNode>> nodes_;
 };

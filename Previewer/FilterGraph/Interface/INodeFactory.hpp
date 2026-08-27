@@ -1,8 +1,6 @@
 #pragma once
 
 #include "INode.hpp"
-#include "GaussianBlurParams.hpp"
-#include "ResizeParams.hpp"
 
 namespace heisenberg::filtergraph {
 
@@ -45,13 +43,6 @@ public:
     virtual IInputNode* createInput() = 0;
     virtual IOutputNode* createOutput() = 0;
     virtual IFilterNode* createPassthrough() = 0;
-    virtual IFilterNode* createColorInvert() = 0;
-    virtual ITNode<float>* createExposure() = 0;
-    virtual ITNode<float>* createBlend() = 0;
-    virtual ITNode<GaussianBlurParams>* createGaussianBlur() = 0;
-    virtual ITNode<ResizeParams>* createResize() = 0;
-    virtual IFilterNode* createLut() = 0;
-    virtual IFilterNode* createHistogram() = 0;
 };
 
 } // namespace heisenberg::filtergraph
