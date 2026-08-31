@@ -51,6 +51,12 @@ int main(int argc, char* argv[])
     // ============================================================
     MainWindow mainWindow;
 
+    // Stop playback and release GPU resources while the native video window
+    // is still alive (MainWindow emits this before the base close handling).
+    QObject::connect(&mainWindow, &MainWindow::aboutToClose,
+                     &playerCtrl, &heisenberg::ui::PlayerController::shutdown,
+                     Qt::DirectConnection);
+
     // 绑定视频输出
     playerCtrl.bindVideoOutput(mainWindow.videoWidget());
 

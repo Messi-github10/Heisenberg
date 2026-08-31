@@ -37,6 +37,12 @@ void PlayerController::shutdown() {
     if (shutdownDone_) return;
     shutdownDone_ = true;
 
+    // Playback owns the decode, audio and consumer threads. Stop it before
+    // tearing down anything those callbacks may still reference.
+    if (ctrl_) {
+        ctrl_->close();
+    }
+
     if (previewer_) {
         previewer_->setFilterGraph(nullptr, nullptr, nullptr);
     }

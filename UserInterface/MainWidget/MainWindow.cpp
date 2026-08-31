@@ -12,6 +12,7 @@
 #include <QVBoxLayout>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QCloseEvent>
 
 #include <algorithm>
 #include <cmath>
@@ -23,6 +24,11 @@ MainWindow::MainWindow(QWidget* parent)
     resize(960, 600);
     setupUi();
     setupConnections();
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    emit aboutToClose();
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::setupUi() {

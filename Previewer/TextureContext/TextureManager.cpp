@@ -199,6 +199,7 @@ static pl_color_space avToPlColor(const AVFrame* f) {
 
 struct TextureManager::Impl {
     pl_gpu gpu = nullptr;
+    bool shutdownDone = false;
 
     pl_tex       uploadPlanes[4] = {};
     pl_frame     uploadFrame     = {};
@@ -218,7 +219,11 @@ TextureManager::~TextureManager() {
 }
 
 void TextureManager::shutdown() {
+    if (!impl_ || impl_->shutdownDone) return;
+
+    impl_->shutdownDone = true;
     releaseUploadTextures();
+    impl_->gpu = nullptr;
     LOG_INFO("TextureManager: shutdown complete");
 }
 
@@ -235,7 +240,8 @@ void TextureManager::releaseUploadTextures() {
 }
 
 const pl_frame* TextureManager::uploadAvFrame(const AVFrame* avframe) {
-    if (!avframe || !avframe->data[0]) {
+    if (!impl_ || impl_->shutdownDone || !impl_->gpu
+        || !avframe || !avframe->data[0]) {
         return nullptr;
     }
 

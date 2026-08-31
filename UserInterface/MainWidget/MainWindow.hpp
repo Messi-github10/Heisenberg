@@ -10,6 +10,7 @@ class VideoWidget;
 class QSlider;
 class QPushButton;
 class QLabel;
+class QCloseEvent;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -21,6 +22,7 @@ public:
     VideoWidget* videoWidget() const { return videoWidget_; }
 
 signals:
+    void aboutToClose();
     void playPauseClicked();
     void scrubStarted();
     void scrubFrameRequested(qint64 frameIndex);
@@ -35,6 +37,9 @@ public slots:
     void setPlayingState(bool playing);
     void setFilterGraphPath(const QString& path);
     void setFilterGraphError(const QString& message);
+
+protected:
+    void closeEvent(QCloseEvent* event) override;
 
 private:
     void setupUi();

@@ -162,6 +162,13 @@ bool IPreviewer::initialize(pl_gpu gpu, pl_vulkan vulkan,
 void IPreviewer::shutdown() {
     if (!impl_) return;
 
+    // Stop accepting work first, then wait for every submission on the
+    // graphics queue before destroying swapchain or texture resources.
+    impl_->initialized = false;
+    if (impl_->vkDevice) {
+        impl_->vkDevice.waitIdle();
+    }
+
     releaseIntermediateTarget();
     if (impl_->interopSemaphore) {
         impl_->vkDevice.destroySemaphore(impl_->interopSemaphore);
@@ -170,10 +177,15 @@ void IPreviewer::shutdown() {
     if (impl_->swapChain) impl_->swapChain->shutdown();
     if (impl_->textureManager) impl_->textureManager->shutdown();
     impl_->renderEngine.reset();
-    impl_->initialized = false;
+    impl_->filterGraph = nullptr;
+    impl_->dagInput = nullptr;
+    impl_->dagOutput = nullptr;
+    impl_->onResize = nullptr;
+    impl_->onPresent = nullptr;
 }
 
 void IPreviewer::resize(int width, int height) {
+    if (!impl_->initialized) return;
     impl_->outputWidth = width;
     impl_->outputHeight = height;
     if (impl_->swapChain) {
