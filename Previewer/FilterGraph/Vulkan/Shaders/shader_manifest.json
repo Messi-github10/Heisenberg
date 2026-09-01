@@ -282,6 +282,1012 @@
       ]
     },
     {
+      "source": "addBlend.comp",
+      "spirv": "addBlend.comp.spv",
+      "node": "add_blend",
+      "id": "add_blend",
+      "name": "Add Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "alphaBlend.comp",
+      "spirv": "alphaBlend.comp.spv",
+      "node": "alpha_blend",
+      "id": "alpha_blend",
+      "name": "Alpha Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 16,
+      "parameters": [
+        {
+          "name": "amount",
+          "type": "float",
+          "offset": 0,
+        "default": 0,
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        },
+        {
+          "name": "AlphaBlendParams",
+          "set": 0,
+          "binding": 3,
+          "kind": "ubo",
+          "block_size": 4,
+          "cpp_size": 16,
+          "members": {
+            "amount": 0
+          }
+        }
+      ]
+    },
+    {
+      "source": "colorBlend.comp",
+      "spirv": "colorBlend.comp.spv",
+      "node": "color_blend",
+      "id": "color_blend",
+      "name": "Color Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "colorBurnBlend.comp",
+      "spirv": "colorBurnBlend.comp.spv",
+      "node": "color_burn_blend",
+      "id": "color_burn_blend",
+      "name": "Color Burn Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "colorDodgeBlend.comp",
+      "spirv": "colorDodgeBlend.comp.spv",
+      "node": "color_dodge_blend",
+      "id": "color_dodge_blend",
+      "name": "Color Dodge Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "darkenBlend.comp",
+      "spirv": "darkenBlend.comp.spv",
+      "node": "darken_blend",
+      "id": "darken_blend",
+      "name": "Darken Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "differenceBlend.comp",
+      "spirv": "differenceBlend.comp.spv",
+      "node": "difference_blend",
+      "id": "difference_blend",
+      "name": "Difference Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "dissolveBlend.comp",
+      "spirv": "dissolveBlend.comp.spv",
+      "node": "dissolve_blend",
+      "id": "dissolve_blend",
+      "name": "Dissolve Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 16,
+      "parameters": [
+        {
+          "name": "percent",
+          "type": "float",
+          "offset": 0,
+          "default": 0.5,
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        },
+        {
+          "name": "DissolveBlendParams",
+          "set": 0,
+          "binding": 3,
+          "kind": "ubo",
+          "block_size": 4,
+          "cpp_size": 16,
+          "members": {
+            "percent": 0
+          }
+        }
+      ]
+    },
+    {
+      "source": "divideBlend.comp",
+      "spirv": "divideBlend.comp.spv",
+      "node": "divide_blend",
+      "id": "divide_blend",
+      "name": "Divide Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "exclusionBlend.comp",
+      "spirv": "exclusionBlend.comp.spv",
+      "node": "exclusion_blend",
+      "id": "exclusion_blend",
+      "name": "Exclusion Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "hardLightBlend.comp",
+      "spirv": "hardLightBlend.comp.spv",
+      "node": "hard_light_blend",
+      "id": "hard_light_blend",
+      "name": "Hard Light Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "hueBlend.comp",
+      "spirv": "hueBlend.comp.spv",
+      "node": "hue_blend",
+      "id": "hue_blend",
+      "name": "Hue Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "lightenBlend.comp",
+      "spirv": "lightenBlend.comp.spv",
+      "node": "lighten_blend",
+      "id": "lighten_blend",
+      "name": "Lighten Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "linearBurnBlend.comp",
+      "spirv": "linearBurnBlend.comp.spv",
+      "node": "linear_burn_blend",
+      "id": "linear_burn_blend",
+      "name": "Linear Burn Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "luminosityBlend.comp",
+      "spirv": "luminosityBlend.comp.spv",
+      "node": "luminosity_blend",
+      "id": "luminosity_blend",
+      "name": "Luminosity Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "multiplyBlend.comp",
+      "spirv": "multiplyBlend.comp.spv",
+      "node": "multiply_blend",
+      "id": "multiply_blend",
+      "name": "Multiply Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "normalBlend.comp",
+      "spirv": "normalBlend.comp.spv",
+      "node": "normal_blend",
+      "id": "normal_blend",
+      "name": "Normal Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "overlayBlend.comp",
+      "spirv": "overlayBlend.comp.spv",
+      "node": "overlay_blend",
+      "id": "overlay_blend",
+      "name": "Overlay Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "saturationBlend.comp",
+      "spirv": "saturationBlend.comp.spv",
+      "node": "saturation_blend",
+      "id": "saturation_blend",
+      "name": "Saturation Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "screenBlend.comp",
+      "spirv": "screenBlend.comp.spv",
+      "node": "screen_blend",
+      "id": "screen_blend",
+      "name": "Screen Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "softLightBlend.comp",
+      "spirv": "softLightBlend.comp.spv",
+      "node": "soft_light_blend",
+      "id": "soft_light_blend",
+      "name": "Soft Light Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "sourceOverBlend.comp",
+      "spirv": "sourceOverBlend.comp.spv",
+      "node": "source_over_blend",
+      "id": "source_over_blend",
+      "name": "Source Over Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
+      "source": "subtractBlend.comp",
+      "spirv": "subtractBlend.comp.spv",
+      "node": "subtract_blend",
+      "id": "subtract_blend",
+      "name": "Subtract Blend",
+      "kind": "compute",
+      "inputs": 2,
+      "outputs": 1,
+      "input_bindings": [
+        "storage",
+        "storage"
+      ],
+      "uniform_size": 0,
+      "parameters": [],
+      "resources": [
+        {
+          "name": "baseTex",
+          "set": 0,
+          "binding": 0,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "layerTex",
+          "set": 0,
+          "binding": 1,
+          "kind": "storage_image",
+          "access": "read",
+          "format": "rgba16f"
+        },
+        {
+          "name": "outTex",
+          "set": 0,
+          "binding": 2,
+          "kind": "storage_image",
+          "access": "write",
+          "format": "rgba16f"
+        }
+      ]
+    },
+    {
       "source": "blend.comp",
       "spirv": "blend.comp.spv",
       "node": "blend",

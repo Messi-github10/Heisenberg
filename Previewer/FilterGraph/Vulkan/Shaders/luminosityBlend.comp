@@ -1,0 +1,102 @@
+#version 450
+
+// Adapted from AOCE (MIT); see AOCE_LICENSE.txt.
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (binding = 0, rgba16f) uniform readonly image2D baseTex;
+layout (binding = 1, rgba16f) uniform readonly image2D layerTex;
+layout (binding = 2, rgba16f) uniform writeonly image2D outTex;
+
+vec4 compositeBlend(vec4 base, vec4 layer, vec3 blended) {
+    float alpha = layer.a + base.a * (1.0 - layer.a);
+    vec3 premultiplied = blended * base.a * layer.a
+        + layer.rgb * layer.a * (1.0 - base.a)
+        + base.rgb * base.a * (1.0 - layer.a);
+    vec3 rgb = alpha > 0.000001 ? premultiplied / alpha : vec3(0.0);
+    return vec4(rgb, alpha);
+}
+
+float luminance(vec3 color) {
+    return dot(color, vec3(0.3, 0.59, 0.11));
+}
+
+float saturationValue(vec3 color) {
+    return max(max(color.r, color.g), color.b)
+        - min(min(color.r, color.g), color.b);
+}
+
+vec3 clipColor(vec3 color) {
+    float value = luminance(color);
+    float minimum = min(min(color.r, color.g), color.b);
+    float maximum = max(max(color.r, color.g), color.b);
+    if (minimum < 0.0) {
+        color = vec3(value)
+            + (color - vec3(value)) * value / max(value - minimum, 0.0001);
+    }
+    if (maximum > 1.0) {
+        color = vec3(value)
+            + (color - vec3(value)) * (1.0 - value)
+                / max(maximum - value, 0.0001);
+    }
+    return color;
+}
+
+vec3 setLuminance(vec3 color, float value) {
+    return clipColor(color + vec3(value - luminance(color)));
+}
+
+float middleValue(float minimum, float middle, float maximum,
+                  float saturation) {
+    return (middle - minimum) * saturation
+        / max(maximum - minimum, 0.0001);
+}
+
+vec3 setSaturation(vec3 color, float value) {
+    if (color.r > color.g) {
+        if (color.r > color.b) {
+            if (color.g > color.b) {
+                color.g = middleValue(color.b, color.g, color.r, value);
+                color.b = 0.0;
+            } else {
+                color.b = middleValue(color.g, color.b, color.r, value);
+                color.g = 0.0;
+            }
+            color.r = value;
+        } else {
+            color.r = middleValue(color.g, color.r, color.b, value);
+            color.b = value;
+            color.g = 0.0;
+        }
+    } else if (color.r > color.b) {
+        color.r = middleValue(color.b, color.r, color.g, value);
+        color.g = value;
+        color.b = 0.0;
+    } else if (color.g > color.b) {
+        color.b = middleValue(color.r, color.b, color.g, value);
+        color.g = value;
+        color.r = 0.0;
+    } else if (color.b > color.g) {
+        color.g = middleValue(color.r, color.g, color.b, value);
+        color.b = value;
+        color.r = 0.0;
+    } else {
+        color = vec3(0.0);
+    }
+    return color;
+}
+
+vec3 blendMode(vec3 base, vec3 layer) {
+    return setLuminance(base, luminance(layer));
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outTex);
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
+
+    vec4 base = imageLoad(baseTex, pixel);
+    vec4 layer = imageLoad(layerTex, pixel);
+    imageStore(outTex, pixel,
+               compositeBlend(base, layer, blendMode(base.rgb, layer.rgb)));
+}
+

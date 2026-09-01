@@ -1,0 +1,33 @@
+#version 450
+
+// Adapted from AOCE (MIT); see AOCE_LICENSE.txt.
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (binding = 0, rgba16f) uniform readonly image2D baseTex;
+layout (binding = 1, rgba16f) uniform readonly image2D layerTex;
+layout (binding = 2, rgba16f) uniform writeonly image2D outTex;
+
+vec4 compositeBlend(vec4 base, vec4 layer, vec3 blended) {
+    float alpha = layer.a + base.a * (1.0 - layer.a);
+    vec3 premultiplied = blended * base.a * layer.a
+        + layer.rgb * layer.a * (1.0 - base.a)
+        + base.rgb * base.a * (1.0 - layer.a);
+    vec3 rgb = alpha > 0.000001 ? premultiplied / alpha : vec3(0.0);
+    return vec4(rgb, alpha);
+}
+
+vec3 blendMode(vec3 base, vec3 layer) {
+    return base + layer - 2.0 * base * layer;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outTex);
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
+
+    vec4 base = imageLoad(baseTex, pixel);
+    vec4 layer = imageLoad(layerTex, pixel);
+    imageStore(outTex, pixel,
+               compositeBlend(base, layer, blendMode(base.rgb, layer.rgb)));
+}
+
