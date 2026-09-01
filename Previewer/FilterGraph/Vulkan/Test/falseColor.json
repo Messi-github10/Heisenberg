@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "nodes": [
+    { "id": 1, "type": "input" },
+    { "id": 2, "type": "output" },
+    {
+      "id": 3,
+      "type": "false_color",
+      "parameters": {
+        "firstColorR": 0.0,
+        "firstColorG": 0.0,
+        "firstColorB": 0.5,
+        "secondColorR": 1.0,
+        "secondColorG": 0.0,
+        "secondColorB": 0.0
+      }
+    }
+  ],
+  "edges": [
+    { "output": { "nodeId": 1, "pinIndex": 0 }, "input": { "nodeId": 3, "pinIndex": 0 } },
+    { "output": { "nodeId": 3, "pinIndex": 0 }, "input": { "nodeId": 2, "pinIndex": 0 } }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "nodes": [
+    { "id": 1, "type": "input" },
+    { "id": 2, "type": "output" },
+    {
+      "id": 3,
+      "type": "levels",
+      "parameters": {
+        "inputMinR": 0.05,
+        "inputMinG": 0.04,
+        "inputMinB": 0.03,
+        "gammaR": 0.9,
+        "gammaG": 1.0,
+        "gammaB": 1.1,
+        "inputMaxR": 0.95,
+        "inputMaxG": 0.96,
+        "inputMaxB": 0.97,
+        "outputMinR": 0.01,
+        "outputMinG": 0.02,
+        "outputMinB": 0.03,
+        "outputMaxR": 0.98,
+        "outputMaxG": 0.97,
+        "outputMaxB": 0.96
+      }
+    }
+  ],
+  "edges": [
+    { "output": { "nodeId": 1, "pinIndex": 0 }, "input": { "nodeId": 3, "pinIndex": 0 } },
+    { "output": { "nodeId": 3, "pinIndex": 0 }, "input": { "nodeId": 2, "pinIndex": 0 } }
+  ]
+}

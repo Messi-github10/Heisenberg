@@ -1,0 +1,24 @@
+#version 450
+
+// Adapted from AOCE (MIT); see AOCE_LICENSE.txt.
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (binding = 0, rgba16f) uniform readonly image2D inTex;
+layout (binding = 1, rgba16f) uniform writeonly image2D outTex;
+
+layout (std140, binding = 2) uniform VibranceParams {
+    float vibrance;
+} params;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(inTex);
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
+
+    vec4 color = imageLoad(inTex, pixel);
+    float average = (color.r + color.g + color.b) / 3.0;
+    float maximum = max(color.r, max(color.g, color.b));
+    float amount = (maximum - average) * (-params.vibrance * 3.0);
+    imageStore(outTex, pixel,
+               vec4(mix(color.rgb, vec3(maximum), amount), color.a));
+}

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "nodes": [
+    { "id": 1, "type": "input" },
+    { "id": 2, "type": "output" },
+    {
+      "id": 3,
+      "type": "monochrome",
+      "parameters": {
+        "intensity": 0.85,
+        "colorR": 0.6,
+        "colorG": 0.45,
+        "colorB": 0.3
+      }
+    }
+  ],
+  "edges": [
+    { "output": { "nodeId": 1, "pinIndex": 0 }, "input": { "nodeId": 3, "pinIndex": 0 } },
+    { "output": { "nodeId": 3, "pinIndex": 0 }, "input": { "nodeId": 2, "pinIndex": 0 } }
+  ]
+}

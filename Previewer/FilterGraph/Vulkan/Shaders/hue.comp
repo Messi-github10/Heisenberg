@@ -1,0 +1,36 @@
+#version 450
+
+// Adapted from AOCE (MIT); see AOCE_LICENSE.txt.
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (binding = 0, rgba16f) uniform readonly image2D inTex;
+layout (binding = 1, rgba16f) uniform writeonly image2D outTex;
+
+layout (std140, binding = 2) uniform HueParams {
+    float hue;
+} params;
+
+const vec4 RGB_TO_Y = vec4(0.299, 0.587, 0.114, 0.0);
+const vec4 RGB_TO_I = vec4(0.595716, -0.274453, -0.321263, 0.0);
+const vec4 RGB_TO_Q = vec4(0.211456, -0.522591, 0.31135, 0.0);
+const vec4 YIQ_TO_R = vec4(1.0, 0.9563, 0.6210, 0.0);
+const vec4 YIQ_TO_G = vec4(1.0, -0.2721, -0.6474, 0.0);
+const vec4 YIQ_TO_B = vec4(1.0, -1.1070, 1.7046, 0.0);
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(inTex);
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
+
+    vec4 color = imageLoad(inTex, pixel);
+    float y = dot(color, RGB_TO_Y);
+    float i = dot(color, RGB_TO_I);
+    float q = dot(color, RGB_TO_Q);
+    float angle = atan(q, i) - radians(mod(params.hue, 360.0));
+    float chroma = length(vec2(i, q));
+    vec4 yiq = vec4(y, chroma * cos(angle), chroma * sin(angle), 0.0);
+    vec3 result = vec3(dot(yiq, YIQ_TO_R),
+                       dot(yiq, YIQ_TO_G),
+                       dot(yiq, YIQ_TO_B));
+    imageStore(outTex, pixel, vec4(result, color.a));
+}

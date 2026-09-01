@@ -39,6 +39,249 @@
       ]
     },
     {
+      "source": "brightness.comp",
+      "spirv": "brightness.comp.spv",
+      "node": "brightness",
+      "id": "brightness",
+      "name": "Brightness",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "brightness", "type": "float", "offset": 0, "default": 0.0, "min": -1.0, "max": 1.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "BrightnessParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 4, "cpp_size": 16, "members": { "brightness": 0 } }
+      ]
+    },
+    {
+      "source": "gamma.comp",
+      "spirv": "gamma.comp.spv",
+      "node": "gamma",
+      "id": "gamma",
+      "name": "Gamma",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "gamma", "type": "float", "offset": 0, "default": 1.0, "min": 0.01, "max": 3.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "GammaParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 4, "cpp_size": 16, "members": { "gamma": 0 } }
+      ]
+    },
+    {
+      "source": "contrast.comp",
+      "spirv": "contrast.comp.spv",
+      "node": "contrast",
+      "id": "contrast",
+      "name": "Contrast",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "contrast", "type": "float", "offset": 0, "default": 1.0, "min": 0.0, "max": 4.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "ContrastParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 4, "cpp_size": 16, "members": { "contrast": 0 } }
+      ]
+    },
+    {
+      "source": "saturation.comp",
+      "spirv": "saturation.comp.spv",
+      "node": "saturation",
+      "id": "saturation",
+      "name": "Saturation",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "saturation", "type": "float", "offset": 0, "default": 1.0, "min": 0.0, "max": 2.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "SaturationParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 4, "cpp_size": 16, "members": { "saturation": 0 } }
+      ]
+    },
+    {
+      "source": "hue.comp",
+      "spirv": "hue.comp.spv",
+      "node": "hue",
+      "id": "hue",
+      "name": "Hue",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "hue", "type": "float", "offset": 0, "default": 90.0, "min": -360.0, "max": 360.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "HueParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 4, "cpp_size": 16, "members": { "hue": 0 } }
+      ]
+    },
+    {
+      "source": "vibrance.comp",
+      "spirv": "vibrance.comp.spv",
+      "node": "vibrance",
+      "id": "vibrance",
+      "name": "Vibrance",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "vibrance", "type": "float", "offset": 0, "default": 0.0, "min": -1.0, "max": 1.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "VibranceParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 4, "cpp_size": 16, "members": { "vibrance": 0 } }
+      ]
+    },
+    {
+      "source": "whiteBalance.comp",
+      "spirv": "whiteBalance.comp.spv",
+      "node": "white_balance",
+      "id": "white_balance",
+      "name": "White Balance",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "temperature", "type": "float", "offset": 0, "default": 5000.0, "min": 1000.0, "max": 10000.0 },
+        { "name": "tint", "type": "float", "offset": 4, "default": 0.0, "min": -200.0, "max": 200.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "WhiteBalanceParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 8, "cpp_size": 16, "members": { "temperature": 0, "tint": 4 } }
+      ]
+    },
+    {
+      "source": "levels.comp",
+      "spirv": "levels.comp.spv",
+      "node": "levels",
+      "id": "levels",
+      "name": "Levels",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 64,
+      "parameters": [
+        { "name": "inputMinR", "type": "float", "offset": 0, "default": 0.0, "min": 0.0, "max": 1.0 },
+        { "name": "inputMinG", "type": "float", "offset": 4, "default": 0.0, "min": 0.0, "max": 1.0 },
+        { "name": "inputMinB", "type": "float", "offset": 8, "default": 0.0, "min": 0.0, "max": 1.0 },
+        { "name": "gammaR", "type": "float", "offset": 12, "default": 1.0, "min": 0.01, "max": 10.0 },
+        { "name": "gammaG", "type": "float", "offset": 16, "default": 1.0, "min": 0.01, "max": 10.0 },
+        { "name": "gammaB", "type": "float", "offset": 20, "default": 1.0, "min": 0.01, "max": 10.0 },
+        { "name": "inputMaxR", "type": "float", "offset": 24, "default": 1.0, "min": 0.0, "max": 1.0 },
+        { "name": "inputMaxG", "type": "float", "offset": 28, "default": 1.0, "min": 0.0, "max": 1.0 },
+        { "name": "inputMaxB", "type": "float", "offset": 32, "default": 1.0, "min": 0.0, "max": 1.0 },
+        { "name": "outputMinR", "type": "float", "offset": 36, "default": 0.0, "min": 0.0, "max": 1.0 },
+        { "name": "outputMinG", "type": "float", "offset": 40, "default": 0.0, "min": 0.0, "max": 1.0 },
+        { "name": "outputMinB", "type": "float", "offset": 44, "default": 0.0, "min": 0.0, "max": 1.0 },
+        { "name": "outputMaxR", "type": "float", "offset": 48, "default": 1.0, "min": 0.0, "max": 1.0 },
+        { "name": "outputMaxG", "type": "float", "offset": 52, "default": 1.0, "min": 0.0, "max": 1.0 },
+        { "name": "outputMaxB", "type": "float", "offset": 56, "default": 1.0, "min": 0.0, "max": 1.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "LevelsParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 60, "cpp_size": 64, "members": { "inputMinR": 0, "inputMinG": 4, "inputMinB": 8, "gammaR": 12, "gammaG": 16, "gammaB": 20, "inputMaxR": 24, "inputMaxG": 28, "inputMaxB": 32, "outputMinR": 36, "outputMinG": 40, "outputMinB": 44, "outputMaxR": 48, "outputMaxG": 52, "outputMaxB": 56 } }
+      ]
+    },
+    {
+      "source": "monochrome.comp",
+      "spirv": "monochrome.comp.spv",
+      "node": "monochrome",
+      "id": "monochrome",
+      "name": "Monochrome",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "intensity", "type": "float", "offset": 0, "default": 1.0, "min": 0.0, "max": 1.0 },
+        { "name": "colorR", "type": "float", "offset": 4, "default": 0.6, "min": 0.0, "max": 1.0 },
+        { "name": "colorG", "type": "float", "offset": 8, "default": 0.45, "min": 0.0, "max": 1.0 },
+        { "name": "colorB", "type": "float", "offset": 12, "default": 0.3, "min": 0.0, "max": 1.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "MonochromeParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 16, "cpp_size": 16, "members": { "intensity": 0, "colorR": 4, "colorG": 8, "colorB": 12 } }
+      ]
+    },
+    {
+      "source": "solarize.comp",
+      "spirv": "solarize.comp.spv",
+      "node": "solarize",
+      "id": "solarize",
+      "name": "Solarize",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "threshold", "type": "float", "offset": 0, "default": 0.5, "min": 0.0, "max": 1.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "SolarizeParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 4, "cpp_size": 16, "members": { "threshold": 0 } }
+      ]
+    },
+    {
+      "source": "falseColor.comp",
+      "spirv": "falseColor.comp.spv",
+      "node": "false_color",
+      "id": "false_color",
+      "name": "False Color",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 32,
+      "parameters": [
+        { "name": "firstColorR", "type": "float", "offset": 0, "default": 0.0, "min": 0.0, "max": 1.0 },
+        { "name": "firstColorG", "type": "float", "offset": 4, "default": 0.0, "min": 0.0, "max": 1.0 },
+        { "name": "firstColorB", "type": "float", "offset": 8, "default": 0.5, "min": 0.0, "max": 1.0 },
+        { "name": "secondColorR", "type": "float", "offset": 12, "default": 1.0, "min": 0.0, "max": 1.0 },
+        { "name": "secondColorG", "type": "float", "offset": 16, "default": 0.0, "min": 0.0, "max": 1.0 },
+        { "name": "secondColorB", "type": "float", "offset": 20, "default": 0.0, "min": 0.0, "max": 1.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "FalseColorParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 24, "cpp_size": 32, "members": { "firstColorR": 0, "firstColorG": 4, "firstColorB": 8, "secondColorR": 12, "secondColorG": 16, "secondColorB": 20 } }
+      ]
+    },
+    {
       "source": "blend.comp",
       "spirv": "blend.comp.spv",
       "node": "blend",
