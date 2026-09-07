@@ -10,6 +10,7 @@ class VideoWidget;
 class QSlider;
 class QPushButton;
 class QLabel;
+class QCheckBox;
 class QCloseEvent;
 
 class MainWindow : public QMainWindow {
@@ -20,6 +21,7 @@ public:
     ~MainWindow() override = default;
 
     VideoWidget* videoWidget() const { return videoWidget_; }
+    bool hardwareDecodeEnabled() const;
 
 signals:
     void aboutToClose();
@@ -29,6 +31,7 @@ signals:
     void scrubFinished(qint64 frameIndex);
     void openFileRequested(const QString& path);
     void openFilterGraphRequested(const QString& path);
+    void hardwareDecodeToggled(bool enabled);
 
 public slots:
     void setDuration(double seconds);
@@ -55,6 +58,7 @@ private:
     QPushButton* openFilterGraphBtn_ = nullptr;
     QLabel*      timeLabel_    = nullptr;
     QLabel*      filterGraphLabel_ = nullptr;
+    QCheckBox*   hardwareDecodeCheck_ = nullptr;
 
     double duration_ = 0.0;
     qint64 frameCount_ = 0;

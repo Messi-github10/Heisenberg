@@ -71,6 +71,9 @@ public slots:
     /// 绑定 VideoWidget，初始化 Vulkan 渲染管线
     void bindVideoOutput(VideoWidget* widget);
 
+    /// 设置硬件解码开关
+    void setHardwareDecode(bool enabled);
+
 signals:
     void isPlayingChanged();
     void currentTimeChanged();

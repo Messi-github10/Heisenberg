@@ -2,6 +2,9 @@
 
 #include "Renderer/RenderEngine.hpp"
 #include "Renderer/SwapChain.hpp"
+#include "Renderer/D3D11VulkanInterop.hpp"
+#include "Renderer/ColorSpaceUtils.hpp"
+#include "Renderer/VulkanContext.hpp"
 #include "TextureContext/TextureManager.hpp"
 
 #include <Common/FrameTime.hpp>
@@ -16,6 +19,7 @@
 
 extern "C" {
 #include <libavutil/frame.h>
+#include <libavutil/pixfmt.h>
 #include <libplacebo/renderer.h>
 }
 
@@ -72,11 +76,8 @@ pl_color_space makeDisplayColor() {
 }
 
 pl_color_space makeWorkingColor(const pl_frame& source) {
-    pl_color_space color = source.color;
-    pl_color_space_infer(&color);
-    color.primaries = PL_COLOR_PRIM_BT_2020;
-    color.transfer = PL_COLOR_TRC_LINEAR;
-    return color;
+    (void)source;
+    return workingColorSpace();
 }
 
 } // namespace
@@ -114,6 +115,11 @@ struct IPreviewer::Impl {
     filtergraph::IInputNode* dagInput = nullptr;
     filtergraph::IOutputNode* dagOutput = nullptr;
     pl_color_space workingColor = {};
+    ID3D11Device* d3d11Device = nullptr;
+    ID3D11DeviceContext* d3d11Context = nullptr;
+    std::unique_ptr<D3D11VulkanInterop> interop;
+    int interopWidth = 0;
+    int interopHeight = 0;
 };
 
 IPreviewer::IPreviewer() : impl_(std::make_unique<Impl>()) {}
@@ -170,6 +176,12 @@ void IPreviewer::shutdown() {
     }
 
     releaseIntermediateTarget();
+    if (impl_->interop) {
+        impl_->interop->shutdown();
+        impl_->interop.reset();
+    }
+    impl_->interopWidth = 0;
+    impl_->interopHeight = 0;
     if (impl_->interopSemaphore) {
         impl_->vkDevice.destroySemaphore(impl_->interopSemaphore);
         impl_->interopSemaphore = nullptr;
@@ -211,6 +223,18 @@ void IPreviewer::setFilterGraph(filtergraph::IPipeGraph* graph,
     impl_->dagInput = input;
     impl_->dagOutput = output;
     impl_->intermediateReleaseWait = {};
+}
+
+void IPreviewer::setD3D11Device(ID3D11Device* device,
+                                ID3D11DeviceContext* context) {
+    impl_->d3d11Device = device;
+    impl_->d3d11Context = context;
+    if ((!device || !context) && impl_->interop) {
+        impl_->interop->shutdown();
+        impl_->interop.reset();
+        impl_->interopWidth = 0;
+        impl_->interopHeight = 0;
+    }
 }
 
 bool IPreviewer::buildIntermediateTarget(int width, int height) {
@@ -316,6 +340,10 @@ bool IPreviewer::presentFrame(const AVFrame* avframe) {
     const int outputHeight = impl_->outputHeight;
     if (outputWidth <= 0 || outputHeight <= 0) return false;
 
+    if (avframe->format == AV_PIX_FMT_D3D11) {
+        return presentHardwareFrame(avframe);
+    }
+
     const pl_frame* source = impl_->textureManager->uploadAvFrame(avframe);
     if (!source) return false;
 
@@ -413,6 +441,100 @@ bool IPreviewer::presentFrame(const AVFrame* avframe) {
     return result;
 }
 
+bool IPreviewer::presentHardwareFrame(const AVFrame* avframe) {
+    if (!avframe || !impl_->d3d11Device || !impl_->d3d11Context
+        || !impl_->vulkan || !impl_->swapChain) return false;
+    const int width = avframe->width;
+    const int height = avframe->height;
+    if (width <= 0 || height <= 0) return false;
+
+    // D3D11 interop and the software upload path both produce the same
+    // scene-linear BT.2020 working image. Display conversion is performed
+    // only by the final swapchain render.
+    impl_->workingColor = workingColorSpace();
+
+    if (!impl_->interop || impl_->interopWidth != width
+        || impl_->interopHeight != height) {
+        if (impl_->interop) impl_->interop->shutdown();
+        impl_->interop = std::make_unique<D3D11VulkanInterop>();
+        const auto& vkContext = VulkanContext::instance();
+        if (!impl_->interop->init(
+                impl_->d3d11Device, impl_->d3d11Context,
+                static_cast<VkDevice>(impl_->vkDevice),
+                static_cast<VkPhysicalDevice>(impl_->vkPhysDevice),
+                static_cast<VkQueue>(vkContext.graphicsQueue()),
+                vkContext.graphicsQueueFamily(), width, height)) {
+            impl_->interop.reset();
+            impl_->interopWidth = 0;
+            impl_->interopHeight = 0;
+            return false;
+        }
+        impl_->interopWidth = width;
+        impl_->interopHeight = height;
+    }
+
+    filtergraph::VulkanImageRef graphInput;
+    if (!impl_->interop->processFrame(avframe, graphInput)) {
+        LOG_ERROR("IPreviewer: D3D11/Vulkan interop processFrame failed");
+        return false;
+    }
+
+    if (!impl_->filterGraph || !impl_->dagInput || !impl_->dagOutput) {
+        const uint64_t previousInteropValue = impl_->interopValue;
+        const bool rendered = renderToSwapChain(graphInput);
+        if (!rendered) {
+            LOG_ERROR("IPreviewer: rendering imported D3D11 frame to swapchain failed");
+        }
+        const filtergraph::VulkanSyncPoint done =
+            impl_->interopValue != previousInteropValue
+                ? filtergraph::VulkanSyncPoint{
+                      static_cast<VkSemaphore>(impl_->interopSemaphore),
+                      impl_->interopValue}
+                : graphInput.ready;
+        impl_->interop->releaseFrame(done);
+        if (rendered && impl_->onPresent) impl_->onPresent();
+        return rendered;
+    }
+
+    if (!impl_->dagInput->setVulkanInput(graphInput)) {
+        LOG_ERROR("IPreviewer: failed to set hardware frame as graph input");
+        impl_->interop->releaseFrame(graphInput.ready);
+        return false;
+    }
+    filtergraph::FrameContext frameContext;
+    frameContext.pts = avframe->pts;
+    frameContext.timeBaseNum = avframe->time_base.num;
+    frameContext.timeBaseDen = avframe->time_base.den;
+    frameContext.timeSeconds = frameTimeSeconds(*avframe);
+    if (!impl_->filterGraph->run(frameContext)) {
+        LOG_ERROR("IPreviewer: filter graph failed for hardware frame");
+        impl_->interop->releaseFrame(graphInput.ready);
+        return false;
+    }
+
+    filtergraph::VulkanImageRef graphOutput;
+    if (!impl_->dagOutput->getVulkanOutput(graphOutput)
+        || !graphOutput.valid()) {
+        impl_->vkDevice.waitIdle();
+        impl_->interop->releaseFrame(graphInput.ready);
+        return false;
+    }
+    const uint64_t previousInteropValue = impl_->interopValue;
+    const bool rendered = renderToSwapChain(graphOutput);
+    if (!rendered) {
+        LOG_ERROR("IPreviewer: rendering filter graph output to swapchain failed");
+    }
+    const filtergraph::VulkanSyncPoint done =
+        impl_->interopValue != previousInteropValue
+            ? filtergraph::VulkanSyncPoint{
+                  static_cast<VkSemaphore>(impl_->interopSemaphore),
+                  impl_->interopValue}
+            : graphInput.ready;
+    impl_->interop->releaseFrame(done);
+    if (rendered && impl_->onPresent) impl_->onPresent();
+    return rendered;
+}
+
 bool IPreviewer::renderToSwapChain(
     const pl_frame* source, int width, int height) {
     if (!source) return false;
@@ -438,7 +560,10 @@ bool IPreviewer::renderToSwapChain(
     wrapParams.format = image.vkFormat;
     wrapParams.usage = image.usage;
     pl_tex sourceTexture = pl_vulkan_wrap(impl_->gpu, &wrapParams);
-    if (!sourceTexture) return false;
+    if (!sourceTexture) {
+        LOG_ERROR("IPreviewer: failed to wrap imported Vulkan image");
+        return false;
+    }
 
     pl_vulkan_release_params releaseParams = {};
     releaseParams.tex = sourceTexture;
@@ -451,6 +576,10 @@ bool IPreviewer::renderToSwapChain(
     pl_tex framebuffer = impl_->swapChain->startFrame(
         impl_->outputWidth, impl_->outputHeight);
     bool rendered = framebuffer != nullptr;
+    if (!framebuffer) {
+        LOG_ERROR("IPreviewer: swapchain startFrame failed ({}x{})",
+                  impl_->outputWidth, impl_->outputHeight);
+    }
     if (rendered) {
         if (image.contract != filtergraph::kWorkingImageContract) {
             LOG_ERROR("IPreviewer: graph output violates the working image contract");
@@ -462,7 +591,12 @@ bool IPreviewer::renderToSwapChain(
         const pl_color_space displayColor = makeDisplayColor();
         pl_frame target = makeRgbFrame(framebuffer, impl_->outputWidth,
                                        impl_->outputHeight, displayColor);
-        if (rendered) rendered = impl_->renderEngine->render(&source, &target);
+        if (rendered) {
+            rendered = impl_->renderEngine->render(&source, &target);
+            if (!rendered) {
+                LOG_ERROR("IPreviewer: libplacebo failed to render imported image");
+            }
+        }
     }
 
     pl_gpu_flush(impl_->gpu);
@@ -473,6 +607,7 @@ bool IPreviewer::renderToSwapChain(
     holdParams.semaphore.sem = toC(impl_->interopSemaphore);
     holdParams.semaphore.value = ++impl_->interopValue;
     if (!pl_vulkan_hold_ex(impl_->gpu, &holdParams)) {
+        LOG_ERROR("IPreviewer: failed to release swapchain image ownership");
         pl_tex_destroy(impl_->gpu, &sourceTexture);
         return false;
     }
@@ -481,12 +616,18 @@ bool IPreviewer::renderToSwapChain(
     filtergraph::VulkanImageRef returnedImage = image;
     returnedImage.ready = {
         toC(impl_->interopSemaphore), impl_->interopValue};
-    impl_->dagOutput->releaseVulkanOutput(returnedImage);
+    if (impl_->dagOutput) {
+        impl_->dagOutput->releaseVulkanOutput(returnedImage);
+    }
     if (image.image == toC(impl_->intermediateImg)) {
         impl_->intermediateReleaseWait = returnedImage.ready;
     }
 
-    if (!rendered || !impl_->swapChain->submitFrame()) return false;
+    if (!rendered) return false;
+    if (!impl_->swapChain->submitFrame()) {
+        LOG_ERROR("IPreviewer: swapchain submitFrame failed");
+        return false;
+    }
     impl_->swapChain->swapBuffers();
     return true;
 }

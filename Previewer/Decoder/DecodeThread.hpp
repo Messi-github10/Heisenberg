@@ -7,6 +7,7 @@
 #include <Common/MediaFrame.hpp>
 #include <Common/AudioSpec.hpp>
 #include <Common/RingBuffer.hpp>
+#include <Decoder/DecoderFactory.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -50,6 +51,7 @@ public:
     void beginScrub();
     void scrubToFrame(int64_t targetFrame, int64_t currentFrame,
                       uint64_t requestId, bool resumePrefetch);
+    void setDecoderConfig(const decoder::DecoderConfig& config);
 
 private:
     enum class Cmd : int {
@@ -117,6 +119,7 @@ private:
 
     std::atomic<bool> running_{false};
     std::atomic<bool> scrubbing_{false};
+    decoder::DecoderConfig decoderConfig_{};
 };
 
 } // namespace heisenberg

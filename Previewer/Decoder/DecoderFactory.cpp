@@ -7,6 +7,14 @@
 #include <Decoder/D3D11Decoder.hpp>
 #include <Decoder/CudaDecoder.hpp>
 
+#include <Renderer/D3D11Context.hpp>
+#include <windows.h>
+#include <d3d11.h>
+extern "C" {
+#include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_d3d11va.h>
+}
+
 #include <memory>
 
 namespace heisenberg {
@@ -16,8 +24,22 @@ namespace {
 
 /// 尝试检测 D3D11 是否可用。
 bool d3d11Available() {
-    // TODO: 通过 FFmpeg av_hwdevice_ctx_create(AV_HWDEVICE_TYPE_D3D11VA) 探测
-    return false;
+    auto& context = renderer::D3D11Context::instance();
+    if (!context.device() || !context.sharedResourceTier2()) return false;
+    AVBufferRef* ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
+    if (!ref) return false;
+    auto* hwContext = reinterpret_cast<AVHWDeviceContext*>(ref->data);
+    auto* d3d11Context = reinterpret_cast<AVD3D11VADeviceContext*>(hwContext->hwctx);
+    if (!d3d11Context) {
+        av_buffer_unref(&ref);
+        return false;
+    }
+    d3d11Context->device = context.device();
+    d3d11Context->BindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE;
+    d3d11Context->MiscFlags = 0;
+    const bool available = av_hwdevice_ctx_init(ref) >= 0;
+    av_buffer_unref(&ref);
+    return available;
 }
 
 /// 尝试检测 CUDA 是否可用。

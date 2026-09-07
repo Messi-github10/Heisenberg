@@ -9,6 +9,8 @@
 #include <memory>
 #include <vector>
 #include <optional>
+#include <array>
+#include <cstdint>
 
 namespace heisenberg {
 namespace renderer {
@@ -43,6 +45,8 @@ public:
     uint32_t computeQueueFamily() const;
     vk::Queue computeQueue()      const;
     bool      hasAloneCompute()   const;
+    const std::array<uint8_t, VK_LUID_SIZE>& deviceLuid() const;
+    bool deviceLuidValid() const;
 private:
     VulkanContext();
 

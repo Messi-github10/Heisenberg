@@ -7,6 +7,7 @@
 #include <QObject>
 #include <cstdint>
 #include <memory>
+#include <Decoder/DecoderFactory.hpp>
 
 extern "C" {
 struct AVFrame;
@@ -54,6 +55,7 @@ public:
     bool isSeekable() const;
     double fps() const;
     int64_t frameCount() const;
+    void setHardwareDecode(bool enabled);
 
 signals:
     void stateChanged(heisenberg::ctrl::PlaybackController::State newState);

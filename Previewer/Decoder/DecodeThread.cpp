@@ -65,6 +65,11 @@ void DecodeThread::stop() {
     clearScrubFrameCache();
 }
 
+void DecodeThread::setDecoderConfig(const decoder::DecoderConfig& config) {
+    std::lock_guard<std::mutex> lock(cmdMutex_);
+    decoderConfig_ = config;
+}
+
 void DecodeThread::open(const std::string& path) {
     {
         std::lock_guard<std::mutex> lock(cmdMutex_);
@@ -192,8 +197,10 @@ void DecodeThread::processCommand(Cmd cmd) {
         fps_ = videoStream_->codec.fps();
 
         decoder::DecoderConfig cfg;
-        cfg.preferred     = decoder::DecoderBackend::Software;
-        cfg.allowFallback = false;
+        {
+            std::lock_guard<std::mutex> lock(cmdMutex_);
+            cfg = decoderConfig_;
+        }
 
         decoderNode_ = std::make_unique<pipeline::DecoderNode>();
         if (decoderNode_->open(*videoStream_, cfg) < 0) {

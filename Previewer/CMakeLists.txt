@@ -148,6 +148,8 @@ target_link_libraries(HeisenbergPreviewer PUBLIC
     miniaudio
     vulkan
     volk
+    d3d11
+    dxgi
     Qt6::Core
 )
 

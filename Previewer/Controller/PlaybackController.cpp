@@ -344,6 +344,14 @@ int64_t PlaybackController::frameCount() const {
         1, static_cast<int64_t>(std::ceil(impl_->durationSecs * impl_->fps)));
 }
 
+void PlaybackController::setHardwareDecode(bool enabled) {
+    decoder::DecoderConfig config;
+    config.preferred = enabled ? decoder::DecoderBackend::D3D11
+                               : decoder::DecoderBackend::Software;
+    config.allowFallback = enabled;
+    impl_->decodeThread.setDecoderConfig(config);
+}
+
 void PlaybackController::setState(State s) {
     if (impl_->state == s) return;
     impl_->state = s;

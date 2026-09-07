@@ -15,6 +15,8 @@ extern "C" {
 }
 
 struct AVFrame;
+struct ID3D11Device;
+struct ID3D11DeviceContext;
 
 namespace heisenberg {
 
@@ -30,6 +32,7 @@ namespace renderer {
 class SwapChain;
 class TextureManager;
 class RenderEngine;
+class D3D11VulkanInterop;
 
 class IPreviewer : public NonCopy {
 public:
@@ -57,6 +60,8 @@ public:
                         heisenberg::filtergraph::IInputNode* input,
                         heisenberg::filtergraph::IOutputNode* output);
 
+    void setD3D11Device(ID3D11Device* device, ID3D11DeviceContext* context);
+
     void shutdown();
 
 private:
@@ -64,6 +69,7 @@ private:
     void releaseIntermediateTarget();
     bool renderToSwapChain(const pl_frame* source, int width, int height);
     bool renderToSwapChain(const filtergraph::VulkanImageRef& image);
+    bool presentHardwareFrame(const AVFrame* frame);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

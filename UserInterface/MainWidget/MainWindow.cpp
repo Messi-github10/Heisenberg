@@ -8,6 +8,7 @@
 #include <QSlider>
 #include <QPushButton>
 #include <QLabel>
+#include <QCheckBox>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFileDialog>
@@ -59,6 +60,8 @@ void MainWindow::setupUi() {
 
     openFileBtn_ = new QPushButton("Open", controlBar);
     openFilterGraphBtn_ = new QPushButton("Open Graph", controlBar);
+    hardwareDecodeCheck_ = new QCheckBox("HW Decode", controlBar);
+    hardwareDecodeCheck_->setChecked(true);
     filterGraphLabel_ = new QLabel("Graph: none", controlBar);
     filterGraphLabel_->setMinimumWidth(150);
     filterGraphLabel_->setToolTip("No filter graph loaded");
@@ -68,6 +71,7 @@ void MainWindow::setupUi() {
     controlLayout->addWidget(timeLabel_);
     controlLayout->addWidget(openFileBtn_);
     controlLayout->addWidget(openFilterGraphBtn_);
+    controlLayout->addWidget(hardwareDecodeCheck_);
     controlLayout->addWidget(filterGraphLabel_);
 
     mainLayout->addWidget(controlBar);
@@ -104,6 +108,13 @@ void MainWindow::setupConnections() {
             emit openFilterGraphRequested(path);
         }
     });
+
+    connect(hardwareDecodeCheck_, &QCheckBox::toggled,
+            this, &MainWindow::hardwareDecodeToggled);
+}
+
+bool MainWindow::hardwareDecodeEnabled() const {
+    return hardwareDecodeCheck_ && hardwareDecodeCheck_->isChecked();
 }
 
 void MainWindow::setDuration(double seconds) {

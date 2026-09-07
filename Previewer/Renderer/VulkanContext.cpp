@@ -30,6 +30,8 @@ struct VulkanContext::Impl {
     bool               aloneCompute = false;
 
     VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
+    std::array<uint8_t, VK_LUID_SIZE> deviceLuid{};
+    bool deviceLuidValidFlag = false;
 };
 
 VulkanContext& VulkanContext::instance() {
@@ -120,7 +122,11 @@ void VulkanContext::createInstance(bool enableValidation) {
 }
 
 std::vector<const char*> VulkanContext::requiredDeviceExtensions() const {
-    return { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    return {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
+    };
 }
 
 std::optional<uint32_t> VulkanContext::findGraphicsQueueFamily(vk::PhysicalDevice physDev) const {
@@ -165,6 +171,13 @@ void VulkanContext::createDevice() {
     }
     impl_->vkPhysDevice = chosen;
 
+    vk::PhysicalDeviceIDProperties idProps;
+    vk::PhysicalDeviceProperties2 props2;
+    props2.pNext = &idProps;
+    impl_->vkPhysDevice.getProperties2(&props2);
+    impl_->deviceLuidValidFlag = idProps.deviceLUIDValid;
+    impl_->deviceLuid = idProps.deviceLUID;
+
     auto props = impl_->vkPhysDevice.getProperties();
     LOG_INFO("VulkanContext: selected physical device — {}", props.deviceName.data());
 
@@ -184,8 +197,9 @@ void VulkanContext::createDevice() {
     auto availableExts = impl_->vkPhysDevice.enumerateDeviceExtensionProperties();
     LOG_INFO("VulkanContext: {} device extensions available", availableExts.size());
 
-    auto devExts = requiredDeviceExtensions();
-    for (auto* ext : devExts) {
+    auto requestedExts = requiredDeviceExtensions();
+    std::vector<const char*> devExts;
+    for (auto* ext : requestedExts) {
         bool found = false;
         for (auto& avail : availableExts) {
             if (std::strcmp(avail.extensionName.data(), ext) == 0) {
@@ -194,8 +208,15 @@ void VulkanContext::createDevice() {
             }
         }
         if (!found) {
-            LOG_ERROR("VulkanContext: required device extension '{}' not available!", ext);
+            if (std::strcmp(ext, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0) {
+                throw std::runtime_error(
+                    "VulkanContext: VK_KHR_swapchain is unavailable");
+            }
+            LOG_WARN("VulkanContext: optional external-sharing extension '{}' "
+                     "is unavailable; hardware interop will be disabled", ext);
+            continue;
         }
+        devExts.push_back(ext);
     }
     LOG_INFO("VulkanContext: enabling {} device extensions", devExts.size());
 
@@ -276,6 +297,14 @@ vk::Queue VulkanContext::computeQueue() const {
 
 bool VulkanContext::hasAloneCompute() const {
     return impl_->aloneCompute;
+}
+
+const std::array<uint8_t, VK_LUID_SIZE>& VulkanContext::deviceLuid() const {
+    return impl_->deviceLuid;
+}
+
+bool VulkanContext::deviceLuidValid() const {
+    return impl_->deviceLuidValidFlag;
 }
 
 } // namespace renderer

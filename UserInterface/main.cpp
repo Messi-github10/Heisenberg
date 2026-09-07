@@ -10,6 +10,7 @@
 
 #include <Controller/PlaybackController.hpp>
 #include <Renderer/VulkanContext.hpp>
+#include <Renderer/D3D11Context.hpp>
 
 #include <Utiles/Logger.hpp>
 
@@ -39,12 +40,15 @@ int main(int argc, char* argv[])
         return -1;
     }
 
+    heisenberg::renderer::D3D11Context::instance().createDevice();
+
     // ============================================================
     // 2. 核心对象
     // ============================================================
     heisenberg::ctrl::PlaybackController playbackCtrl;
     heisenberg::ui::PlayerController     playerCtrl;
     playerCtrl.setPlaybackController(&playbackCtrl);
+    playerCtrl.setHardwareDecode(true);
 
     // ============================================================
     // 3. UI
@@ -73,6 +77,8 @@ int main(int argc, char* argv[])
                      &playerCtrl, &heisenberg::ui::PlayerController::openFile);
     QObject::connect(&mainWindow, &MainWindow::openFilterGraphRequested,
                      &playerCtrl, &heisenberg::ui::PlayerController::openFilterGraph);
+    QObject::connect(&mainWindow, &MainWindow::hardwareDecodeToggled,
+                     &playerCtrl, &heisenberg::ui::PlayerController::setHardwareDecode);
     QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::filterGraphPathChanged,
                      &mainWindow, [&]() {
                          mainWindow.setFilterGraphPath(playerCtrl.filterGraphPath());

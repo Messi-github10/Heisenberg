@@ -8,17 +8,21 @@
 #include <IPreviewer.hpp>
 #include <Renderer/GpuContext.hpp>
 #include <Renderer/VulkanContext.hpp>
+#include <Renderer/D3D11Context.hpp>
 #include <Renderer/SwapChain.hpp>
 #include <FilterGraph/Vulkan/Graph/VulkanFilterGraph.hpp>
 #include <FilterGraph/Interface/INodeFactory.hpp>
 #include <MainWidget/VideoWidget.hpp>
 #include <Utiles/Logger.hpp>
 
+#include <windows.h>
+
 #include <stdexcept>
 #include <string>
 
 extern "C" {
 #include <libavutil/frame.h>
+#include <libavutil/pixfmt.h>
 }
 
 namespace heisenberg {
@@ -111,6 +115,10 @@ void PlayerController::bindVideoOutput(VideoWidget* widget) {
     if (!widget) return;
     videoOutput_ = widget;
     initPipeline(widget);
+}
+
+void PlayerController::setHardwareDecode(bool enabled) {
+    if (ctrl_) ctrl_->setHardwareDecode(enabled);
 }
 
 bool PlayerController::loadFilterGraph(const QString& path, QString* error) {
@@ -226,6 +234,10 @@ void PlayerController::initPipeline(VideoWidget* widget) {
     }
 
     // ---- 尺寸跟随 ----
+    previewer_->setD3D11Device(
+        renderer::D3D11Context::instance().device(),
+        renderer::D3D11Context::instance().context());
+
     connect(widget, &VideoWidget::windowResized, this, [this](int w, int h) {
         if (previewer_) {
             previewer_->resize(w, h);
@@ -259,7 +271,29 @@ void PlayerController::onFrameDecoded(std::shared_ptr<AVFrame> frame) {
         videoHeight_ = frame->height;
     }
 
-    if (!previewer_->presentFrame(frame.get())) return;
+    const bool hardware = frame->format == AV_PIX_FMT_D3D11;
+    if (frame->pts != AV_NOPTS_VALUE && frame->time_base.num > 0
+        && frame->time_base.den > 0) {
+        const int64_t ptsUs = av_rescale_q(
+            frame->pts, frame->time_base, AVRational{1, 1'000'000});
+        LOG_DEBUG("PlayerController: decoded frame mode={} pts={} ptsUs={} "
+                  "timeBase={}/{} format={} size={}x{} range={} colorspace={} "
+                  "primaries={} transfer={} chromaLocation={}",
+                  hardware ? "hardware" : "software", frame->pts, ptsUs,
+                  frame->time_base.num, frame->time_base.den, frame->format,
+                  frame->width, frame->height,
+                  static_cast<int>(frame->color_range),
+                  static_cast<int>(frame->colorspace),
+                  static_cast<int>(frame->color_primaries),
+                  static_cast<int>(frame->color_trc),
+                  static_cast<int>(frame->chroma_location));
+    }
+
+    if (!previewer_->presentFrame(frame.get())) {
+        LOG_WARN("PlayerController: presentFrame failed (format={}, {}x{})",
+                 frame->format, frame->width, frame->height);
+        return;
+    }
 
     // Runtime smoke check for the graph selected by the UI.
     if (!filterGraph_ || (++filterGraphVerificationFrame_ % 60) != 0) return;

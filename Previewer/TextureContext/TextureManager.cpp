@@ -3,6 +3,7 @@
 //
 
 #include "TextureManager.hpp"
+#include <Renderer/ColorSpaceUtils.hpp>
 
 #include <libplacebo/colorspace.h>
 #include <Utiles/Logger.hpp>
@@ -148,52 +149,7 @@ static bool getFormatMeta(AVPixelFormat avfmt, FormatMeta& out) {
     return false;
 }
 
-static pl_color_repr avToPlColorRepr(const AVFrame* f) {
-    pl_color_repr r = {};
-    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(
-        static_cast<AVPixelFormat>(f->format));
-    if (desc) {
-        r.bits.sample_depth = desc->comp[0].depth;
-        r.bits.color_depth  = desc->comp[0].depth;
-        for (int c = 1; c < desc->nb_components; ++c) {
-            if (desc->comp[c].depth > r.bits.color_depth)
-                r.bits.color_depth = desc->comp[c].depth;
-        }
-    }
-    r.levels = (f->color_range == AVCOL_RANGE_JPEG)
-                   ? PL_COLOR_LEVELS_PC
-                   : PL_COLOR_LEVELS_TV;
-    switch (f->colorspace) {
-        case AVCOL_SPC_BT709:       r.sys = PL_COLOR_SYSTEM_BT_709;      break;
-        case AVCOL_SPC_BT470BG:
-        case AVCOL_SPC_SMPTE170M:   r.sys = PL_COLOR_SYSTEM_BT_601;      break;
-        case AVCOL_SPC_BT2020_NCL:  r.sys = PL_COLOR_SYSTEM_BT_2020_NC;  break;
-        case AVCOL_SPC_BT2020_CL:   r.sys = PL_COLOR_SYSTEM_BT_2020_C;   break;
-        default:                    r.sys = PL_COLOR_SYSTEM_BT_709;       break;
-    }
-    return r;
-}
 
-static pl_color_space avToPlColor(const AVFrame* f) {
-    pl_color_space c = {};
-    switch (f->color_trc) {
-        case AVCOL_TRC_BT709:       c.transfer = PL_COLOR_TRC_BT_1886;   break;
-        case AVCOL_TRC_GAMMA22:     c.transfer = PL_COLOR_TRC_GAMMA22;   break;
-        case AVCOL_TRC_GAMMA28:     c.transfer = PL_COLOR_TRC_GAMMA28;   break;
-        case AVCOL_TRC_SMPTE2084:   c.transfer = PL_COLOR_TRC_PQ;        break;
-        case AVCOL_TRC_ARIB_STD_B67:c.transfer = PL_COLOR_TRC_HLG;       break;
-        case AVCOL_TRC_LINEAR:      c.transfer = PL_COLOR_TRC_LINEAR;    break;
-        default:                    c.transfer = PL_COLOR_TRC_BT_1886;   break;
-    }
-    switch (f->color_primaries) {
-        case AVCOL_PRI_BT709:       c.primaries = PL_COLOR_PRIM_BT_709;     break;
-        case AVCOL_PRI_BT470BG:     c.primaries = PL_COLOR_PRIM_BT_601_625; break;
-        case AVCOL_PRI_SMPTE170M:   c.primaries = PL_COLOR_PRIM_BT_601_525; break;
-        case AVCOL_PRI_BT2020:      c.primaries = PL_COLOR_PRIM_BT_2020;    break;
-        default:                    c.primaries = PL_COLOR_PRIM_BT_709;      break;
-    }
-    return c;
-}
 
 } // anonymous namespace
 
@@ -344,8 +300,8 @@ const pl_frame* TextureManager::uploadAvFrame(const AVFrame* avframe) {
         }
     }
 
-    impl_->uploadFrame.repr  = avToPlColorRepr(avframe);
-    impl_->uploadFrame.color = avToPlColor(avframe);
+    impl_->uploadFrame.repr  = colorReprFromAvFrame(avframe);
+    impl_->uploadFrame.color = colorSpaceFromAvFrame(avframe);
     impl_->uploadFrame.crop  = { 0, 0, static_cast<float>(w), static_cast<float>(h) };
 
     return &impl_->uploadFrame;

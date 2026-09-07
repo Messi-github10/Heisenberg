@@ -5,6 +5,7 @@
 #include <Common/Packet.hpp>
 #include <Common/Stream.hpp>
 #include <Decoder/IDecoder.hpp>
+#include <Utiles/Logger.hpp>
 
 extern "C" {
 #include <libavutil/channel_layout.h>
@@ -115,10 +116,28 @@ DecoderNode::~DecoderNode() = default;
 int DecoderNode::open(const Stream& stream,
                       const decoder::DecoderConfig& config) {
     close();
-    decoder_ = decoder::createDecoder(config);
+    // Hardware video backends are not audio decoders. Keep audio on the
+    // software path even when the user enables D3D11 video decoding.
+    decoder::DecoderConfig effectiveConfig = config;
+    if (stream.isAudio()) {
+        effectiveConfig.preferred = decoder::DecoderBackend::Software;
+        effectiveConfig.allowFallback = false;
+    }
+    decoder_ = decoder::createDecoder(effectiveConfig);
     if (!decoder_) return -1;
 
-    const int result = decoder_->open(stream);
+    int result = decoder_->open(stream);
+    if (result < 0 && effectiveConfig.allowFallback
+        && effectiveConfig.preferred != decoder::DecoderBackend::Software) {
+        LOG_WARN("DecoderNode: preferred decoder failed for stream {}, "
+                 "falling back to software", stream.index);
+        decoder_.reset();
+        decoder::DecoderConfig softwareConfig;
+        softwareConfig.preferred = decoder::DecoderBackend::Software;
+        softwareConfig.allowFallback = false;
+        decoder_ = decoder::createDecoder(softwareConfig);
+        if (decoder_) result = decoder_->open(stream);
+    }
     if (result < 0) {
         decoder_.reset();
         return result;
