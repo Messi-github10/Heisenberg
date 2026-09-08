@@ -99,6 +99,9 @@ int D3D11Decoder::open(const Stream& stream) {
     // immediate/video contexts during av_hwdevice_ctx_init().  Passing our
     // immediate context here is unnecessary and can expose a stale context
     // across decoder-thread initialization.
+    // FFmpeg releases AVD3D11VADeviceContext::device when the AVHW device
+    // context is destroyed. Retain a reference for that ownership.
+    device->AddRef();
     deviceContext->device = device;
     // The decoded NV12/P010 surfaces are sampled by libplacebo for the
     // D3D11-side color conversion, so they must expose both decoder and

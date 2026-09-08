@@ -34,6 +34,9 @@ bool d3d11Available() {
         av_buffer_unref(&ref);
         return false;
     }
+    // FFmpeg releases AVD3D11VADeviceContext::device when the AVHW device
+    // context is destroyed. Retain a reference for that ownership.
+    context.device()->AddRef();
     d3d11Context->device = context.device();
     d3d11Context->BindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE;
     d3d11Context->MiscFlags = 0;
