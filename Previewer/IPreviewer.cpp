@@ -68,6 +68,44 @@ pl_frame makeRgbFrame(pl_tex texture, int width, int height,
     return frame;
 }
 
+pl_frame makeRgbFrameWithAspect(pl_tex texture, int texWidth, int texHeight,
+                                int srcWidth, int srcHeight,
+                                const pl_color_space& color) {
+    pl_frame frame = {};
+    frame.num_planes = 1;
+    frame.planes[0].texture = texture;
+    frame.planes[0].components = 4;
+    frame.planes[0].component_mapping[0] = 0;
+    frame.planes[0].component_mapping[1] = 1;
+    frame.planes[0].component_mapping[2] = 2;
+    frame.planes[0].component_mapping[3] = 3;
+    frame.repr.sys = PL_COLOR_SYSTEM_RGB;
+    frame.repr.levels = PL_COLOR_LEVELS_PC;
+    frame.repr.alpha = PL_ALPHA_INDEPENDENT;
+    frame.color = color;
+
+    // 计算保持宽高比的 crop 区域
+    float srcAspect = static_cast<float>(srcWidth) / static_cast<float>(srcHeight);
+    float dstAspect = static_cast<float>(texWidth) / static_cast<float>(texHeight);
+
+    float cropX = 0.0f, cropY = 0.0f;
+    float cropW = static_cast<float>(texWidth);
+    float cropH = static_cast<float>(texHeight);
+
+    if (srcAspect > dstAspect) {
+        // 源视频更宽，上下留黑边
+        cropH = cropW / srcAspect;
+        cropY = (static_cast<float>(texHeight) - cropH) * 0.5f;
+    } else {
+        // 源视频更窄，左右留黑边
+        cropW = cropH * srcAspect;
+        cropX = (static_cast<float>(texWidth) - cropW) * 0.5f;
+    }
+
+    frame.crop = {cropX, cropY, cropX + cropW, cropY + cropH};
+    return frame;
+}
+
 pl_color_space makeDisplayColor() {
     pl_color_space color = {};
     color.primaries = PL_COLOR_PRIM_BT_709;
@@ -541,8 +579,13 @@ bool IPreviewer::renderToSwapChain(
     pl_tex framebuffer = impl_->swapChain->startFrame(width, height);
     if (!framebuffer) return false;
 
+    // 获取源帧的尺寸
+    int srcWidth = static_cast<int>(source->crop.x1 - source->crop.x0);
+    int srcHeight = static_cast<int>(source->crop.y1 - source->crop.y0);
+
     const pl_color_space displayColor = makeDisplayColor();
-    pl_frame target = makeRgbFrame(framebuffer, width, height, displayColor);
+    pl_frame target = makeRgbFrameWithAspect(framebuffer, width, height,
+                                             srcWidth, srcHeight, displayColor);
     if (!impl_->renderEngine->render(source, &target)) return false;
     if (!impl_->swapChain->submitFrame()) return false;
     impl_->swapChain->swapBuffers();
@@ -589,8 +632,10 @@ bool IPreviewer::renderToSwapChain(
             sourceTexture, static_cast<int>(image.extent.width),
             static_cast<int>(image.extent.height), impl_->workingColor);
         const pl_color_space displayColor = makeDisplayColor();
-        pl_frame target = makeRgbFrame(framebuffer, impl_->outputWidth,
-                                       impl_->outputHeight, displayColor);
+        pl_frame target = makeRgbFrameWithAspect(
+            framebuffer, impl_->outputWidth, impl_->outputHeight,
+            static_cast<int>(image.extent.width),
+            static_cast<int>(image.extent.height), displayColor);
         if (rendered) {
             rendered = impl_->renderEngine->render(&source, &target);
             if (!rendered) {
