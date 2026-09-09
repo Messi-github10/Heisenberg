@@ -17,6 +17,10 @@ public:
 
     bool setExternalInput(int32_t index, const VulkanImageRef& image);
 
+    // Graph-owned Resource 接口
+    std::vector<ResourceAccess> declareResourceAccess() const override;
+    bool allocateResources(ResourceManager& manager) override;
+
 protected:
     bool configureOutputs(const std::vector<ImageFormat>& inputs) override;
     VulkanInputBinding inputBinding(int32_t inputIndex) const override;
@@ -39,7 +43,7 @@ private:
     QJsonObject parameters_;
     VulkanGraphContext context_ = {};
     std::vector<VulkanImageRef> externalInputs_;
-    std::unique_ptr<VulkanImageResource> auxiliaryImage_;
+    LogicalResourceId auxiliaryResource_;
     VkBuffer auxiliaryUploadBuffer_ = VK_NULL_HANDLE;
     VkDeviceMemory auxiliaryUploadMemory_ = VK_NULL_HANDLE;
     void* auxiliaryUploadMapped_ = nullptr;

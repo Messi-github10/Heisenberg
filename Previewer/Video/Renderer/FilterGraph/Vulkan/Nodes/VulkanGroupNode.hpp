@@ -14,6 +14,11 @@ public:
     void record(VkCommandBuffer commandBuffer,
                 const FrameContext& frame) override;
 
+    // Graph-owned Resource 接口
+    std::vector<ResourceAccess> declareResourceAccess() const override;
+    bool allocateResources(ResourceManager& manager) override;
+    LogicalResourceId logicalOutputResource(int32_t index) const override;
+
 protected:
     explicit VulkanGroupNode(std::string mark);
 

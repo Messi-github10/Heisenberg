@@ -1,5 +1,7 @@
 #include "VulkanPipeGraph.hpp"
 #include "VulkanNode.hpp"
+#include "ResourceManager.hpp"
+#include "StateTransitionScheduler.hpp"
 #include <Video/Renderer/FilterGraph/Core/BaseNode.hpp>
 #include <Utiles/Logger.hpp>
 #include <volk.h>
@@ -10,6 +12,8 @@ namespace heisenberg::filtergraph {
 
 VulkanPipeGraph::VulkanPipeGraph(const VulkanGraphContext& context)
     : PipeGraph(GraphicApiBackend::vulkan), context_(context) {
+    resourceManager_ = std::make_unique<ResourceManager>(context);
+    transitionScheduler_ = std::make_unique<StateTransitionScheduler>();
     if (!initialize()) {
         throw std::runtime_error("Failed to initialize Vulkan filter graph");
     }
@@ -100,14 +104,31 @@ bool VulkanPipeGraph::onGraphRebuilt() {
     // Structural changes are rare. Waiting here keeps old node images alive
     // until libplacebo has returned every borrowed graph output.
     vkQueueWaitIdle(context_.queue);
+
+    // 重置资源管理器
+    resourceManager_->reset();
+    transitionScheduler_->clear();
+
     for (BaseNode* base : nodes()) {
         auto* node = dynamic_cast<VulkanNode*>(base);
-        if (!node || !node->prepare(context_)) {
+        if (!node) continue;
+
+        // 设置 ResourceManager 引用
+        node->setResourceManager(resourceManager_.get());
+
+        if (!node->prepare(context_)) {
             LOG_ERROR("FilterGraph: failed to prepare Vulkan node '{}'",
                       base ? base->getMark() : "<null>");
             return false;
         }
     }
+
+    // 构建状态转换计划
+    if (!buildTransitionPlan()) {
+        LOG_ERROR("FilterGraph: failed to build state transition plan");
+        return false;
+    }
+
     return true;
 }
 
@@ -153,6 +174,20 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
     for (int32_t nodeIndex : executionOrder()) {
         auto* node = static_cast<VulkanNode*>(
             nodes()[static_cast<size_t>(nodeIndex)]);
+
+        // 在 Node 执行前插入状态转换
+        const auto& transitions = transitionScheduler_->getTransitionsBefore(
+            static_cast<uint32_t>(nodeIndex));
+        for (const auto& transition : transitions) {
+            VulkanImageRef imageRef = resourceManager_->getResource(transition.resource);
+            if (imageRef.valid()) {
+                StateTransitionScheduler::executeTransition(
+                    commandBuffer_, imageRef.image, transition);
+                // 更新资源管理器中的状态
+                resourceManager_->setState(transition.resource, transition.newState);
+            }
+        }
+
         std::vector<VulkanImageRef> inputs;
         inputs.reserve(static_cast<size_t>(node->inputCount()));
         for (int32_t pin = 0; pin < node->inputCount(); ++pin) {
@@ -221,6 +256,56 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
     for (BaseNode* base : nodes()) {
         static_cast<VulkanNode*>(base)->setCompletion(completion);
     }
+    return true;
+}
+
+bool VulkanPipeGraph::buildTransitionPlan() {
+    // 构建状态转换计划
+    // 遍历执行顺序中的每个 Node，记录资源访问并生成状态转换
+
+    for (size_t i = 0; i < executionOrder().size(); ++i) {
+        int32_t nodeIndex = executionOrder()[i];
+        auto* node = static_cast<VulkanNode*>(nodes()[static_cast<size_t>(nodeIndex)]);
+
+        // 让 Node 从 ResourceManager 分配资源
+        std::vector<LogicalResourceId> inputResources;
+        inputResources.reserve(static_cast<size_t>(node->inputCount()));
+        for (int32_t pin = 0; pin < node->inputCount(); ++pin) {
+            const RuntimeGraphEdge* edge = inputEdge(nodeIndex, pin);
+            if (!edge) return false;
+            auto* source = static_cast<VulkanNode*>(
+                nodes()[static_cast<size_t>(edge->fromNode)]);
+            inputResources.push_back(source->logicalOutputResource(edge->fromPin));
+        }
+        node->bindInputResources(std::move(inputResources));
+
+        if (!node->allocateResources(*resourceManager_)) {
+            LOG_ERROR("FilterGraph: Node '{}' failed to allocate resources",
+                      node->getMark());
+            return false;
+        }
+
+        // 获取 Node 的资源访问声明
+        auto accesses = node->declareResourceAccess();
+
+        for (const auto& access : accesses) {
+            if (!access.resource.valid()) continue;
+
+            // 获取资源当前状态
+            auto currentState = resourceManager_->getState(access.resource);
+
+            // 记录访问并生成转换（如果需要）
+            auto transition = transitionScheduler_->recordAccess(
+                static_cast<uint32_t>(nodeIndex), access, currentState);
+
+            // 如果需要状态转换，更新资源状态
+            if (transition.oldState != transition.newState) {
+                resourceManager_->setState(access.resource, transition.newState);
+            }
+        }
+    }
+
+    LOG_INFO("FilterGraph: transition plan built successfully");
     return true;
 }
 

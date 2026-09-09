@@ -2,6 +2,7 @@
 
 #include "../VulkanFilterRegistry.hpp"
 #include "VulkanNode.hpp"
+#include <Video/Renderer/FilterGraph/Vulkan/Graph/LogicalResource.hpp>
 
 #include <cstddef>
 
@@ -18,6 +19,11 @@ public:
     void setCompletion(VulkanSyncPoint completion) override;
 
     bool readback(void* destination, size_t size) const;
+
+    // Graph-owned Resource 接口
+    std::vector<ResourceAccess> declareResourceAccess() const override;
+    bool allocateResources(ResourceManager& manager) override;
+    LogicalResourceId logicalOutputResource(int32_t index) const override;
 
 protected:
     bool configure(const std::vector<ImageFormat>& inputs) override;

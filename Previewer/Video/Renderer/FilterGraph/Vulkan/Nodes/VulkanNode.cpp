@@ -16,8 +16,17 @@ void VulkanNode::bindInputs(std::vector<VulkanImageRef> inputs) {
     inputs_ = std::move(inputs);
 }
 
+void VulkanNode::bindInputResources(std::vector<LogicalResourceId> resources) {
+    inputResources_ = std::move(resources);
+    inputResources_.resize(static_cast<size_t>(inputCount()));
+}
+
 const VulkanImageRef& VulkanNode::input(int32_t index) const {
     return inputs_.at(static_cast<size_t>(index));
+}
+
+LogicalResourceId VulkanNode::inputResource(int32_t index) const {
+    return inputResources_.at(static_cast<size_t>(index));
 }
 
 const VulkanImageRef& VulkanNode::output(int32_t index) const {

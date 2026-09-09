@@ -64,4 +64,38 @@ void VulkanGroupNode::record(
     setOutput(0, current);
 }
 
+std::vector<ResourceAccess> VulkanGroupNode::declareResourceAccess() const {
+    std::vector<ResourceAccess> accesses;
+    LogicalResourceId previous;
+    if (inputCount() > 0) previous = inputResource(0);
+
+    for (const auto& pass : passes_) {
+        auto* mutablePass = const_cast<VulkanNode*>(pass.get());
+        mutablePass->bindInputResources({previous});
+        auto passAccesses = pass->declareResourceAccess();
+        accesses.insert(accesses.end(), passAccesses.begin(), passAccesses.end());
+        previous = pass->logicalOutputResource(0);
+    }
+
+    return accesses;
+}
+
+LogicalResourceId VulkanGroupNode::logicalOutputResource(int32_t index) const {
+    if (index != 0 || passes_.empty()) return {};
+    return passes_.back()->logicalOutputResource(0);
+}
+
+bool VulkanGroupNode::allocateResources(ResourceManager& manager) {
+    // 让所有子 pass 分配资源
+    for (const auto& pass : passes_) {
+        pass->setResourceManager(&manager);
+        if (!pass->allocateResources(manager)) {
+            LOG_ERROR("FilterGraph: group pass '{}' failed to allocate resources",
+                      pass->getMark());
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace heisenberg::filtergraph

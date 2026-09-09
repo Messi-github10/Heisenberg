@@ -1,7 +1,7 @@
 #pragma once
 
-#include "VulkanImageResource.hpp"
 #include "VulkanNode.hpp"
+#include <Video/Renderer/FilterGraph/Vulkan/Graph/LogicalResource.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -24,6 +24,11 @@ public:
     bool prepare(const VulkanGraphContext& context) override;
     void record(VkCommandBuffer commandBuffer,
                 const FrameContext& frame) override;
+
+    // Graph-owned Resource 接口
+    std::vector<ResourceAccess> declareResourceAccess() const override;
+    bool allocateResources(ResourceManager& manager) override;
+    LogicalResourceId logicalOutputResource(int32_t index) const override;
 
 protected:
     explicit VulkanComputeNode(std::string mark,
@@ -64,7 +69,7 @@ private:
     VkSampler samplerFor(VulkanInputBinding binding) const;
 
     VulkanGraphContext context_ = {};
-    std::vector<std::unique_ptr<VulkanImageResource>> outputImages_;
+    std::vector<LogicalResourceId> outputResources_;
 
     VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;

@@ -1,8 +1,7 @@
 #pragma once
 
-#include "VulkanImageResource.hpp"
 #include "VulkanNode.hpp"
-#include <memory>
+#include <Video/Renderer/FilterGraph/Vulkan/Graph/LogicalResource.hpp>
 
 namespace heisenberg::filtergraph {
 
@@ -14,11 +13,18 @@ public:
     void record(VkCommandBuffer commandBuffer,
                 const FrameContext& frame) override;
 
+    // Graph-owned Resource 接口
+    std::vector<ResourceAccess> declareResourceAccess() const override;
+    bool allocateResources(ResourceManager& manager) override;
+    LogicalResourceId logicalOutputResource(int32_t index) const override;
+
 protected:
     bool configure(const std::vector<ImageFormat>& inputs) override;
 
 private:
-    std::unique_ptr<VulkanImageResource> outputImage_;
+    VulkanGraphContext context_;
+    LogicalResourceId outputResource_;
+    VkExtent2D outputExtent_ = {};
 };
 
 } // namespace heisenberg::filtergraph

@@ -1,5 +1,6 @@
 #include "VulkanComputeNode.hpp"
 #include "../ShaderBindingContract.hpp"
+#include <Video/Renderer/FilterGraph/Vulkan/Graph/ResourceManager.hpp>
 #include <Utiles/Logger.hpp>
 #include <volk.h>
 #include <algorithm>
@@ -13,28 +14,6 @@
 
 namespace heisenberg::filtergraph {
 namespace {
-
-void transitionImage(VkCommandBuffer commandBuffer, VkImage image,
-                     VkImageLayout oldLayout, VkImageLayout newLayout,
-                     VkPipelineStageFlags sourceStage,
-                     VkPipelineStageFlags destinationStage,
-                     VkAccessFlags sourceAccess,
-                     VkAccessFlags destinationAccess) {
-    if (oldLayout == newLayout) return;
-    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrier.srcAccessMask = sourceAccess;
-    barrier.dstAccessMask = destinationAccess;
-    barrier.oldLayout = oldLayout;
-    barrier.newLayout = newLayout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0,
-                         0, nullptr, 0, nullptr, 1, &barrier);
-}
 
 std::vector<uint32_t> loadShaderCode(const char* path) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -157,34 +136,79 @@ bool VulkanComputeNode::prepare(const VulkanGraphContext& context) {
     if (!context.device || !context.physicalDevice) return false;
     if (context_.device && context_.device != context.device) {
         destroyPipeline();
-        outputImages_.clear();
+        outputResources_.clear();
     }
     context_ = context;
 
-    if (outputImages_.empty()) {
-        outputImages_.reserve(static_cast<size_t>(outputCount()));
-        for (int32_t index = 0; index < outputCount(); ++index) {
-            outputImages_.push_back(
-                std::make_unique<VulkanImageResource>(context_));
+    return pipeline_ || initializePipeline();
+}
+
+std::vector<ResourceAccess> VulkanComputeNode::declareResourceAccess() const {
+    std::vector<ResourceAccess> accesses;
+
+    for (int32_t index = 0; index < inputCount(); ++index) {
+        const LogicalResourceId resId = inputResource(index);
+        if (!resId.valid()) continue;
+        ResourceAccess access;
+        access.resource = resId;
+        access.mode = ResourceAccessMode::Read;
+        access.expectedState.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        access.expectedState.stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        access.expectedState.access = VK_ACCESS_SHADER_READ_BIT;
+        accesses.push_back(access);
+    }
+
+    // 输出资源：写入（STORAGE_IMAGE）
+    for (const auto& resId : outputResources_) {
+        if (resId.valid()) {
+            ResourceAccess access;
+            access.resource = resId;
+            access.mode = ResourceAccessMode::Write;
+            access.expectedState.layout = VK_IMAGE_LAYOUT_GENERAL;
+            access.expectedState.stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            access.expectedState.access = VK_ACCESS_SHADER_WRITE_BIT;
+            accesses.push_back(access);
         }
     }
+
+    return accesses;
+}
+
+LogicalResourceId VulkanComputeNode::logicalOutputResource(int32_t index) const {
+    if (index < 0 || static_cast<size_t>(index) >= outputResources_.size()) return {};
+    return outputResources_[static_cast<size_t>(index)];
+}
+
+bool VulkanComputeNode::allocateResources(ResourceManager& manager) {
+    outputResources_.clear();
+    outputResources_.reserve(static_cast<size_t>(outputCount()));
 
     constexpr VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT
         | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
         | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
     for (int32_t index = 0; index < outputCount(); ++index) {
-        const ImageFormat& format =
-            outputFormats()[static_cast<size_t>(index)];
-        if (!supportsFormat(format.format)
-            || !outputImages_[static_cast<size_t>(index)]->ensure(
-                {static_cast<uint32_t>(format.width),
-                 static_cast<uint32_t>(format.height)},
-                usage, kWorkingImageContract)) {
+        const ImageFormat& format = outputFormats()[static_cast<size_t>(index)];
+
+        if (!supportsFormat(format.format)) {
+            LOG_ERROR("VulkanComputeNode: unsupported format");
             return false;
         }
+
+        LogicalResourceId resId = manager.allocateLogicalResource();
+        if (!manager.ensurePhysicalResource(
+            resId,
+            {static_cast<uint32_t>(format.width),
+             static_cast<uint32_t>(format.height)},
+            usage, kWorkingImageContract)) {
+            LOG_ERROR("VulkanComputeNode: failed to allocate output resource");
+            return false;
+        }
+
+        outputResources_.push_back(resId);
     }
 
-    return pipeline_ || initializePipeline();
+    return true;
 }
 
 uint32_t VulkanComputeNode::findMemoryType(
@@ -540,8 +564,19 @@ bool VulkanComputeNode::updateDescriptors() {
     }
 
     for (int32_t index = 0; index < outputCount(); ++index) {
+        if (!resourceManager()
+            || static_cast<size_t>(index) >= outputResources_.size()) {
+            LOG_ERROR("VulkanComputeNode: invalid output resource index");
+            return false;
+        }
+
         const VulkanImageRef destination =
-            outputImages_[static_cast<size_t>(index)]->ref();
+            resourceManager()->getResource(outputResources_[static_cast<size_t>(index)]);
+        if (!destination.valid()) {
+            LOG_ERROR("VulkanComputeNode: failed to get output resource");
+            return false;
+        }
+
         VkDescriptorImageInfo& imageInfo = imageInfos[imageIndex++];
         imageInfo.imageView = destination.view;
         imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -590,10 +625,10 @@ bool VulkanComputeNode::uploadUniformData() {
 
 void VulkanComputeNode::record(
     VkCommandBuffer commandBuffer, const FrameContext&) {
-    if (!pipeline_ || outputImages_.empty() || !uploadUniformData()) return;
+    if (!pipeline_ || outputResources_.empty() || !uploadUniformData()) return;
+    if (!resourceManager()) return;
 
-    std::vector<VkImageLayout> originalLayouts(
-        static_cast<size_t>(inputCount()));
+    // 验证输入
     for (int32_t index = 0; index < inputCount(); ++index) {
         const VulkanImageRef& source = input(index);
         if (!source.valid() || !source.view
@@ -602,19 +637,9 @@ void VulkanComputeNode::record(
                       index);
             return;
         }
-        originalLayouts[static_cast<size_t>(index)] = source.layout;
-        const VkImageLayout targetLayout = isSampled(inputBinding(index))
-            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            : VK_IMAGE_LAYOUT_GENERAL;
-        transitionImage(commandBuffer, source.image, source.layout, targetLayout,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                        VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-                        VK_ACCESS_SHADER_READ_BIT);
     }
 
-    std::vector<VkImageLayout> extraOriginalLayouts(
-        static_cast<size_t>(extraInputCount()));
+    // 验证额外输入
     for (int32_t index = 0; index < extraInputCount(); ++index) {
         const VulkanImageRef source = extraInput(index);
         if (!source.valid() || !source.view
@@ -623,41 +648,22 @@ void VulkanComputeNode::record(
                       index);
             return;
         }
-        extraOriginalLayouts[static_cast<size_t>(index)] = source.layout;
-        const VkImageLayout targetLayout = isSampled(extraInputBinding(index))
-            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            : VK_IMAGE_LAYOUT_GENERAL;
-        transitionImage(commandBuffer, source.image, source.layout, targetLayout,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                        VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-                        VK_ACCESS_SHADER_READ_BIT);
-        setExtraInputLayout(index, targetLayout);
     }
 
-    for (int32_t index = 0; index < outputCount(); ++index) {
-        VulkanImageResource& output =
-            *outputImages_[static_cast<size_t>(index)];
-        const VulkanImageRef destination = output.ref();
-        transitionImage(commandBuffer, destination.image, output.layout(),
-                        VK_IMAGE_LAYOUT_GENERAL,
-                        output.layout() == VK_IMAGE_LAYOUT_UNDEFINED
-                            ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                            : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                        output.layout() == VK_IMAGE_LAYOUT_UNDEFINED
-                            ? 0
-                            : VK_ACCESS_MEMORY_READ_BIT
-                                | VK_ACCESS_MEMORY_WRITE_BIT,
-                        VK_ACCESS_SHADER_WRITE_BIT);
-    }
+    // 状态转换现在由 Graph 自动处理，不需要手动转换
 
     if (!updateDescriptors()) return;
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                             pipelineLayout_, 0, 1, &descriptorSet_, 0, nullptr);
 
-    const VulkanImageRef dispatchImage = outputImages_[0]->ref();
+    // 从 ResourceManager 获取第一个输出资源用于计算 dispatch 尺寸
+    VulkanImageRef dispatchImage = resourceManager()->getResource(outputResources_[0]);
+    if (!dispatchImage.valid()) {
+        LOG_ERROR("FilterGraph: failed to get output resource for dispatch");
+        return;
+    }
+
     const VkExtent3D group = workGroupSize();
     if (group.width == 0 || group.height == 0 || group.depth == 0) {
         LOG_ERROR("FilterGraph: compute work group size cannot be zero");
@@ -668,44 +674,13 @@ void VulkanComputeNode::record(
                   (dispatchImage.extent.height + group.height - 1) / group.height,
                   1);
 
-    for (int32_t index = 0; index < inputCount(); ++index) {
-        const VulkanImageRef& source = input(index);
-        const VkImageLayout usedLayout = isSampled(inputBinding(index))
-            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            : VK_IMAGE_LAYOUT_GENERAL;
-        transitionImage(commandBuffer, source.image, usedLayout,
-                        originalLayouts[static_cast<size_t>(index)],
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT);
-    }
-
-    for (int32_t index = 0; index < extraInputCount(); ++index) {
-        const VulkanImageRef source = extraInput(index);
-        const VkImageLayout usedLayout = isSampled(extraInputBinding(index))
-            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            : VK_IMAGE_LAYOUT_GENERAL;
-        const VkImageLayout originalLayout =
-            extraOriginalLayouts[static_cast<size_t>(index)];
-        transitionImage(commandBuffer, source.image, usedLayout, originalLayout,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT);
-        setExtraInputLayout(index, originalLayout);
-    }
-
+    // 设置输出
     for (int32_t index = 0; index < outputCount(); ++index) {
-        VulkanImageResource& output =
-            *outputImages_[static_cast<size_t>(index)];
-        const VulkanImageRef destination = output.ref();
-        transitionImage(commandBuffer, destination.image,
-                        VK_IMAGE_LAYOUT_GENERAL,
-                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT);
-        output.setLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        setOutput(index, output.ref());
+        VulkanImageRef outputRef = resourceManager()->getResource(
+            outputResources_[static_cast<size_t>(index)]);
+        if (outputRef.valid()) {
+            setOutput(index, outputRef);
+        }
     }
 }
 

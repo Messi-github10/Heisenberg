@@ -221,12 +221,6 @@ void VulkanReadbackNode::record(VkCommandBuffer commandBuffer,
     const VulkanImageRef source = input(0);
     if (!source.valid() || !source.view
         || source.contract != kWorkingImageContract) return;
-
-    transitionImage(commandBuffer, source.image, source.layout,
-                    VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-                    VK_ACCESS_SHADER_READ_BIT);
     if (descriptor_.clearReadbackBuffer) {
         vkCmdFillBuffer(commandBuffer, readbackBuffer_, 0,
                         static_cast<VkDeviceSize>(descriptor_.readbackSize), 0);
@@ -279,10 +273,6 @@ void VulkanReadbackNode::record(VkCommandBuffer commandBuffer,
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
                          &readBarrier, 0, nullptr);
-    transitionImage(commandBuffer, source.image, VK_IMAGE_LAYOUT_GENERAL,
-                    source.layout, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_SHADER_READ_BIT,
-                    VK_ACCESS_MEMORY_READ_BIT);
     for (int32_t index = 0; index < outputCount(); ++index) {
         if (index == 0) setOutput(index, source);
     }
@@ -329,6 +319,31 @@ void VulkanReadbackNode::destroyResources() {
     readbackMemory_ = VK_NULL_HANDLE;
     readbackMapped_ = nullptr;
     readbackReady_ = {};
+}
+
+std::vector<ResourceAccess> VulkanReadbackNode::declareResourceAccess() const {
+    std::vector<ResourceAccess> accesses;
+    if (inputCount() > 0 && inputResource(0).valid()) {
+        ResourceAccess access;
+        access.resource = inputResource(0);
+        access.mode = ResourceAccessMode::Read;
+        access.expectedState.layout = VK_IMAGE_LAYOUT_GENERAL;
+        access.expectedState.stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        access.expectedState.access = VK_ACCESS_SHADER_READ_BIT;
+        accesses.push_back(access);
+    }
+    return accesses;
+}
+
+LogicalResourceId VulkanReadbackNode::logicalOutputResource(int32_t index) const {
+    if (index < 0 || index >= inputCount()) return {};
+    return inputResource(index);
+}
+
+bool VulkanReadbackNode::allocateResources(ResourceManager&) {
+    // VulkanReadbackNode 不需要分配图像资源
+    // 它使用自己管理的 readback buffer
+    return true;
 }
 
 } // namespace heisenberg::filtergraph
