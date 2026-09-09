@@ -30,7 +30,7 @@ namespace filtergraph {
 namespace renderer {
 
 class SwapChain;
-class TextureManager;
+class SoftwareContext;
 class RenderEngine;
 class D3D11VulkanInterop;
 

@@ -6,12 +6,12 @@
 
 #include <Controller/PlaybackController.hpp>
 #include <IPreviewer.hpp>
-#include <Renderer/GpuContext.hpp>
-#include <Renderer/VulkanContext.hpp>
-#include <Renderer/D3D11Context.hpp>
-#include <Renderer/SwapChain.hpp>
-#include <FilterGraph/Vulkan/Graph/VulkanFilterGraph.hpp>
-#include <FilterGraph/Interface/INodeFactory.hpp>
+#include <Platform/GpuContext.hpp>
+#include <Platform/Vulkan/VulkanContext.hpp>
+#include <Platform/D3D11/D3D11Context.hpp>
+#include <Video/Renderer/SwapChain.hpp>
+#include <Video/Renderer/FilterGraph/Vulkan/Graph/VulkanFilterGraph.hpp>
+#include <Video/Renderer/FilterGraph/Interface/INodeFactory.hpp>
 #include <MainWidget/VideoWidget.hpp>
 #include <Utiles/Logger.hpp>
 

@@ -7,7 +7,7 @@
 #include <QObject>
 #include <cstdint>
 #include <memory>
-#include <Decoder/DecoderFactory.hpp>
+#include <Video/Decoder/DecoderFactory.hpp>
 
 extern "C" {
 struct AVFrame;

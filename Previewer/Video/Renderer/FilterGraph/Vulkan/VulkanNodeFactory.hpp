@@ -1,0 +1,40 @@
+#pragma once
+
+#include <Video/Renderer/FilterGraph/Interface/INodeFactory.hpp>
+#include <memory>
+#include <utility>
+#include <vector>
+
+namespace heisenberg::filtergraph {
+
+class BaseNode;
+class IBaseNode;
+class IInputNode;
+class IOutputNode;
+struct VulkanGraphNodeDesc;
+
+struct VulkanNodeCreateResult {
+    IBaseNode* node = nullptr;
+    IInputNode* input = nullptr;
+    IOutputNode* output = nullptr;
+};
+
+class VulkanNodeFactory final : public NodeFactory {
+public:
+    VulkanNodeFactory();
+    ~VulkanNodeFactory() override;
+
+    IInputNode* createInput() override;
+    IOutputNode* createOutput() override;
+    IFilterNode* createPassthrough() override;
+
+    VulkanNodeCreateResult createGraphNode(const VulkanGraphNodeDesc& node);
+
+private:
+    template<typename T, typename... Args>
+    T* createNode(Args&&... args);
+
+    std::vector<std::unique_ptr<BaseNode>> nodes_;
+};
+
+} // namespace heisenberg::filtergraph

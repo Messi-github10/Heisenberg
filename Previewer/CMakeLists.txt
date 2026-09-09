@@ -20,15 +20,15 @@ find_program(SPIRV_CROSS
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 set(FILTER_SHADER_SOURCE_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/FilterGraph/Vulkan/Shaders")
+    "${CMAKE_CURRENT_SOURCE_DIR}/Video/Renderer/FilterGraph/Vulkan/Shaders")
 set(FILTER_SHADER_BINARY_DIR
-    "${CMAKE_CURRENT_BINARY_DIR}/FilterGraph/Vulkan/Shaders")
+    "${CMAKE_CURRENT_BINARY_DIR}/Video/Renderer/FilterGraph/Vulkan/Shaders")
 set(SHADER_CONTRACT_MANIFEST
     "${FILTER_SHADER_SOURCE_DIR}/shader_manifest.json")
 set(SHADER_CONTRACT_VALIDATOR
-    "${CMAKE_CURRENT_SOURCE_DIR}/FilterGraph/Vulkan/validate_shader_contract.py")
+    "${CMAKE_CURRENT_SOURCE_DIR}/Video/Renderer/FilterGraph/Vulkan/validate_shader_contract.py")
 set(FILTER_CONTRACT_TEST
-    "${CMAKE_CURRENT_SOURCE_DIR}/FilterGraph/Vulkan/shader_source_contract_test.py")
+    "${CMAKE_CURRENT_SOURCE_DIR}/Video/Renderer/FilterGraph/Vulkan/shader_source_contract_test.py")
 
 function(add_filter_shader output_variable source_name)
     set(shader_source "${FILTER_SHADER_SOURCE_DIR}/${source_name}")
@@ -133,12 +133,12 @@ set_target_properties(HeisenbergPreviewer PROPERTIES
 
 target_include_directories(HeisenbergPreviewer PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}
-    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Common
-    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan
-    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/Filters
-    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/Graph
-    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/Nodes
-    ${CMAKE_CURRENT_LIST_DIR}/FilterGraph/Vulkan/Resources
+    ${CMAKE_CURRENT_LIST_DIR}/Video/Renderer/FilterGraph/Common
+    ${CMAKE_CURRENT_LIST_DIR}/Video/Renderer/FilterGraph/Vulkan
+    ${CMAKE_CURRENT_LIST_DIR}/Video/Renderer/FilterGraph/Vulkan/Filters
+    ${CMAKE_CURRENT_LIST_DIR}/Video/Renderer/FilterGraph/Vulkan/Graph
+    ${CMAKE_CURRENT_LIST_DIR}/Video/Renderer/FilterGraph/Vulkan/Nodes
+    ${CMAKE_CURRENT_LIST_DIR}/Video/Renderer/FilterGraph/Vulkan/Resources
 )
 
 target_link_libraries(HeisenbergPreviewer PUBLIC

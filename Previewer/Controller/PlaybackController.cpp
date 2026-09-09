@@ -4,11 +4,11 @@
 
 #include "PlaybackController.hpp"
 
-#include <Decoder/DecodeThread.hpp>
+#include <Video/Decoder/DecodeThread.hpp>
 #include <Common/AudioFrame.hpp>
 #include <Common/FrameTime.hpp>
 #include <Common/MediaFrame.hpp>
-#include <Renderer/AudioDevice.hpp>
+#include <Audio/Output/AudioDevice.hpp>
 #include <Utiles/Logger.hpp>
 
 extern "C" {

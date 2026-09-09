@@ -1,15 +1,15 @@
 #include "IPreviewer.hpp"
 
-#include "Renderer/RenderEngine.hpp"
-#include "Renderer/SwapChain.hpp"
-#include "Renderer/D3D11VulkanInterop.hpp"
-#include "Renderer/ColorSpaceUtils.hpp"
-#include "Renderer/VulkanContext.hpp"
-#include "TextureContext/TextureManager.hpp"
+#include "Video/Renderer/RenderEngine.hpp"
+#include "Video/Renderer/SwapChain.hpp"
+#include "Platform/D3D11/D3D11VulkanInterop.hpp"
+#include "Video/Renderer/ColorSpaceUtils.hpp"
+#include "Platform/Vulkan/VulkanContext.hpp"
+#include "Platform/Software/SoftwareContext.hpp"
 
 #include <Common/FrameTime.hpp>
-#include <FilterGraph/Interface/INodeFactory.hpp>
-#include <FilterGraph/Interface/IPipeGraph.hpp>
+#include <Video/Renderer/FilterGraph/Interface/INodeFactory.hpp>
+#include <Video/Renderer/FilterGraph/Interface/IPipeGraph.hpp>
 #include <Utiles/Logger.hpp>
 
 #include <vulkan/vulkan.hpp>
@@ -89,7 +89,7 @@ struct IPreviewer::Impl {
     vk::Device vkDevice;
     vk::PhysicalDevice vkPhysDevice;
 
-    std::unique_ptr<TextureManager> textureManager;
+    std::unique_ptr<SoftwareContext> softwareContext;
     std::unique_ptr<RenderEngine> renderEngine;
     std::unique_ptr<SwapChain> swapChain;
 
@@ -152,7 +152,7 @@ bool IPreviewer::initialize(pl_gpu gpu, pl_vulkan vulkan,
     impl_->interopSemaphore = impl_->vkDevice.createSemaphore(semaphoreInfo);
 
     try {
-        impl_->textureManager = std::make_unique<TextureManager>(gpu);
+        impl_->softwareContext = std::make_unique<SoftwareContext>(gpu);
         impl_->renderEngine = std::make_unique<RenderEngine>(gpu);
     } catch (const std::exception& error) {
         LOG_ERROR("IPreviewer: renderer initialization failed: {}", error.what());
@@ -187,7 +187,7 @@ void IPreviewer::shutdown() {
         impl_->interopSemaphore = nullptr;
     }
     if (impl_->swapChain) impl_->swapChain->shutdown();
-    if (impl_->textureManager) impl_->textureManager->shutdown();
+    if (impl_->softwareContext) impl_->softwareContext->shutdown();
     impl_->renderEngine.reset();
     impl_->filterGraph = nullptr;
     impl_->dagInput = nullptr;
@@ -344,7 +344,7 @@ bool IPreviewer::presentFrame(const AVFrame* avframe) {
         return presentHardwareFrame(avframe);
     }
 
-    const pl_frame* source = impl_->textureManager->uploadAvFrame(avframe);
+    const pl_frame* source = impl_->softwareContext->uploadAvFrame(avframe);
     if (!source) return false;
 
     if (!impl_->filterGraph || !impl_->dagInput || !impl_->dagOutput) {

@@ -9,8 +9,8 @@
 #include <Backend/PlayerController.hpp>
 
 #include <Controller/PlaybackController.hpp>
-#include <Renderer/VulkanContext.hpp>
-#include <Renderer/D3D11Context.hpp>
+#include <Platform/Vulkan/VulkanContext.hpp>
+#include <Platform/D3D11/D3D11Context.hpp>
 
 #include <Utiles/Logger.hpp>
 
