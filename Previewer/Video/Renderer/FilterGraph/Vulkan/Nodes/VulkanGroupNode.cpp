@@ -2,6 +2,8 @@
 #include <Utiles/Logger.hpp>
 #include <stdexcept>
 #include <utility>
+#include <cstddef>
+#include <string>
 
 namespace heisenberg::filtergraph {
 
@@ -47,21 +49,27 @@ bool VulkanGroupNode::prepare(const VulkanGraphContext& context) {
 
 void VulkanGroupNode::record(
     VkCommandBuffer commandBuffer, const FrameContext& frame) {
-    setOutput(0, {});
     VulkanImageRef current = input(0);
+    LogicalResourceId currentResource = inputResource(0);
     for (const std::unique_ptr<VulkanNode>& pass : passes_) {
-        pass->bindInputs({current});
+        pass->setResourceManager(resourceManager());
+        pass->bindInputResources({currentResource});
         if (pass->beginFrame(frame)) {
             pass->record(commandBuffer, frame);
         }
+        currentResource = pass->logicalOutputResource(0);
         current = pass->output(0);
-        if (!current.valid()) {
+        if (!currentResource.valid() || !current.valid()) {
             LOG_ERROR("FilterGraph: group pass '{}' produced no output",
                       pass->getMark());
             return;
         }
     }
-    setOutput(0, current);
+}
+
+void VulkanGroupNode::setCompletion(VulkanSyncPoint completion) {
+    VulkanNode::setCompletion(completion);
+    for (const auto& pass : passes_) pass->setCompletion(completion);
 }
 
 std::vector<ResourceAccess> VulkanGroupNode::declareResourceAccess() const {
@@ -72,8 +80,10 @@ std::vector<ResourceAccess> VulkanGroupNode::declareResourceAccess() const {
     for (const auto& pass : passes_) {
         auto* mutablePass = const_cast<VulkanNode*>(pass.get());
         mutablePass->bindInputResources({previous});
-        auto passAccesses = pass->declareResourceAccess();
-        accesses.insert(accesses.end(), passAccesses.begin(), passAccesses.end());
+        if (pass->active()) {
+            auto passAccesses = pass->declareResourceAccess();
+            accesses.insert(accesses.end(), passAccesses.begin(), passAccesses.end());
+        }
         previous = pass->logicalOutputResource(0);
     }
 
@@ -81,21 +91,42 @@ std::vector<ResourceAccess> VulkanGroupNode::declareResourceAccess() const {
 }
 
 LogicalResourceId VulkanGroupNode::logicalOutputResource(int32_t index) const {
-    if (index != 0 || passes_.empty()) return {};
+    if (index != 0) return {};
+    if (!active()) return inputResource(0);
+    if (passes_.empty()) return {};
     return passes_.back()->logicalOutputResource(0);
 }
 
-bool VulkanGroupNode::allocateResources(ResourceManager& manager) {
-    // 让所有子 pass 分配资源
-    for (const auto& pass : passes_) {
-        pass->setResourceManager(&manager);
-        if (!pass->allocateResources(manager)) {
-            LOG_ERROR("FilterGraph: group pass '{}' failed to allocate resources",
-                      pass->getMark());
-            return false;
+std::vector<LogicalResourceRequest>
+VulkanGroupNode::declareResourceRequests() const {
+    std::vector<LogicalResourceRequest> requests;
+    for (size_t passIndex = 0; passIndex < passes_.size(); ++passIndex) {
+        auto passRequests = passes_[passIndex]->declareResourceRequests();
+        for (auto& request : passRequests) {
+            const std::string localName = request.outputPin >= 0
+                ? std::string("output:") + std::to_string(request.outputPin)
+                : request.name;
+            request.outputPin = -1;
+            request.name = std::string("pass:") + std::to_string(passIndex)
+                + ":" + localName;
+            requests.push_back(std::move(request));
         }
     }
-    return true;
+    return requests;
+}
+
+void VulkanGroupNode::bindDeclaredResources(
+    const std::vector<LogicalResourceId>& resources) {
+    size_t offset = 0;
+    for (const auto& pass : passes_) {
+        pass->setResourceManager(resourceManager());
+        const size_t count = pass->declareResourceRequests().size();
+        if (offset + count > resources.size()) break;
+        pass->bindDeclaredResources(std::vector<LogicalResourceId>(
+            resources.begin() + static_cast<std::ptrdiff_t>(offset),
+            resources.begin() + static_cast<std::ptrdiff_t>(offset + count)));
+        offset += count;
+    }
 }
 
 } // namespace heisenberg::filtergraph

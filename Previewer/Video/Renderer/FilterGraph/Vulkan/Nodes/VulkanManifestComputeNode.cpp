@@ -91,7 +91,19 @@ bool VulkanManifestComputeNode::setExternalInput(
             && !(image.usage & VK_IMAGE_USAGE_STORAGE_BIT))) {
         return false;
     }
-    externalInputs_[static_cast<size_t>(index)] = image;
+    const size_t slot = static_cast<size_t>(index);
+    const bool wasExternal = externalInputs_[slot].valid();
+    externalInputs_[slot] = image;
+
+    if (slot < externalInputIds_.size()
+        && externalInputIds_[slot].valid() && resourceManager()) {
+        if (!resourceManager()->updateImported(externalInputIds_[slot], image)) {
+            return false;
+        }
+    } else if (!wasExternal) {
+        invalidateGraph();
+    }
+
     return true;
 }
 
@@ -180,10 +192,14 @@ VulkanImageRef VulkanManifestComputeNode::extraInput(int32_t inputIndex) const {
     if (inputIndex < 0 || static_cast<size_t>(inputIndex) >= externalInputs_.size()) {
         return {};
     }
-    const VulkanImageRef external = externalInputs_[static_cast<size_t>(inputIndex)];
-    if (external.valid()) return external;
+    if (static_cast<size_t>(inputIndex) < externalInputIds_.size()
+        && externalInputIds_[static_cast<size_t>(inputIndex)].valid()
+        && resourceManager()) {
+        VulkanImageRef external = resourceManager()->getResource(
+            externalInputIds_[static_cast<size_t>(inputIndex)]);
+        if (external.valid()) return external;
+    }
 
-    // 从 ResourceManager 获取 auxiliary 资源
     if (auxiliaryResource_.valid() && resourceManager()) {
         return resourceManager()->getResource(auxiliaryResource_);
     }
@@ -195,10 +211,8 @@ void VulkanManifestComputeNode::setExtraInputLayout(
     if (inputIndex < 0 || static_cast<size_t>(inputIndex) >= externalInputs_.size()) {
         return;
     }
-    VulkanImageRef& external = externalInputs_[static_cast<size_t>(inputIndex)];
-    if (external.valid()) {
-        external.layout = layout;
-    } else if (auxiliaryResource_.valid() && resourceManager()) {
+    const VulkanImageRef& external = externalInputs_[static_cast<size_t>(inputIndex)];
+    if (!external.valid() && auxiliaryResource_.valid() && resourceManager()) {
         LogicalResourceState state = resourceManager()->getState(auxiliaryResource_);
         state.layout = layout;
         resourceManager()->setState(auxiliaryResource_, state);
@@ -277,8 +291,12 @@ void VulkanManifestComputeNode::uploadIdentityAuxiliary(
     VulkanImageRef image = resourceManager()->getResource(auxiliaryResource_);
     if (!image.valid()) return;
 
-    // 状态转换现在由 Graph 自动处理
-    // 但是上传操作仍然需要手动执行
+    transitionAuxiliaryImage(
+        commandBuffer, image.image, image.layout,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, VK_ACCESS_TRANSFER_WRITE_BIT);
+
     VkBufferImageCopy region{};
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
@@ -286,6 +304,16 @@ void VulkanManifestComputeNode::uploadIdentityAuxiliary(
                           descriptor_.auxiliaryHeight, 1};
     vkCmdCopyBufferToImage(commandBuffer, auxiliaryUploadBuffer_, image.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    transitionAuxiliaryImage(
+        commandBuffer, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    LogicalResourceState state;
+    state.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    state.stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    state.access = VK_ACCESS_SHADER_READ_BIT;
+    resourceManager()->setState(auxiliaryResource_, state);
 
     auxiliaryUploadPending_ = false;
 }
@@ -330,7 +358,7 @@ std::vector<ResourceAccess> VulkanManifestComputeNode::declareResourceAccess() c
     auto accesses = VulkanComputeNode::declareResourceAccess();
 
     // 如果有 auxiliary 资源，声明为读取
-    if (auxiliaryResource_.valid()) {
+    if (auxiliaryResource_.valid() && !auxiliaryUploadPending_) {
         ResourceAccess auxAccess;
         auxAccess.resource = auxiliaryResource_;
         auxAccess.mode = ResourceAccessMode::Read;
@@ -340,35 +368,73 @@ std::vector<ResourceAccess> VulkanManifestComputeNode::declareResourceAccess() c
         accesses.push_back(auxAccess);
     }
 
+    for (size_t i = 0; i < externalInputIds_.size(); ++i) {
+        const LogicalResourceId id = externalInputIds_[i];
+        if (!id.valid()) continue;
+        ResourceAccess access;
+        access.resource = id;
+        access.mode = ResourceAccessMode::Read;
+        const bool sampled = extraInputBinding(static_cast<int32_t>(i))
+            != VulkanInputBinding::storageImage;
+        access.expectedState.layout = sampled
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_GENERAL;
+        access.expectedState.stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        access.expectedState.access = VK_ACCESS_SHADER_READ_BIT;
+        accesses.push_back(access);
+    }
+
     return accesses;
 }
 
-bool VulkanManifestComputeNode::allocateResources(ResourceManager& manager) {
-    // 调用基类方法分配输出资源
-    if (!VulkanComputeNode::allocateResources(manager)) {
-        return false;
-    }
-
-    // 如果需要 auxiliary 资源，分配它
+std::vector<LogicalResourceRequest>
+VulkanManifestComputeNode::declareResourceRequests() const {
+    auto requests = VulkanComputeNode::declareResourceRequests();
     if (descriptor_.auxiliarySource == "identity_lut"
         && descriptor_.auxiliaryWidth > 0
-        && descriptor_.auxiliaryHeight > 0) {
-
-        auxiliaryResource_ = manager.allocateLogicalResource();
-
-        constexpr VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT
+        && descriptor_.auxiliaryHeight > 0
+        && (externalInputs_.empty() || !externalInputs_[0].valid())) {
+        LogicalResourceRequest request;
+        request.kind = LogicalResourceKind::GraphCreated;
+        request.extent = {descriptor_.auxiliaryWidth, descriptor_.auxiliaryHeight};
+        request.usage = VK_IMAGE_USAGE_SAMPLED_BIT
             | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-
-        if (!manager.ensurePhysicalResource(
-            auxiliaryResource_,
-            {descriptor_.auxiliaryWidth, descriptor_.auxiliaryHeight},
-            usage, kWorkingImageContract)) {
-            LOG_ERROR("VulkanManifestComputeNode: failed to allocate auxiliary resource");
-            return false;
-        }
+        request.contract = kWorkingImageContract;
+        request.name = "auxiliary";
+        requests.push_back(std::move(request));
     }
 
-    return true;
+    for (size_t i = 0; i < externalInputs_.size(); ++i) {
+        if (!externalInputs_[i].valid()) continue;
+        LogicalResourceRequest request;
+        request.kind = LogicalResourceKind::External;
+        request.name = std::string("external:") + std::to_string(i);
+        request.imported = externalInputs_[i];
+        request.extent = request.imported.extent;
+        request.usage = request.imported.usage;
+        request.contract = request.imported.contract;
+        requests.push_back(std::move(request));
+    }
+    return requests;
+}
+
+void VulkanManifestComputeNode::bindDeclaredResources(
+    const std::vector<LogicalResourceId>& resources) {
+    VulkanComputeNode::bindDeclaredResources(resources);
+    size_t offset = static_cast<size_t>(outputCount());
+    auxiliaryResource_ = {};
+    if (descriptor_.auxiliarySource == "identity_lut"
+        && descriptor_.auxiliaryWidth > 0
+        && descriptor_.auxiliaryHeight > 0
+        && (externalInputs_.empty() || !externalInputs_[0].valid())) {
+        if (offset < resources.size()) auxiliaryResource_ = resources[offset++];
+    }
+    externalInputIds_.assign(externalInputs_.size(), {});
+    for (size_t i = 0; i < externalInputIds_.size(); ++i) {
+        if (!externalInputs_[i].valid()) continue;
+        if (offset >= resources.size()) break;
+        externalInputIds_[i] = resources[offset++];
+    }
 }
 
 void VulkanManifestComputeNode::record(

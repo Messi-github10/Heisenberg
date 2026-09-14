@@ -168,7 +168,8 @@ struct D3D11VulkanInterop::Impl {
         desc.SampleDesc.Count = 1;
         desc.Usage = D3D11_USAGE_DEFAULT;
         desc.BindFlags = D3D11_BIND_RENDER_TARGET
-                       | D3D11_BIND_SHADER_RESOURCE;
+                       | D3D11_BIND_SHADER_RESOURCE
+                       | D3D11_BIND_UNORDERED_ACCESS;
         desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED
                        | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
         const HRESULT hr = d3dDevice->CreateTexture2D(&desc, nullptr,
@@ -287,11 +288,7 @@ struct D3D11VulkanInterop::Impl {
         imageInfo.arrayLayers = 1;
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        // The imported D3D11 texture is consumed as a sampled source by
-        // libplacebo/FilterGraph.  Keep the usage identical to the reference
-        // Win32 external-memory path; advertising STORAGE here can make some
-        // drivers reject the imported allocation.
-        imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         const VkResult createImageResult =
             vkCreateImage(vkDevice, &imageInfo, nullptr, &frame.image);
@@ -808,7 +805,7 @@ bool D3D11VulkanInterop::processFrame(const AVFrame* hwFrame,
     out.vkFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
     out.extent = {static_cast<uint32_t>(impl_->width),
                   static_cast<uint32_t>(impl_->height)};
-    out.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    out.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
     out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     out.queueFamilyIndex = impl_->graphicsQueueFamily;
     out.ready = {impl_->readySemaphore, readyValue};

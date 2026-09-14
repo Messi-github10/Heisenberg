@@ -20,6 +20,9 @@ public:
     void record(VkCommandBuffer commandBuffer,
                 const FrameContext& frame) override;
     VulkanSyncPoint takeConsumerDone() override;
+    void bindDeclaredResources(
+        const std::vector<LogicalResourceId>& resources) override;
+    LogicalResourceId logicalOutputResource(int32_t index) const override;
 
 protected:
     bool configure(const std::vector<ImageFormat>& inputs) override;

@@ -49,9 +49,10 @@ std::vector<ResourceAccess> VulkanPassthroughNode::declareResourceAccess() const
     // 实际的输入资源追踪由 Graph 在构建转换计划时处理
 
     // 输出资源：写入
-    if (outputResource_.valid()) {
+    const LogicalResourceId outputResource = logicalOutputResource(0);
+    if (outputResource.valid()) {
         ResourceAccess outputAccess;
-        outputAccess.resource = outputResource_;
+        outputAccess.resource = outputResource;
         outputAccess.mode = ResourceAccessMode::Write;
         outputAccess.expectedState.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         outputAccess.expectedState.stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
@@ -62,14 +63,8 @@ std::vector<ResourceAccess> VulkanPassthroughNode::declareResourceAccess() const
     return accesses;
 }
 
-LogicalResourceId VulkanPassthroughNode::logicalOutputResource(int32_t index) const {
-    return index == 0 ? outputResource_ : LogicalResourceId{};
-}
-
-bool VulkanPassthroughNode::allocateResources(ResourceManager& manager) {
-    // 分配输出资源
-    outputResource_ = manager.allocateLogicalResource();
-
+std::vector<LogicalResourceRequest>
+VulkanPassthroughNode::declareResourceRequests() const {
     const ImageFormat& outputFormat = outputFormats()[0];
     const VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT
         | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
@@ -78,17 +73,21 @@ bool VulkanPassthroughNode::allocateResources(ResourceManager& manager) {
     GraphImageContract contract = kWorkingImageContract;
     contract.format = outputFormat.format;
 
-    return manager.ensurePhysicalResource(outputResource_, outputExtent_, usage, contract);
+    LogicalResourceRequest request;
+    request.kind = LogicalResourceKind::GraphCreated;
+    request.extent = outputExtent_;
+    request.usage = usage;
+    request.contract = contract;
+    request.outputPin = 0;
+    return {request};
 }
 
 void VulkanPassthroughNode::record(
     VkCommandBuffer commandBuffer, const FrameContext&) {
-    const VulkanImageRef& source = input(0);
-    if (!source.valid() || !outputResource_.valid()) return;
-
-    // 从 ResourceManager 获取输出资源
-    if (!resourceManager()) return;
-    VulkanImageRef outputRef = resourceManager()->getResource(outputResource_);
+    const VulkanImageRef source = input(0);
+    const LogicalResourceId outputResource = logicalOutputResource(0);
+    if (!source.valid() || !outputResource.valid() || !resourceManager()) return;
+    VulkanImageRef outputRef = resourceManager()->getResource(outputResource);
     if (!outputRef.valid()) return;
 
     // 注意：输入和输出的状态转换已经由 Graph 自动处理
@@ -106,8 +105,6 @@ void VulkanPassthroughNode::record(
                    outputRef.image,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
-    // 设置输出
-    setOutput(0, outputRef);
 }
 
 } // namespace heisenberg::filtergraph

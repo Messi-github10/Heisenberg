@@ -1,5 +1,5 @@
 #include "VulkanInputAdapter.hpp"
-
+#include <Video/Renderer/FilterGraph/Vulkan/Graph/ResourceManager.hpp>
 #include <Utiles/Logger.hpp>
 #include <volk.h>
 
@@ -59,13 +59,32 @@ bool VulkanInputAdapter::configure(const std::vector<ImageFormat>& inputs) {
     return true;
 }
 
+std::vector<LogicalResourceRequest>
+VulkanInputAdapter::declareResourceRequests() const {
+    LogicalResourceRequest request;
+    request.kind = LogicalResourceKind::External;
+    request.extent = externalImage_.valid() ? externalImage_.extent : VkExtent2D{};
+    request.usage = externalImage_.usage;
+    request.contract = externalImage_.valid()
+        ? externalImage_.contract : kWorkingImageContract;
+    request.outputPin = 0;
+    request.imported = externalImage_;
+    return {request};
+}
+
+std::vector<ResourceAccess> VulkanInputAdapter::declareResourceAccess() const {
+    // External 资源不经过图内 barrier 管理
+    return {};
+}
+
 bool VulkanInputAdapter::prepare(const VulkanGraphContext&) {
     return true;
 }
 
 bool VulkanInputAdapter::beginFrame(const FrameContext& frame) {
-    if (!externalImage_.valid()) return false;
-    setOutput(0, externalImage_);
+    if (!externalImage_.valid() || !resourceManager()
+        || !resourceManager()->updateImported(
+            logicalOutputResource(0), externalImage_)) return false;
     return VulkanNode::beginFrame(frame);
 }
 

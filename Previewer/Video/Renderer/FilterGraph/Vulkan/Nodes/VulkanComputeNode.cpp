@@ -136,7 +136,6 @@ bool VulkanComputeNode::prepare(const VulkanGraphContext& context) {
     if (!context.device || !context.physicalDevice) return false;
     if (context_.device && context_.device != context.device) {
         destroyPipeline();
-        outputResources_.clear();
     }
     context_ = context;
 
@@ -159,7 +158,8 @@ std::vector<ResourceAccess> VulkanComputeNode::declareResourceAccess() const {
     }
 
     // 输出资源：写入（STORAGE_IMAGE）
-    for (const auto& resId : outputResources_) {
+    for (int32_t index = 0; index < outputCount(); ++index) {
+        const LogicalResourceId resId = logicalOutputResource(index);
         if (resId.valid()) {
             ResourceAccess access;
             access.resource = resId;
@@ -174,41 +174,27 @@ std::vector<ResourceAccess> VulkanComputeNode::declareResourceAccess() const {
     return accesses;
 }
 
-LogicalResourceId VulkanComputeNode::logicalOutputResource(int32_t index) const {
-    if (index < 0 || static_cast<size_t>(index) >= outputResources_.size()) return {};
-    return outputResources_[static_cast<size_t>(index)];
-}
-
-bool VulkanComputeNode::allocateResources(ResourceManager& manager) {
-    outputResources_.clear();
-    outputResources_.reserve(static_cast<size_t>(outputCount()));
-
+std::vector<LogicalResourceRequest>
+VulkanComputeNode::declareResourceRequests() const {
+    std::vector<LogicalResourceRequest> requests;
+    requests.reserve(static_cast<size_t>(outputCount()));
     constexpr VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT
         | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
         | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
     for (int32_t index = 0; index < outputCount(); ++index) {
         const ImageFormat& format = outputFormats()[static_cast<size_t>(index)];
-
-        if (!supportsFormat(format.format)) {
-            LOG_ERROR("VulkanComputeNode: unsupported format");
-            return false;
-        }
-
-        LogicalResourceId resId = manager.allocateLogicalResource();
-        if (!manager.ensurePhysicalResource(
-            resId,
-            {static_cast<uint32_t>(format.width),
-             static_cast<uint32_t>(format.height)},
-            usage, kWorkingImageContract)) {
-            LOG_ERROR("VulkanComputeNode: failed to allocate output resource");
-            return false;
-        }
-
-        outputResources_.push_back(resId);
+        if (!supportsFormat(format.format)) return {};
+        LogicalResourceRequest request;
+        request.kind = LogicalResourceKind::GraphCreated;
+        request.extent = {static_cast<uint32_t>(format.width),
+                          static_cast<uint32_t>(format.height)};
+        request.usage = usage;
+        request.contract = kWorkingImageContract;
+        request.outputPin = index;
+        requests.push_back(std::move(request));
     }
-
-    return true;
+    return requests;
 }
 
 uint32_t VulkanComputeNode::findMemoryType(
@@ -504,7 +490,7 @@ bool VulkanComputeNode::updateDescriptors() {
     const uint32_t outputCountValue = static_cast<uint32_t>(outputCount());
 
     for (int32_t index = 0; index < inputCount(); ++index) {
-        const VulkanImageRef& source = input(index);
+        const VulkanImageRef source = input(index);
         const VulkanInputBinding binding = inputBinding(index);
         const bool sampled = isSampled(binding);
         const VkImageUsageFlagBits requiredUsage = sampled
@@ -565,13 +551,13 @@ bool VulkanComputeNode::updateDescriptors() {
 
     for (int32_t index = 0; index < outputCount(); ++index) {
         if (!resourceManager()
-            || static_cast<size_t>(index) >= outputResources_.size()) {
+            || index < 0 || index >= outputCount()) {
             LOG_ERROR("VulkanComputeNode: invalid output resource index");
             return false;
         }
 
         const VulkanImageRef destination =
-            resourceManager()->getResource(outputResources_[static_cast<size_t>(index)]);
+            resourceManager()->getResource(logicalOutputResource(index));
         if (!destination.valid()) {
             LOG_ERROR("VulkanComputeNode: failed to get output resource");
             return false;
@@ -625,12 +611,12 @@ bool VulkanComputeNode::uploadUniformData() {
 
 void VulkanComputeNode::record(
     VkCommandBuffer commandBuffer, const FrameContext&) {
-    if (!pipeline_ || outputResources_.empty() || !uploadUniformData()) return;
+    if (!pipeline_ || outputCount() == 0 || !uploadUniformData()) return;
     if (!resourceManager()) return;
 
     // 验证输入
     for (int32_t index = 0; index < inputCount(); ++index) {
-        const VulkanImageRef& source = input(index);
+        const VulkanImageRef source = input(index);
         if (!source.valid() || !source.view
             || source.contract != kWorkingImageContract) {
             LOG_ERROR("FilterGraph: compute input {} violates the working contract",
@@ -658,7 +644,8 @@ void VulkanComputeNode::record(
                             pipelineLayout_, 0, 1, &descriptorSet_, 0, nullptr);
 
     // 从 ResourceManager 获取第一个输出资源用于计算 dispatch 尺寸
-    VulkanImageRef dispatchImage = resourceManager()->getResource(outputResources_[0]);
+    VulkanImageRef dispatchImage = resourceManager()->getResource(
+        logicalOutputResource(0));
     if (!dispatchImage.valid()) {
         LOG_ERROR("FilterGraph: failed to get output resource for dispatch");
         return;
@@ -674,14 +661,6 @@ void VulkanComputeNode::record(
                   (dispatchImage.extent.height + group.height - 1) / group.height,
                   1);
 
-    // 设置输出
-    for (int32_t index = 0; index < outputCount(); ++index) {
-        VulkanImageRef outputRef = resourceManager()->getResource(
-            outputResources_[static_cast<size_t>(index)]);
-        if (outputRef.valid()) {
-            setOutput(index, outputRef);
-        }
-    }
 }
 
 } // namespace heisenberg::filtergraph

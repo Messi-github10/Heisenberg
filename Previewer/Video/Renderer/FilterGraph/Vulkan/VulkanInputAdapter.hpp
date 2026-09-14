@@ -15,9 +15,11 @@ public:
                         int32_t inputIndex = 0) override;
 
     bool prepare(const VulkanGraphContext& context) override;
+    std::vector<LogicalResourceRequest> declareResourceRequests() const override;
     bool beginFrame(const FrameContext& frame) override;
     void record(VkCommandBuffer commandBuffer,
                 const FrameContext& frame) override;
+    std::vector<ResourceAccess> declareResourceAccess() const override;
 
 protected:
     bool configure(const std::vector<ImageFormat>& inputs) override;

@@ -105,8 +105,8 @@ bool VulkanPipeGraph::onGraphRebuilt() {
     // until libplacebo has returned every borrowed graph output.
     vkQueueWaitIdle(context_.queue);
 
-    // 重置资源管理器
-    resourceManager_->reset();
+    // 开始 rebuild，把所有 Logical 条目标记为 stale
+    resourceManager_->beginRebuild();
     transitionScheduler_->clear();
 
     for (BaseNode* base : nodes()) {
@@ -129,11 +129,16 @@ bool VulkanPipeGraph::onGraphRebuilt() {
         return false;
     }
 
+    // 删除本次 rebuild 未被访问到的 stale 条目（已从图中移除的 Node）
+    resourceManager_->endRebuild();
+
     return true;
 }
 
 void VulkanPipeGraph::onGraphCleared() {
     if (context_.queue) vkQueueWaitIdle(context_.queue);
+    resourceManager_->clear();
+    transitionScheduler_->clear();
 }
 
 bool VulkanPipeGraph::appendWait(
@@ -188,18 +193,14 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
             }
         }
 
-        std::vector<VulkanImageRef> inputs;
-        inputs.reserve(static_cast<size_t>(node->inputCount()));
         for (int32_t pin = 0; pin < node->inputCount(); ++pin) {
             const RuntimeGraphEdge* edge = inputEdge(nodeIndex, pin);
             if (!edge) return false;
             auto* source = static_cast<VulkanNode*>(
                 nodes()[static_cast<size_t>(edge->fromNode)]);
-            const VulkanImageRef& sourceImage = source->output(edge->fromPin);
-            if (!sourceImage.valid()) return false;
-            inputs.push_back(sourceImage);
+            const LogicalResourceId id = source->logicalOutputResource(edge->fromPin);
+            if (!id.valid() || !resourceManager_->getResource(id).valid()) return false;
         }
-        node->bindInputs(std::move(inputs));
         if (node->beginFrame(frame)) {
             node->record(commandBuffer_, frame);
         }
@@ -267,7 +268,7 @@ bool VulkanPipeGraph::buildTransitionPlan() {
         int32_t nodeIndex = executionOrder()[i];
         auto* node = static_cast<VulkanNode*>(nodes()[static_cast<size_t>(nodeIndex)]);
 
-        // 让 Node 从 ResourceManager 分配资源
+        // 先绑定边上的 Logical ID，再由 Graph 消费 Node 的资源声明
         std::vector<LogicalResourceId> inputResources;
         inputResources.reserve(static_cast<size_t>(node->inputCount()));
         for (int32_t pin = 0; pin < node->inputCount(); ++pin) {
@@ -277,13 +278,46 @@ bool VulkanPipeGraph::buildTransitionPlan() {
                 nodes()[static_cast<size_t>(edge->fromNode)]);
             inputResources.push_back(source->logicalOutputResource(edge->fromPin));
         }
-        node->bindInputResources(std::move(inputResources));
+        node->bindInputResources(inputResources);
 
-        if (!node->allocateResources(*resourceManager_)) {
-            LOG_ERROR("FilterGraph: Node '{}' failed to allocate resources",
+        const bool bypassed = !node->active();
+        if (bypassed
+            && (node->inputCount() != 1 || node->outputCount() != 1
+                || !inputResources[0].valid())) {
+            LOG_ERROR("FilterGraph: disabled node '{}' cannot be bypassed",
                       node->getMark());
             return false;
         }
+
+        const auto requests = node->declareResourceRequests();
+        std::vector<LogicalResourceId> resources;
+        resources.reserve(requests.size());
+        for (const auto& request : requests) {
+            LogicalResourceDesc desc;
+            desc.kind = request.kind;
+            desc.extent = request.extent;
+            desc.usage = request.usage;
+            desc.contract = request.contract;
+            if (request.outputPin >= node->outputCount()) return false;
+            desc.producerNode = static_cast<uint32_t>(nodeIndex);
+            desc.producerPin = request.outputPin;
+            desc.identity = request.outputPin >= 0
+                ? std::string("output:") + std::to_string(request.outputPin)
+                : request.name;
+            if (desc.identity.empty()) return false;
+            const std::string key = std::to_string(nodeIndex) + ":" + desc.identity;
+            LogicalResourceId id = resourceManager_->findOrAllocateLogicalResource(
+                key, desc);
+            if (!id.valid()) return false;
+            if (request.kind == LogicalResourceKind::External
+                && request.imported.valid()
+                && !resourceManager_->updateImported(id, request.imported)) {
+                return false;
+            }
+            resources.push_back(id);
+        }
+        node->bindDeclaredResources(resources);
+        if (bypassed) continue;
 
         // 获取 Node 的资源访问声明
         auto accesses = node->declareResourceAccess();

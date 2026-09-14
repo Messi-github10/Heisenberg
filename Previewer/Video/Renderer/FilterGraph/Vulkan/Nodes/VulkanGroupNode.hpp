@@ -13,10 +13,13 @@ public:
     bool prepare(const VulkanGraphContext& context) override;
     void record(VkCommandBuffer commandBuffer,
                 const FrameContext& frame) override;
+    void setCompletion(VulkanSyncPoint completion) override;
 
     // Graph-owned Resource 接口
+    std::vector<LogicalResourceRequest> declareResourceRequests() const override;
     std::vector<ResourceAccess> declareResourceAccess() const override;
-    bool allocateResources(ResourceManager& manager) override;
+    void bindDeclaredResources(
+        const std::vector<LogicalResourceId>& resources) override;
     LogicalResourceId logicalOutputResource(int32_t index) const override;
 
 protected:

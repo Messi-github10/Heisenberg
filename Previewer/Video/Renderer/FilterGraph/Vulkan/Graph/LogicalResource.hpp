@@ -1,10 +1,39 @@
 #pragma once
 
+#include <Video/Renderer/FilterGraph/Common/FilterCommon.hpp>
 #include <vulkan/vulkan.h>
 #include <cstdint>
 #include <string>
 
 namespace heisenberg::filtergraph {
+
+/// Logical 资源的类别
+enum class LogicalResourceKind {
+    GraphCreated,
+    External,
+};
+
+/// Logical 资源的 CPU 描述
+struct LogicalResourceDesc {
+    LogicalResourceKind kind = LogicalResourceKind::GraphCreated;
+    VkExtent2D extent = {};
+    VkImageUsageFlags usage = 0;
+    GraphImageContract contract = {};
+    uint32_t producerNode = UINT32_MAX;
+    int32_t producerPin = -1;
+    std::string identity;
+};
+
+/// Node 在 rebuild 时向 Graph 申报的资源需求
+struct LogicalResourceRequest {
+    LogicalResourceKind kind = LogicalResourceKind::GraphCreated;
+    VkExtent2D extent = {};
+    VkImageUsageFlags usage = 0;
+    GraphImageContract contract = {};
+    int32_t outputPin = -1;
+    std::string name;
+    VulkanImageRef imported = {};
+};
 
 /// 资源的逻辑状态（在图编译时确定）
 struct LogicalResourceState {

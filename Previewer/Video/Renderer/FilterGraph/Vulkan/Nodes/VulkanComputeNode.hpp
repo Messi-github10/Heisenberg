@@ -26,9 +26,8 @@ public:
                 const FrameContext& frame) override;
 
     // Graph-owned Resource 接口
+    std::vector<LogicalResourceRequest> declareResourceRequests() const override;
     std::vector<ResourceAccess> declareResourceAccess() const override;
-    bool allocateResources(ResourceManager& manager) override;
-    LogicalResourceId logicalOutputResource(int32_t index) const override;
 
 protected:
     explicit VulkanComputeNode(std::string mark,
@@ -69,7 +68,6 @@ private:
     VkSampler samplerFor(VulkanInputBinding binding) const;
 
     VulkanGraphContext context_ = {};
-    std::vector<LogicalResourceId> outputResources_;
 
     VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;

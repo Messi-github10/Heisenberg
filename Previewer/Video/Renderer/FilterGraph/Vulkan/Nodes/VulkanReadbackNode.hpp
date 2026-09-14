@@ -22,7 +22,8 @@ public:
 
     // Graph-owned Resource 接口
     std::vector<ResourceAccess> declareResourceAccess() const override;
-    bool allocateResources(ResourceManager& manager) override;
+    void bindDeclaredResources(
+        const std::vector<LogicalResourceId>& resources) override;
     LogicalResourceId logicalOutputResource(int32_t index) const override;
 
 protected:

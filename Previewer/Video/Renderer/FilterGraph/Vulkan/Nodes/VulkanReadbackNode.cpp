@@ -273,9 +273,6 @@ void VulkanReadbackNode::record(VkCommandBuffer commandBuffer,
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
                          &readBarrier, 0, nullptr);
-    for (int32_t index = 0; index < outputCount(); ++index) {
-        if (index == 0) setOutput(index, source);
-    }
 }
 
 void VulkanReadbackNode::setCompletion(VulkanSyncPoint completion) {
@@ -340,10 +337,7 @@ LogicalResourceId VulkanReadbackNode::logicalOutputResource(int32_t index) const
     return inputResource(index);
 }
 
-bool VulkanReadbackNode::allocateResources(ResourceManager&) {
-    // VulkanReadbackNode 不需要分配图像资源
-    // 它使用自己管理的 readback buffer
-    return true;
-}
+void VulkanReadbackNode::bindDeclaredResources(
+    const std::vector<LogicalResourceId>&) {}
 
 } // namespace heisenberg::filtergraph
