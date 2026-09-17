@@ -35,8 +35,6 @@ public:
     const std::vector<ImageFormat>& outputFormats() const { return outputFormats_; }
 
 protected:
-    void onUpdateParamet() override {}
-
     void invalidateGraph();
     void setInputFormat(int32_t index, const ImageFormat& format);
     void setOutputFormat(int32_t index, const ImageFormat& format);

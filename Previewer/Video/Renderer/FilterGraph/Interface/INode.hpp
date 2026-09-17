@@ -23,36 +23,12 @@ public:
 
     virtual IBaseNode* addLine(IBaseNode* to, int32_t fromOut = 0,
                                int32_t toIn = 0) = 0;
-
-protected:
-    template<typename T>
-    friend class ITNode;
-    virtual void onUpdateParamet() = 0;
 };
 
 class IFilterNode {
 public:
     virtual ~IFilterNode() = default;
     virtual IBaseNode* getNode() = 0;
-};
-
-template<typename T>
-class ITNode : public IFilterNode {
-protected:
-    T oldParamet = {};
-    T paramet = {};
-
-public:
-    ITNode() = default;
-    ~ITNode() override = default;
-
-    void updateParamet(const T& value) {
-        oldParamet = paramet;
-        paramet = value;
-        getNode()->onUpdateParamet();
-    }
-
-    T getParamet() const { return paramet; }
 };
 
 } // namespace heisenberg::filtergraph
