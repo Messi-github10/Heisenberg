@@ -26,7 +26,6 @@ public:
 
     IInputNode* createInput() override;
     IOutputNode* createOutput() override;
-    IFilterNode* createPassthrough() override;
 
     VulkanNodeCreateResult createGraphNode(const VulkanGraphNodeDesc& node);
 

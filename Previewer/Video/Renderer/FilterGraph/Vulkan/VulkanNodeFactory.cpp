@@ -1,7 +1,6 @@
 #include "VulkanNodeFactory.hpp"
 #include "VulkanInputAdapter.hpp"
 #include "VulkanOutputAdapter.hpp"
-#include "VulkanPassthroughNode.hpp"
 #include "VulkanGraphDocument.hpp"
 #include "VulkanFilterRegistry.hpp"
 #include "Nodes/VulkanManifestComputeNode.hpp"
@@ -45,10 +44,6 @@ IInputNode* VulkanNodeFactory::createInput() {
 
 IOutputNode* VulkanNodeFactory::createOutput() {
     return createNode<VulkanOutputAdapter>();
-}
-
-IFilterNode* VulkanNodeFactory::createPassthrough() {
-    return createNode<VulkanPassthroughNode>();
 }
 
 VulkanNodeCreateResult VulkanNodeFactory::createGraphNode(

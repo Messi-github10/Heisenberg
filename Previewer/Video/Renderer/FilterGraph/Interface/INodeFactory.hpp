@@ -42,7 +42,6 @@ public:
 
     virtual IInputNode* createInput() = 0;
     virtual IOutputNode* createOutput() = 0;
-    virtual IFilterNode* createPassthrough() = 0;
 };
 
 } // namespace heisenberg::filtergraph
