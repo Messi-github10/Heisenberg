@@ -14,18 +14,6 @@ using VulkanGraphNodeId = uint64_t;
 inline constexpr VulkanGraphNodeId kVulkanGraphInputNodeId = 1;
 inline constexpr VulkanGraphNodeId kVulkanGraphOutputNodeId = 2;
 
-enum class VulkanGraphNodeType : uint8_t {
-    input,
-    output,
-    colorInvert,
-    exposure,
-    blend,
-    gaussianBlur,
-    resize,
-    lut,
-    histogram,
-};
-
 struct VulkanJsonParameter {
     QJsonObject object;
 };
@@ -41,7 +29,6 @@ struct VulkanGraphPosition {
 
 struct VulkanGraphNodeDesc {
     VulkanGraphNodeId id = 0;
-    VulkanGraphNodeType type = VulkanGraphNodeType::colorInvert;
     std::string filterId = "color_invert";
     VulkanGraphParameter parameter = {};
     VulkanGraphPosition position = {};
@@ -73,10 +60,6 @@ public:
     const std::vector<VulkanGraphNodeDesc>& nodes() const { return nodes_; }
     const std::vector<GraphEdge>& edges() const { return edges_; }
 
-    VulkanGraphNodeId addNode(
-        VulkanGraphNodeType type,
-        VulkanGraphParameter parameter = {},
-        VulkanGraphPosition position = {});
     VulkanGraphNodeId addNode(
         std::string filterId,
         VulkanGraphParameter parameter = {},

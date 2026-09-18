@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <iterator>
 
 #ifndef HEISENBERG_SHADER_MANIFEST_PATH
 #define HEISENBERG_SHADER_MANIFEST_PATH "shader_manifest.json"
@@ -71,15 +70,6 @@ VulkanInputBinding parseBinding(const QString& value) {
 }
 
 } // namespace
-
-const char* vulkanGraphNodeTypeName(VulkanGraphNodeType type) noexcept {
-    constexpr const char* names[] = {
-        "input", "output", "color_invert", "exposure", "blend",
-        "gaussian_blur", "resize", "lut", "histogram",
-    };
-    const auto index = static_cast<size_t>(type);
-    return index < std::size(names) ? names[index] : "";
-}
 
 VulkanFilterRegistry& VulkanFilterRegistry::instance() {
     static VulkanFilterRegistry registry;
@@ -276,11 +266,6 @@ const VulkanFilterDescriptor* VulkanFilterRegistry::find(
     const auto found = std::find_if(descriptors_.begin(), descriptors_.end(),
         [id](const VulkanFilterDescriptor& descriptor) { return descriptor.id == id; });
     return found == descriptors_.end() ? nullptr : &*found;
-}
-
-const VulkanFilterDescriptor* VulkanFilterRegistry::find(
-    VulkanGraphNodeType type, std::string* error) {
-    return find(vulkanGraphNodeTypeName(type), error);
 }
 
 bool VulkanFilterRegistry::parseParameters(

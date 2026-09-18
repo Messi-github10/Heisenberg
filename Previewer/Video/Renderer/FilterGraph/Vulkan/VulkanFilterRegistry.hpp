@@ -80,8 +80,6 @@ public:
     bool ensureLoaded(std::string* error = nullptr);
     const VulkanFilterDescriptor* find(std::string_view id,
                                        std::string* error = nullptr);
-    const VulkanFilterDescriptor* find(VulkanGraphNodeType type,
-                                       std::string* error = nullptr);
 
     bool parseParameters(const VulkanFilterDescriptor& descriptor,
                          const QJsonObject& object,
@@ -101,7 +99,5 @@ private:
     bool loaded_ = false;
     std::vector<VulkanFilterDescriptor> descriptors_;
 };
-
-const char* vulkanGraphNodeTypeName(VulkanGraphNodeType type) noexcept;
 
 } // namespace heisenberg::filtergraph

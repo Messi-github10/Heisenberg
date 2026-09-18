@@ -107,38 +107,20 @@ bool readNodePin(const QJsonObject& edgeObject, const char* key,
         && readPin(object, "pinIndex", result.pinIndex, error);
 }
 
-bool parseNodeType(const QString& name, VulkanGraphNodeType& type) {
-    constexpr VulkanGraphNodeType types[] = {
-        VulkanGraphNodeType::input, VulkanGraphNodeType::output,
-        VulkanGraphNodeType::colorInvert, VulkanGraphNodeType::exposure,
-        VulkanGraphNodeType::blend, VulkanGraphNodeType::gaussianBlur,
-        VulkanGraphNodeType::resize, VulkanGraphNodeType::lut,
-        VulkanGraphNodeType::histogram,
-    };
-    for (const VulkanGraphNodeType candidate : types) {
-        if (name == QLatin1String(vulkanGraphNodeTypeName(candidate))) {
-            type = candidate;
-            return true;
-        }
-    }
-    return false;
-}
-
 bool parseFilterId(const QString& name, std::string& filterId,
-                   VulkanGraphNodeType& type, std::string* error) {
+                   std::string* error) {
     if (name.isEmpty()) {
         setError(error, "Vulkan graph node has an empty filter id");
         return false;
     }
     filterId = name.toStdString();
-    if (parseNodeType(name, type)) return true;
+    if (filterId == "input" || filterId == "output") return true;
     std::string lookupError;
     if (!VulkanFilterRegistry::instance().find(filterId, &lookupError)) {
         setError(error, QStringLiteral("Vulkan graph node has an unregistered filter id '%1'")
             .arg(name));
         return false;
     }
-    type = VulkanGraphNodeType::colorInvert;
     return true;
 }
 
@@ -222,8 +204,7 @@ bool VulkanGraphDocument::loadFromJsonFile(
         const QJsonValue filterValue = nodeObject.contains("filterId")
             ? nodeObject.value("filterId") : nodeObject.value("type");
         if (!filterValue.isString()
-            || !parseFilterId(filterValue.toString(), node.filterId,
-                              node.type, error)) {
+            || !parseFilterId(filterValue.toString(), node.filterId, error)) {
             return false;
         }
         const QJsonValue parametersValue = nodeObject.value("parameters");
@@ -288,13 +269,6 @@ const VulkanGraphNodeDesc* VulkanGraphDocument::findNode(
 }
 
 VulkanGraphNodeId VulkanGraphDocument::addNode(
-    VulkanGraphNodeType type, VulkanGraphParameter parameter,
-    VulkanGraphPosition position) {
-    return addNode(std::string(vulkanGraphNodeTypeName(type)),
-                   std::move(parameter), position);
-}
-
-VulkanGraphNodeId VulkanGraphDocument::addNode(
     std::string filterId, VulkanGraphParameter parameter,
     VulkanGraphPosition position) {
     if (filterId == "input" || filterId == "output") return 0;
@@ -303,15 +277,6 @@ VulkanGraphNodeId VulkanGraphDocument::addNode(
     const VulkanFilterDescriptor* descriptor =
         VulkanFilterRegistry::instance().find(filterId, &error);
     if (!descriptor) return 0;
-
-    VulkanGraphNodeType legacyType = VulkanGraphNodeType::colorInvert;
-    for (int value = 0; value <= static_cast<int>(VulkanGraphNodeType::histogram); ++value) {
-        const auto candidate = static_cast<VulkanGraphNodeType>(value);
-        if (filterId == vulkanGraphNodeTypeName(candidate)) {
-            legacyType = candidate;
-            break;
-        }
-    }
 
     if (std::holds_alternative<std::monostate>(parameter)) {
         VulkanGraphParameter defaults;
@@ -324,7 +289,6 @@ VulkanGraphNodeId VulkanGraphDocument::addNode(
 
     VulkanGraphNodeDesc node;
     node.id = nextNodeId_;
-    node.type = legacyType;
     node.filterId = std::move(filterId);
     node.parameter = std::move(parameter);
     node.position = position;
@@ -433,9 +397,9 @@ bool VulkanGraphDocument::validate(std::string* error) const {
     const auto inputFound = nodesById.find(kVulkanGraphInputNodeId);
     const auto outputFound = nodesById.find(kVulkanGraphOutputNodeId);
     if (inputFound == nodesById.end()
-        || inputFound->second->type != VulkanGraphNodeType::input
+        || inputFound->second->filterId != "input"
         || outputFound == nodesById.end()
-        || outputFound->second->type != VulkanGraphNodeType::output) {
+        || outputFound->second->filterId != "output") {
         setError(error, "Vulkan graph requires its fixed input and output nodes");
         return false;
     }
