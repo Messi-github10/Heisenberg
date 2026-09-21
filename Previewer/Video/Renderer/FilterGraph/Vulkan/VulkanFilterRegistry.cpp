@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <variant>
 
 #ifndef HEISENBERG_SHADER_MANIFEST_PATH
 #define HEISENBERG_SHADER_MANIFEST_PATH "shader_manifest.json"
@@ -268,51 +269,105 @@ const VulkanFilterDescriptor* VulkanFilterRegistry::find(
     return found == descriptors_.end() ? nullptr : &*found;
 }
 
+VulkanGraphParameter VulkanFilterRegistry::defaultParameters(
+    const VulkanFilterDescriptor& descriptor) const {
+    VulkanGraphParameter result;
+    for (const VulkanFilterParameterDesc& field : descriptor.parameters) {
+        if (!field.exposed) continue;
+        switch (field.type) {
+            case VulkanFilterValueType::integer:
+                result.emplace(field.name, static_cast<int32_t>(field.defaultValue));
+                break;
+            case VulkanFilterValueType::real:
+                result.emplace(field.name, static_cast<float>(field.defaultValue));
+                break;
+            case VulkanFilterValueType::boolean:
+                result.emplace(field.name, field.defaultValue != 0.0);
+                break;
+        }
+    }
+    return result;
+}
+
 bool VulkanFilterRegistry::parseParameters(
     const VulkanFilterDescriptor& descriptor, const QJsonObject& object,
     VulkanGraphParameter& result, std::string* error) const {
-    QJsonObject normalized = object;
-    for (const VulkanFilterParameterDesc& parameter : descriptor.parameters) {
-        if (parameter.exposed
-            && !normalized.contains(QString::fromStdString(parameter.name))) {
-            switch (parameter.type) {
-                case VulkanFilterValueType::integer:
-                    normalized.insert(QString::fromStdString(parameter.name),
-                        static_cast<qint64>(parameter.defaultValue));
-                    break;
-                case VulkanFilterValueType::real:
-                    normalized.insert(QString::fromStdString(parameter.name), parameter.defaultValue);
-                    break;
-                case VulkanFilterValueType::boolean:
-                    normalized.insert(QString::fromStdString(parameter.name), parameter.defaultValue != 0.0);
-                    break;
-            }
+    result = defaultParameters(descriptor);
+    for (auto it = object.begin(); it != object.end(); ++it) {
+        const std::string name = it.key().toStdString();
+        const auto field = std::find_if(
+            descriptor.parameters.begin(), descriptor.parameters.end(),
+            [&](const VulkanFilterParameterDesc& item) { return item.name == name; });
+        if (field == descriptor.parameters.end() || !field->exposed) continue;
+
+        const QJsonValue value = it.value();
+        double number = 0.0;
+        switch (field->type) {
+            case VulkanFilterValueType::integer:
+                if (!finiteNumber(value, number) || std::floor(number) != number
+                    || number < std::numeric_limits<int32_t>::min()
+                    || number > std::numeric_limits<int32_t>::max()) {
+                    if (error) *error = "Invalid filter parameter: " + name;
+                    return false;
+                }
+                result[name] = static_cast<int32_t>(number);
+                break;
+            case VulkanFilterValueType::real:
+                if (!finiteNumber(value, number)) {
+                    if (error) *error = "Invalid filter parameter: " + name;
+                    return false;
+                }
+                result[name] = static_cast<float>(number);
+                break;
+            case VulkanFilterValueType::boolean:
+                if (!value.isBool()) {
+                    if (error) *error = "Invalid filter parameter: " + name;
+                    return false;
+                }
+                result[name] = value.toBool();
+                break;
         }
     }
-    result = VulkanJsonParameter{std::move(normalized)};
     return validateParameters(descriptor, result, error);
 }
 
 bool VulkanFilterRegistry::validateParameters(
     const VulkanFilterDescriptor& descriptor,
     const VulkanGraphParameter& parameter, std::string* error) const {
-    QJsonObject object;
-    if (const auto* json = std::get_if<VulkanJsonParameter>(&parameter)) {
-        object = json->object;
-    }
     for (const VulkanFilterParameterDesc& field : descriptor.parameters) {
         if (!field.exposed) continue;
-        const QJsonValue value = object.value(QString::fromStdString(field.name));
-        double number = 0.0;
-        if (field.type != VulkanFilterValueType::boolean
-            && (!finiteNumber(value, number)
-                || (field.type == VulkanFilterValueType::integer && std::floor(number) != number))) {
-            if (error) *error = "Invalid filter parameter: " + field.name;
+        const auto found = parameter.find(field.name);
+        if (found == parameter.end()) {
+            if (error) *error = "Missing filter parameter: " + field.name;
             return false;
         }
-        if (field.type == VulkanFilterValueType::boolean && !value.isBool()) {
-            if (error) *error = "Invalid filter parameter: " + field.name;
-            return false;
+
+        double number = 0.0;
+        switch (field.type) {
+            case VulkanFilterValueType::integer: {
+                const auto* value = std::get_if<int32_t>(&found->second);
+                if (!value) {
+                    if (error) *error = "Invalid filter parameter: " + field.name;
+                    return false;
+                }
+                number = *value;
+                break;
+            }
+            case VulkanFilterValueType::real: {
+                const auto* value = std::get_if<float>(&found->second);
+                if (!value) {
+                    if (error) *error = "Invalid filter parameter: " + field.name;
+                    return false;
+                }
+                number = *value;
+                break;
+            }
+            case VulkanFilterValueType::boolean:
+                if (!std::holds_alternative<bool>(found->second)) {
+                    if (error) *error = "Invalid filter parameter: " + field.name;
+                    return false;
+                }
+                continue;
         }
         if (field.hasMinimum && number < field.minimum) {
             if (error) *error = "Filter parameter below minimum: " + field.name;

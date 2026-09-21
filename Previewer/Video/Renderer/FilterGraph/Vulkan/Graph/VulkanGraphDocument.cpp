@@ -38,7 +38,7 @@ PinCounts pinCounts(const VulkanGraphNodeDesc& node) {
 
 bool parameterMatches(const VulkanGraphNodeDesc& node) {
     if (node.filterId == "input" || node.filterId == "output") {
-        return std::holds_alternative<std::monostate>(node.parameter);
+        return node.parameter.empty();
     }
     std::string error;
     const auto* descriptor = descriptorFor(node, &error);
@@ -148,7 +148,7 @@ bool readFiniteFloat(const QJsonObject& object, const char* key,
 bool parseParameter(const std::string& filterId, const QJsonObject& object,
                     VulkanGraphParameter& result, std::string* error) {
     if (filterId == "input" || filterId == "output") {
-        result = std::monostate{};
+        result.clear();
         return object.isEmpty();
     }
     std::string lookupError;
@@ -278,14 +278,12 @@ VulkanGraphNodeId VulkanGraphDocument::addNode(
         VulkanFilterRegistry::instance().find(filterId, &error);
     if (!descriptor) return 0;
 
-    if (std::holds_alternative<std::monostate>(parameter)) {
-        VulkanGraphParameter defaults;
-        if (!VulkanFilterRegistry::instance().parseParameters(
-                *descriptor, QJsonObject{}, defaults, &error)) {
-            return 0;
-        }
-        parameter = std::move(defaults);
+    VulkanGraphParameter merged =
+        VulkanFilterRegistry::instance().defaultParameters(*descriptor);
+    for (auto& [name, value] : parameter) {
+        if (merged.contains(name)) merged[name] = std::move(value);
     }
+    parameter = std::move(merged);
 
     VulkanGraphNodeDesc node;
     node.id = nextNodeId_;
@@ -365,9 +363,19 @@ bool VulkanGraphDocument::disconnect(NodePin output, NodePin input) {
 bool VulkanGraphDocument::updateParameter(
     VulkanGraphNodeId nodeId, VulkanGraphParameter parameter) {
     VulkanGraphNodeDesc* node = findNode(nodeId);
-    if (!node) return false;
+    if (!node || node->filterId == "input" || node->filterId == "output") {
+        return false;
+    }
+    const VulkanFilterDescriptor* descriptor = descriptorFor(*node);
+    if (!descriptor) return false;
+
+    VulkanGraphParameter merged =
+        VulkanFilterRegistry::instance().defaultParameters(*descriptor);
+    for (auto& [name, value] : parameter) {
+        if (merged.contains(name)) merged[name] = std::move(value);
+    }
     VulkanGraphNodeDesc candidate = *node;
-    candidate.parameter = std::move(parameter);
+    candidate.parameter = std::move(merged);
     if (!parameterMatches(candidate)) return false;
     node->parameter = std::move(candidate.parameter);
     return true;

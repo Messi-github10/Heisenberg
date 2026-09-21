@@ -2,12 +2,12 @@
 #include <Video/Renderer/FilterGraph/Vulkan/Graph/ResourceManager.hpp>
 #include <Utiles/Logger.hpp>
 
-#include <QJsonValue>
 #include <volk.h>
 #include <bit>
 #include <cstdint>
 #include <limits>
 #include <cstring>
+#include <variant>
 
 namespace {
 
@@ -52,18 +52,14 @@ namespace heisenberg::filtergraph {
 
 VulkanManifestComputeNode::VulkanManifestComputeNode(
     const VulkanFilterDescriptor& descriptor,
-    const VulkanGraphParameter& parameter,
-    QJsonObject uniformOverrides)
+    const VulkanGraphParameter& parameter)
     : VulkanComputeNode(descriptor.displayName, descriptor.inputCount,
                         descriptor.outputCount),
       descriptor_(descriptor),
       shaderPath_(std::string(HEISENBERG_FILTER_SHADER_BINARY_DIR) + "/"
-                  + descriptor.shaderBinary) {
+                  + descriptor.shaderBinary),
+      parameters_(parameter) {
     externalInputs_.resize(descriptor_.extraInputs.size());
-    parameters_ = parameterObject(parameter);
-    for (auto it = uniformOverrides.begin(); it != uniformOverrides.end(); ++it) {
-        parameters_.insert(it.key(), it.value());
-    }
     setUniformBufferSize(descriptor_.uniformSize);
     updateUniform(parameters_);
 }
@@ -107,41 +103,46 @@ bool VulkanManifestComputeNode::setExternalInput(
     return true;
 }
 
-QJsonObject VulkanManifestComputeNode::parameterObject(
-    const VulkanGraphParameter& parameter) {
-    if (const auto* json = std::get_if<VulkanJsonParameter>(&parameter)) {
-        return json->object;
-    }
-    return {};
-}
-
-void VulkanManifestComputeNode::updateUniform(const QJsonObject& object) {
+void VulkanManifestComputeNode::updateUniform(
+    const VulkanGraphParameter& parameters) {
     if (descriptor_.uniformSize == 0) return;
     std::vector<uint8_t> data(descriptor_.uniformSize, 0);
     for (const VulkanFilterParameterDesc& field : descriptor_.parameters) {
         if (field.offset >= data.size()) continue;
-        const QJsonValue value = object.contains(QString::fromStdString(field.name))
-            ? object.value(QString::fromStdString(field.name))
-            : QJsonValue(field.defaultValue);
+        const auto found = parameters.find(field.name);
         const size_t available = data.size() - field.offset;
         switch (field.type) {
             case VulkanFilterValueType::integer: {
-                const int32_t number = static_cast<int32_t>(value.toInteger(
-                    static_cast<qint64>(field.defaultValue)));
+                int32_t number = static_cast<int32_t>(field.defaultValue);
+                if (found != parameters.end()) {
+                    if (const auto* value = std::get_if<int32_t>(&found->second)) {
+                        number = *value;
+                    }
+                }
                 if (available >= sizeof(number)) {
                     std::memcpy(data.data() + field.offset, &number, sizeof(number));
                 }
                 break;
             }
             case VulkanFilterValueType::real: {
-                const float number = static_cast<float>(value.toDouble(field.defaultValue));
+                float number = static_cast<float>(field.defaultValue);
+                if (found != parameters.end()) {
+                    if (const auto* value = std::get_if<float>(&found->second)) {
+                        number = *value;
+                    }
+                }
                 if (available >= sizeof(number)) {
                     std::memcpy(data.data() + field.offset, &number, sizeof(number));
                 }
                 break;
             }
             case VulkanFilterValueType::boolean: {
-                const int32_t number = value.toBool(field.defaultValue != 0.0) ? 1 : 0;
+                int32_t number = field.defaultValue != 0.0 ? 1 : 0;
+                if (found != parameters.end()) {
+                    if (const auto* value = std::get_if<bool>(&found->second)) {
+                        number = *value ? 1 : 0;
+                    }
+                }
                 if (available >= sizeof(number)) {
                     std::memcpy(data.data() + field.offset, &number, sizeof(number));
                 }
@@ -158,8 +159,18 @@ bool VulkanManifestComputeNode::configureOutputs(
     for (int32_t index = 0; index < outputCount(); ++index) {
         ImageFormat output = inputs[0];
         if (descriptor_.resizeOutput) {
-            output.width = parameters_.value("width").toInt(output.width);
-            output.height = parameters_.value("height").toInt(output.height);
+            if (const auto found = parameters_.find("width");
+                found != parameters_.end()) {
+                if (const auto* value = std::get_if<int32_t>(&found->second)) {
+                    output.width = *value;
+                }
+            }
+            if (const auto found = parameters_.find("height");
+                found != parameters_.end()) {
+                if (const auto* value = std::get_if<int32_t>(&found->second)) {
+                    output.height = *value;
+                }
+            }
             if (output.width <= 0 || output.height <= 0) return false;
         }
         setOutputFormat(index, output);

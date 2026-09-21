@@ -1,9 +1,9 @@
 #pragma once
 
 #include "FilterCommon.hpp"
-#include <QJsonObject>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -14,13 +14,8 @@ using VulkanGraphNodeId = uint64_t;
 inline constexpr VulkanGraphNodeId kVulkanGraphInputNodeId = 1;
 inline constexpr VulkanGraphNodeId kVulkanGraphOutputNodeId = 2;
 
-struct VulkanJsonParameter {
-    QJsonObject object;
-};
-
-using VulkanGraphParameter = std::variant<
-    std::monostate,
-    VulkanJsonParameter>;
+using VulkanParameterValue = std::variant<int32_t, float, bool>;
+using VulkanGraphParameter = std::unordered_map<std::string, VulkanParameterValue>;
 
 struct VulkanGraphPosition {
     float x = 0.0f;
@@ -29,7 +24,7 @@ struct VulkanGraphPosition {
 
 struct VulkanGraphNodeDesc {
     VulkanGraphNodeId id = 0;
-    std::string filterId = "color_invert";
+    std::string filterId;
     VulkanGraphParameter parameter = {};
     VulkanGraphPosition position = {};
 };

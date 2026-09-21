@@ -81,6 +81,8 @@ public:
     const VulkanFilterDescriptor* find(std::string_view id,
                                        std::string* error = nullptr);
 
+    VulkanGraphParameter defaultParameters(
+        const VulkanFilterDescriptor& descriptor) const;
     bool parseParameters(const VulkanFilterDescriptor& descriptor,
                          const QJsonObject& object,
                          VulkanGraphParameter& result,

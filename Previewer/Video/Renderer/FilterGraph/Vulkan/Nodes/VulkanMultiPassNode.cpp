@@ -1,6 +1,5 @@
 #include "VulkanMultiPassNode.hpp"
 
-#include <QJsonObject>
 #include <stdexcept>
 #include <utility>
 
@@ -16,11 +15,11 @@ VulkanMultiPassNode::VulkanMultiPassNode(
     }
 
     for (const VulkanFilterPassDescriptor& pass : descriptor.passes) {
-        QJsonObject overrides;
-        overrides.insert("directionX", pass.directionX);
-        overrides.insert("directionY", pass.directionY);
+        VulkanGraphParameter passParameter = parameter;
+        passParameter["directionX"] = pass.directionX;
+        passParameter["directionY"] = pass.directionY;
         auto passNode = std::make_unique<VulkanManifestComputeNode>(
-            descriptor, parameter, std::move(overrides));
+            descriptor, passParameter);
         addPass(std::move(passNode));
     }
 }

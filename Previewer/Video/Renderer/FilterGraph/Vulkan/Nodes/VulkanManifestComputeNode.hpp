@@ -11,8 +11,7 @@ namespace heisenberg::filtergraph {
 class VulkanManifestComputeNode final : public VulkanComputeNode {
 public:
     VulkanManifestComputeNode(const VulkanFilterDescriptor& descriptor,
-                              const VulkanGraphParameter& parameter,
-                              QJsonObject uniformOverrides = {});
+                              const VulkanGraphParameter& parameter);
     ~VulkanManifestComputeNode() override;
 
     bool setExternalInput(int32_t index, const VulkanImageRef& image);
@@ -37,12 +36,11 @@ protected:
     const char* shaderPath() const override;
 
 private:
-    static QJsonObject parameterObject(const VulkanGraphParameter& parameter);
-    void updateUniform(const QJsonObject& parameters);
+    void updateUniform(const VulkanGraphParameter& parameters);
 
     VulkanFilterDescriptor descriptor_;
     std::string shaderPath_;
-    QJsonObject parameters_;
+    VulkanGraphParameter parameters_;
     VulkanGraphContext context_ = {};
     std::vector<VulkanImageRef> externalInputs_;
     std::vector<LogicalResourceId> externalInputIds_;
