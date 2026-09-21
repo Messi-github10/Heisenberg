@@ -1,28 +1,19 @@
-//
-// Created by NiceFold on 2026/6/30.
-//
-
 #pragma once
+
+#include <IPreviewer.hpp>
 
 #include <QObject>
 #include <QString>
+#include <atomic>
 #include <cstdint>
 #include <memory>
-
-struct AVFrame;
-
-namespace heisenberg {
-namespace ctrl   { class PlaybackController; }
-namespace renderer { class IPreviewer; class GpuContext; class SwapChain; }
-namespace filtergraph { class VulkanFilterGraph; }
-}
 
 class VideoWidget;
 
 namespace heisenberg {
 namespace ui {
 
-class PlayerController : public QObject {
+class PlayerController : public QObject, public heisenberg::IPreviewer::Listener {
     Q_OBJECT
 
     Q_PROPERTY(bool    isPlaying   READ isPlaying   NOTIFY isPlayingChanged)
@@ -46,8 +37,6 @@ public:
     QString currentFile() const { return currentFile_; }
     QString filterGraphPath() const { return filterGraphPath_; }
 
-    void setPlaybackController(heisenberg::ctrl::PlaybackController* ctrl);
-
 public slots:
     void play();
     void pause();
@@ -65,13 +54,8 @@ public slots:
     void openFilterGraph(const QString& path);
     void closeFile();
 
-    /// 显式释放 GPU 资源（程序退出前调用）
     void shutdown();
-
-    /// 绑定 VideoWidget，初始化 Vulkan 渲染管线
     void bindVideoOutput(VideoWidget* widget);
-
-    /// 设置硬件解码开关
     void setHardwareDecode(bool enabled);
 
 signals:
@@ -84,12 +68,14 @@ signals:
     void filterGraphPathChanged();
     void filterGraphLoadFailed(const QString& message);
 
-private slots:
-    void onFrameDecoded(std::shared_ptr<AVFrame> frame);
-
 private:
-    void initPipeline(VideoWidget* widget);
-    bool loadFilterGraph(const QString& path, QString* error);
+    void onStateChanged(heisenberg::IPreviewer::State state) override;
+    void onPositionChanged(double seconds) override;
+    void onDurationChanged(double seconds) override;
+    void onEndOfStream() override;
+    void onOpenFailed(const std::string& reason) override;
+    void onFilterGraphChanged(const std::string& path) override;
+    void onFilterGraphFailed(const std::string& message) override;
 
     bool    isPlaying_   = false;
     double  currentTime_ = 0.0;
@@ -99,18 +85,10 @@ private:
     QString currentFile_;
     QString filterGraphPath_;
 
-    heisenberg::ctrl::PlaybackController* ctrl_ = nullptr;
-
-    std::unique_ptr<heisenberg::renderer::GpuContext> gpuCtx_;
-    std::unique_ptr<heisenberg::filtergraph::VulkanFilterGraph> filterGraph_;
-    std::unique_ptr<heisenberg::renderer::IPreviewer> previewer_;
+    std::unique_ptr<heisenberg::IPreviewer> previewer_;
+    std::shared_ptr<std::atomic<bool>> previewerAlive_;
     VideoWidget* videoOutput_ = nullptr;
-
-    int videoWidth_  = 0;
-    int videoHeight_ = 0;
-    uint64_t filterGraphVerificationFrame_ = 0;
     bool shutdownDone_ = false;
-    std::shared_ptr<AVFrame> lastFrame_;
 };
 
 } // namespace ui

@@ -1,12 +1,10 @@
 #include "VulkanFilterRegistry.hpp"
 
-#include <QFile>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonParseError>
-#include <QString>
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <variant>
 
@@ -17,54 +15,104 @@
 namespace heisenberg::filtergraph {
 namespace {
 
-void setError(std::string* error, const QString& message) {
-    if (error) *error = message.toStdString();
+using json = nlohmann::json;
+
+void setError(std::string* error, const std::string& message) {
+    if (error) *error = message;
 }
 
-bool finiteNumber(const QJsonValue& value, double& result) {
-    if (!value.isDouble()) return false;
-    result = value.toDouble(std::numeric_limits<double>::quiet_NaN());
+const json& jsonField(const json& object, const char* key) {
+    static const json missing;
+    const auto it = object.find(key);
+    return it == object.end() ? missing : *it;
+}
+
+const json& jsonArrayField(const json& object, const char* key) {
+    static const json empty = json::array();
+    const json& value = jsonField(object, key);
+    return value.is_array() ? value : empty;
+}
+
+const json& jsonObjectField(const json& object, const char* key) {
+    static const json empty = json::object();
+    const json& value = jsonField(object, key);
+    return value.is_object() ? value : empty;
+}
+
+std::string jsonString(const json& value, const std::string& fallback = {}) {
+    return value.is_string() ? value.get<std::string>() : fallback;
+}
+
+std::string jsonStringField(const json& object, const char* key,
+                            const std::string& fallback = {}) {
+    return jsonString(jsonField(object, key), fallback);
+}
+
+int jsonInt(const json& value, int fallback = 0) {
+    if (!value.is_number()) return fallback;
+    return static_cast<int>(value.get<double>());
+}
+
+int jsonIntField(const json& object, const char* key, int fallback = 0) {
+    return jsonInt(jsonField(object, key), fallback);
+}
+
+bool jsonBool(const json& value, bool fallback = false) {
+    return value.is_boolean() ? value.get<bool>() : fallback;
+}
+
+bool jsonBoolField(const json& object, const char* key, bool fallback = false) {
+    return jsonBool(jsonField(object, key), fallback);
+}
+
+double jsonDoubleField(const json& object, const char* key, double fallback = 0.0) {
+    const json& value = jsonField(object, key);
+    return value.is_number() ? value.get<double>() : fallback;
+}
+
+bool finiteNumber(const json& value, double& result) {
+    if (!value.is_number()) return false;
+    result = value.get<double>();
     return std::isfinite(result);
 }
 
-bool readInt(const QJsonObject& object, const char* key, int32_t minimum,
+bool readInt(const json& object, const char* key, int32_t minimum,
              int32_t& result, std::string* error) {
-    const QJsonValue value = object.value(QLatin1String(key));
+    const json& value = jsonField(object, key);
     double number = 0.0;
     if (!finiteNumber(value, number) || std::floor(number) != number
         || number < minimum || number > std::numeric_limits<int32_t>::max()) {
-        setError(error, QStringLiteral("Manifest field '%1' must be an integer")
-            .arg(QLatin1String(key)));
+        setError(error, std::string("Manifest field '") + key + "' must be an integer");
         return false;
     }
     result = static_cast<int32_t>(number);
     return true;
 }
 
-bool parseKind(const QString& value, VulkanFilterKind& result) {
-    if (value == QLatin1String("compute")) result = VulkanFilterKind::compute;
-    else if (value == QLatin1String("multi_pass")) result = VulkanFilterKind::multiPass;
-    else if (value == QLatin1String("stateful")) result = VulkanFilterKind::stateful;
-    else if (value == QLatin1String("readback")) result = VulkanFilterKind::readback;
-    else if (value == QLatin1String("input")) result = VulkanFilterKind::input;
-    else if (value == QLatin1String("output")) result = VulkanFilterKind::output;
+bool parseKind(const std::string& value, VulkanFilterKind& result) {
+    if (value == "compute") result = VulkanFilterKind::compute;
+    else if (value == "multi_pass") result = VulkanFilterKind::multiPass;
+    else if (value == "stateful") result = VulkanFilterKind::stateful;
+    else if (value == "readback") result = VulkanFilterKind::readback;
+    else if (value == "input") result = VulkanFilterKind::input;
+    else if (value == "output") result = VulkanFilterKind::output;
     else return false;
     return true;
 }
 
-bool parseValueType(const QString& value, VulkanFilterValueType& result) {
-    if (value == QLatin1String("int")) result = VulkanFilterValueType::integer;
-    else if (value == QLatin1String("float")) result = VulkanFilterValueType::real;
-    else if (value == QLatin1String("bool")) result = VulkanFilterValueType::boolean;
+bool parseValueType(const std::string& value, VulkanFilterValueType& result) {
+    if (value == "int") result = VulkanFilterValueType::integer;
+    else if (value == "float") result = VulkanFilterValueType::real;
+    else if (value == "bool") result = VulkanFilterValueType::boolean;
     else return false;
     return true;
 }
 
-VulkanInputBinding parseBinding(const QString& value) {
-    if (value == QLatin1String("sampled_linear")) {
+VulkanInputBinding parseBinding(const std::string& value) {
+    if (value == "sampled_linear") {
         return VulkanInputBinding::sampledLinear;
     }
-    if (value == QLatin1String("sampled_nearest")) {
+    if (value == "sampled_nearest") {
         return VulkanInputBinding::sampledNearest;
     }
     return VulkanInputBinding::storageImage;
@@ -82,47 +130,52 @@ bool VulkanFilterRegistry::ensureLoaded(std::string* error) {
 }
 
 bool VulkanFilterRegistry::load(std::string* error) {
-    QFile file(QString::fromUtf8(HEISENBERG_SHADER_MANIFEST_PATH));
-    if (!file.open(QIODevice::ReadOnly)) {
-        setError(error, QStringLiteral("Failed to open shader manifest '%1': %2")
-            .arg(file.fileName(), file.errorString()));
+    std::ifstream file(std::filesystem::u8path(HEISENBERG_SHADER_MANIFEST_PATH),
+                       std::ios::binary);
+    if (!file) {
+        setError(error, std::string("Failed to open shader manifest '")
+            + HEISENBERG_SHADER_MANIFEST_PATH + "'");
         return false;
     }
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-        setError(error, QStringLiteral("Invalid shader manifest: %1")
-            .arg(parseError.errorString()));
+
+    json document;
+    try {
+        document = json::parse(file);
+    } catch (const json::parse_error& parseError) {
+        setError(error, std::string("Invalid shader manifest: ") + parseError.what());
         return false;
     }
-    const QJsonArray filters = document.object().value("shaders").toArray();
-    if (filters.isEmpty()) {
-        setError(error, QStringLiteral("Shader manifest contains no shaders"));
+    if (!document.is_object()) {
+        setError(error, "Invalid shader manifest: root must be an object");
+        return false;
+    }
+
+    const json& filters = jsonArrayField(document, "shaders");
+    if (filters.empty()) {
+        setError(error, "Shader manifest contains no shaders");
         return false;
     }
 
     std::vector<VulkanFilterDescriptor> parsed;
-    for (const QJsonValue& value : filters) {
-        if (!value.isObject()) {
-            setError(error, QStringLiteral("Every shader manifest entry must be an object"));
+    for (const json& value : filters) {
+        if (!value.is_object()) {
+            setError(error, "Every shader manifest entry must be an object");
             return false;
         }
-        const QJsonObject object = value.toObject();
+        const json& object = value;
         VulkanFilterDescriptor descriptor;
-        descriptor.id = object.value("id").toString(object.value("node").toString()).toStdString();
-        descriptor.displayName = object.value("name").toString(
-            QString::fromStdString(descriptor.id)).toStdString();
+        descriptor.id = jsonStringField(object, "id", jsonStringField(object, "node"));
+        descriptor.displayName = jsonStringField(object, "name", descriptor.id);
         if (descriptor.id.empty()) {
-            setError(error, QStringLiteral("Shader manifest entry has no id"));
+            setError(error, "Shader manifest entry has no id");
             return false;
         }
-        if (!parseKind(object.value("kind").toString("compute"), descriptor.kind)) {
-            setError(error, QStringLiteral("Unknown shader manifest kind for '%1'")
-                .arg(QString::fromStdString(descriptor.id)));
+        if (!parseKind(jsonStringField(object, "kind", "compute"), descriptor.kind)) {
+            setError(error, "Unknown shader manifest kind for '" + descriptor.id + "'");
             return false;
         }
-        descriptor.shaderSource = object.value("source").toString().toStdString();
-        descriptor.shaderBinary = object.value("spirv").toString().toStdString();
+        descriptor.shaderSource = jsonStringField(object, "source");
+        descriptor.shaderBinary = jsonStringField(object, "spirv");
         if (!readInt(object, "inputs", 0, descriptor.inputCount, error)
             || !readInt(object, "outputs", 0, descriptor.outputCount, error)) {
             return false;
@@ -131,36 +184,34 @@ bool VulkanFilterRegistry::load(std::string* error) {
              || descriptor.kind == VulkanFilterKind::multiPass
              || descriptor.kind == VulkanFilterKind::stateful)
             && (descriptor.inputCount < 1 || descriptor.outputCount < 1)) {
-            setError(error, QStringLiteral("Executable filter '%1' must have at least one input and output")
-                .arg(QString::fromStdString(descriptor.id)));
+            setError(error, "Executable filter '" + descriptor.id
+                + "' must have at least one input and output");
             return false;
         }
-        const QJsonArray bindings = object.value("input_bindings").toArray();
-        for (const QJsonValue& binding : bindings) {
-            descriptor.inputBindings.push_back(parseBinding(binding.toString()));
+        for (const json& binding : jsonArrayField(object, "input_bindings")) {
+            descriptor.inputBindings.push_back(parseBinding(jsonString(binding)));
         }
         while (descriptor.inputBindings.size() < static_cast<size_t>(descriptor.inputCount)) {
             descriptor.inputBindings.push_back(VulkanInputBinding::storageImage);
         }
-        for (const QJsonValue& extraValue : object.value("extra_inputs").toArray()) {
-            const QJsonObject extraObject = extraValue.toObject();
+        for (const json& extraValue : jsonArrayField(object, "extra_inputs")) {
+            const json& extraObject = extraValue.is_object() ? extraValue : json::object();
             VulkanFilterExtraInputDescriptor extra;
-            extra.name = extraObject.value("name").toString().toStdString();
-            extra.binding = parseBinding(extraObject.value("binding_type")
-                .toString("sampled_linear"));
+            extra.name = jsonStringField(extraObject, "name");
+            extra.binding = parseBinding(jsonStringField(extraObject, "binding_type",
+                                                         "sampled_linear"));
             if (extra.name.empty()) {
-                setError(error, QStringLiteral("Invalid extra input in shader manifest entry '%1'")
-                    .arg(QString::fromStdString(descriptor.id)));
+                setError(error, "Invalid extra input in shader manifest entry '"
+                    + descriptor.id + "'");
                 return false;
             }
             descriptor.extraInputs.push_back(std::move(extra));
         }
-        descriptor.auxiliarySource = object.value("auxiliary_source")
-            .toString().toStdString();
-        const int auxiliaryWidth = object.value("auxiliary_width").toInt(0);
-        const int auxiliaryHeight = object.value("auxiliary_height").toInt(0);
+        descriptor.auxiliarySource = jsonStringField(object, "auxiliary_source");
+        const int auxiliaryWidth = jsonIntField(object, "auxiliary_width");
+        const int auxiliaryHeight = jsonIntField(object, "auxiliary_height");
         if (auxiliaryWidth < 0 || auxiliaryHeight < 0) {
-            setError(error, QStringLiteral("Auxiliary texture dimensions must be nonnegative"));
+            setError(error, "Auxiliary texture dimensions must be nonnegative");
             return false;
         }
         descriptor.auxiliaryWidth = static_cast<uint32_t>(auxiliaryWidth);
@@ -168,90 +219,85 @@ bool VulkanFilterRegistry::load(std::string* error) {
         if (descriptor.auxiliarySource == "identity_lut"
             && (descriptor.auxiliaryWidth != 512
                 || descriptor.auxiliaryHeight != 512)) {
-            setError(error, QStringLiteral("identity_lut requires a 512x512 auxiliary texture"));
+            setError(error, "identity_lut requires a 512x512 auxiliary texture");
             return false;
         }
-        const int uniformSize = object.value("uniform_size").toInt(0);
+        const int uniformSize = jsonIntField(object, "uniform_size");
         if (uniformSize < 0) {
-            setError(error, QStringLiteral("Manifest uniform_size must be nonnegative"));
+            setError(error, "Manifest uniform_size must be nonnegative");
             return false;
         }
         descriptor.uniformSize = static_cast<size_t>(uniformSize);
-        descriptor.resizeOutput = object.value("output_size").toString()
-            == QLatin1String("parameters");
-        descriptor.passthroughOutput = object.value("output").toString()
-            == QLatin1String("passthrough");
+        descriptor.resizeOutput = jsonStringField(object, "output_size") == "parameters";
+        descriptor.passthroughOutput = jsonStringField(object, "output") == "passthrough";
         if (descriptor.kind == VulkanFilterKind::readback) {
-            const QJsonObject readback = object.value("readback").toObject();
-            const int readbackSize = readback.value("size").toInt(0);
-            const int readbackBinding = readback.value("binding").toInt(-1);
+            const json& readback = jsonObjectField(object, "readback");
+            const int readbackSize = jsonIntField(readback, "size");
+            const int readbackBinding = jsonIntField(readback, "binding", -1);
             if (readbackSize <= 0 || readbackBinding < 0) {
-                setError(error, QStringLiteral(
-                    "Readback filter '%1' must declare a positive size and binding")
-                    .arg(QString::fromStdString(descriptor.id)));
+                setError(error, "Readback filter '" + descriptor.id
+                    + "' must declare a positive size and binding");
                 return false;
             }
             descriptor.readbackSize = static_cast<size_t>(readbackSize);
             descriptor.readbackBinding = static_cast<uint32_t>(readbackBinding);
-            descriptor.clearReadbackBuffer = readback.value("clear").toBool(false);
+            descriptor.clearReadbackBuffer = jsonBoolField(readback, "clear");
             if (descriptor.readbackBinding
                 < static_cast<uint32_t>(descriptor.inputCount)) {
-                setError(error, QStringLiteral(
-                    "Readback binding for '%1' must follow all input bindings")
-                    .arg(QString::fromStdString(descriptor.id)));
+                setError(error, "Readback binding for '" + descriptor.id
+                    + "' must follow all input bindings");
                 return false;
             }
         }
 
-        for (const QJsonValue& passValue : object.value("passes").toArray()) {
-            const QJsonObject passObject = passValue.toObject();
+        for (const json& passValue : jsonArrayField(object, "passes")) {
+            const json& passObject = passValue.is_object() ? passValue : json::object();
             VulkanFilterPassDescriptor pass;
-            pass.name = passObject.value("name").toString().toStdString();
-            const QJsonArray direction = passObject.value("direction").toArray();
+            pass.name = jsonStringField(passObject, "name");
+            const json& direction = jsonArrayField(passObject, "direction");
             if (pass.name.empty() || direction.size() != 2
-                || !direction[0].isDouble() || !direction[1].isDouble()
-                || std::floor(direction[0].toDouble()) != direction[0].toDouble()
-                || std::floor(direction[1].toDouble()) != direction[1].toDouble()) {
-                setError(error, QStringLiteral("Invalid pass descriptor in shader manifest entry '%1'")
-                    .arg(QString::fromStdString(descriptor.id)));
+                || !direction[0].is_number() || !direction[1].is_number()
+                || std::floor(direction[0].get<double>()) != direction[0].get<double>()
+                || std::floor(direction[1].get<double>()) != direction[1].get<double>()) {
+                setError(error, "Invalid pass descriptor in shader manifest entry '"
+                    + descriptor.id + "'");
                 return false;
             }
-            pass.directionX = direction[0].toInt();
-            pass.directionY = direction[1].toInt();
+            pass.directionX = jsonInt(direction[0]);
+            pass.directionY = jsonInt(direction[1]);
             descriptor.passes.push_back(std::move(pass));
         }
         if (descriptor.kind == VulkanFilterKind::multiPass
             && descriptor.passes.empty()) {
-            setError(error, QStringLiteral("Multi-pass filter '%1' must declare passes")
-                .arg(QString::fromStdString(descriptor.id)));
+            setError(error, "Multi-pass filter '" + descriptor.id + "' must declare passes");
             return false;
         }
 
-        for (const QJsonValue& parameterValue : object.value("parameters").toArray()) {
-            const QJsonObject parameterObject = parameterValue.toObject();
+        for (const json& parameterValue : jsonArrayField(object, "parameters")) {
+            const json& parameterObject =
+                parameterValue.is_object() ? parameterValue : json::object();
             VulkanFilterParameterDesc parameter;
-            parameter.name = parameterObject.value("name").toString().toStdString();
+            parameter.name = jsonStringField(parameterObject, "name");
             if (parameter.name.empty()
-                || !parseValueType(parameterObject.value("type").toString(), parameter.type)) {
-                setError(error, QStringLiteral("Invalid parameter in shader manifest entry '%1'")
-                    .arg(QString::fromStdString(descriptor.id)));
+                || !parseValueType(jsonStringField(parameterObject, "type"), parameter.type)) {
+                setError(error, "Invalid parameter in shader manifest entry '"
+                    + descriptor.id + "'");
                 return false;
             }
-            parameter.offset = static_cast<size_t>(parameterObject.value("offset").toInt(0));
-            parameter.defaultValue = parameterObject.value("default").toDouble(0.0);
-            parameter.exposed = parameterObject.value("exposed").toBool(true);
+            parameter.offset = static_cast<size_t>(jsonIntField(parameterObject, "offset"));
+            parameter.defaultValue = jsonDoubleField(parameterObject, "default");
+            parameter.exposed = jsonBoolField(parameterObject, "exposed", true);
             if (parameterObject.contains("min")) {
-                parameter.hasMinimum = finiteNumber(parameterObject.value("min"), parameter.minimum);
+                parameter.hasMinimum = finiteNumber(parameterObject.at("min"), parameter.minimum);
             }
             if (parameterObject.contains("max")) {
-                parameter.hasMaximum = finiteNumber(parameterObject.value("max"), parameter.maximum);
+                parameter.hasMaximum = finiteNumber(parameterObject.at("max"), parameter.maximum);
             }
             descriptor.parameters.push_back(std::move(parameter));
         }
         if (!parsed.empty() && std::any_of(parsed.begin(), parsed.end(),
             [&descriptor](const VulkanFilterDescriptor& item) { return item.id == descriptor.id; })) {
-            setError(error, QStringLiteral("Duplicate shader manifest id '%1'")
-                .arg(QString::fromStdString(descriptor.id)));
+            setError(error, "Duplicate shader manifest id '" + descriptor.id + "'");
             return false;
         }
         parsed.push_back(std::move(descriptor));
@@ -290,17 +336,18 @@ VulkanGraphParameter VulkanFilterRegistry::defaultParameters(
 }
 
 bool VulkanFilterRegistry::parseParameters(
-    const VulkanFilterDescriptor& descriptor, const QJsonObject& object,
+    const VulkanFilterDescriptor& descriptor, const nlohmann::json& object,
     VulkanGraphParameter& result, std::string* error) const {
     result = defaultParameters(descriptor);
+    if (!object.is_object()) return validateParameters(descriptor, result, error);
     for (auto it = object.begin(); it != object.end(); ++it) {
-        const std::string name = it.key().toStdString();
+        const std::string name = it.key();
         const auto field = std::find_if(
             descriptor.parameters.begin(), descriptor.parameters.end(),
             [&](const VulkanFilterParameterDesc& item) { return item.name == name; });
         if (field == descriptor.parameters.end() || !field->exposed) continue;
 
-        const QJsonValue value = it.value();
+        const json& value = it.value();
         double number = 0.0;
         switch (field->type) {
             case VulkanFilterValueType::integer:
@@ -320,11 +367,11 @@ bool VulkanFilterRegistry::parseParameters(
                 result[name] = static_cast<float>(number);
                 break;
             case VulkanFilterValueType::boolean:
-                if (!value.isBool()) {
+                if (!value.is_boolean()) {
                     if (error) *error = "Invalid filter parameter: " + name;
                     return false;
                 }
-                result[name] = value.toBool();
+                result[name] = value.get<bool>();
                 break;
         }
     }

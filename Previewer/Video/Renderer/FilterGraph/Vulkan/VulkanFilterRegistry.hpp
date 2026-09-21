@@ -2,8 +2,7 @@
 
 #include "Graph/VulkanGraphDocument.hpp"
 #include "Nodes/VulkanComputeNode.hpp"
-
-#include <QJsonObject>
+#include <nlohmann/json_fwd.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -84,7 +83,7 @@ public:
     VulkanGraphParameter defaultParameters(
         const VulkanFilterDescriptor& descriptor) const;
     bool parseParameters(const VulkanFilterDescriptor& descriptor,
-                         const QJsonObject& object,
+                         const nlohmann::json& object,
                          VulkanGraphParameter& result,
                          std::string* error = nullptr) const;
     bool validateParameters(const VulkanFilterDescriptor& descriptor,

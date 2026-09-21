@@ -127,10 +127,6 @@ add_dependencies(HeisenbergPreviewer HeisenbergFilterShaders)
 add_dependencies(HeisenbergPreviewer HeisenbergShaderContractTests)
 add_dependencies(HeisenbergPreviewer HeisenbergShaderSourceContractTests)
 
-set_target_properties(HeisenbergPreviewer PROPERTIES
-    AUTOMOC ON
-)
-
 target_include_directories(HeisenbergPreviewer PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/Video/Renderer/FilterGraph/Common
@@ -146,11 +142,11 @@ target_link_libraries(HeisenbergPreviewer PUBLIC
     HeisenbergUtiles
     libplacebo
     miniaudio
+    nlohmann_json
     vulkan
     volk
     d3d11
     dxgi
-    Qt6::Core
 )
 
 target_compile_definitions(HeisenbergPreviewer PUBLIC

@@ -15,8 +15,6 @@ extern "C" {
 #include <libavutil/frame.h>
 }
 
-#include <QMetaObject>
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -25,6 +23,7 @@ extern "C" {
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 namespace heisenberg {
 namespace ctrl {
@@ -43,6 +42,7 @@ struct PlaybackController::Impl {
     PlaybackController::State state = PlaybackController::Idle;
     double  lastDisplayedPtsMs       = -1.0;
 
+    PlaybackController::TaskDispatcher dispatcher;
     std::shared_ptr<bool> alive{std::make_shared<bool>(true)};
 
     // ── Consumer thread (MLT-style: dedicated thread + audio-clock master) ──
@@ -161,15 +161,15 @@ struct PlaybackController::Impl {
         double finalSecs = finalPosMs / 1000.0;
         auto keepAlive = alive;
 
-        QMetaObject::invokeMethod(ctrl, [ctrl, finalSecs, keepAlive] {
+        ctrl->dispatch([ctrl, finalSecs, keepAlive] {
             if (!*keepAlive) return;
             if (ctrl->impl_->audioDevice) ctrl->impl_->audioDevice->stop();
             ctrl->impl_->durationSecs = finalSecs;
-            emit ctrl->durationChanged(finalSecs);
-            emit ctrl->positionChanged(finalSecs);
+            if (ctrl->onDurationChanged) ctrl->onDurationChanged(finalSecs);
+            if (ctrl->onPositionChanged) ctrl->onPositionChanged(finalSecs);
             ctrl->setState(PlaybackController::Ended);
-            emit ctrl->endOfStream();
-        }, Qt::QueuedConnection);
+            if (ctrl->onEndOfStream) ctrl->onEndOfStream();
+        });
     }
 
     void runConsumer(PlaybackController* ctrl) {
@@ -290,11 +290,11 @@ struct PlaybackController::Impl {
             if (pts != lastDisplayedPtsMs) {
                 lastDisplayedPtsMs = pts;
                 auto keepAlive = alive;
-                QMetaObject::invokeMethod(ctrl, [ctrl, f = std::move(frame), pts, keepAlive]() mutable {
+                ctrl->dispatch([ctrl, f = std::move(frame), pts, keepAlive]() mutable {
                     if (!*keepAlive) return;
-                    emit ctrl->frameDecoded(std::move(f));
-                    emit ctrl->positionChanged(pts / 1000.0);
-                }, Qt::QueuedConnection);
+                    if (ctrl->onFrameDecoded) ctrl->onFrameDecoded(std::move(f));
+                    if (ctrl->onPositionChanged) ctrl->onPositionChanged(pts / 1000.0);
+                });
             }
         }
 
@@ -306,9 +306,21 @@ struct PlaybackController::Impl {
 //  PlaybackController
 // ============================================================================
 
-PlaybackController::PlaybackController(QObject* parent)
-    : QObject(parent)
-    , impl_(std::make_unique<Impl>()) {}
+PlaybackController::PlaybackController()
+    : impl_(std::make_unique<Impl>()) {}
+
+void PlaybackController::setTaskDispatcher(TaskDispatcher dispatcher) {
+    impl_->dispatcher = std::move(dispatcher);
+}
+
+void PlaybackController::dispatch(Task task) {
+    if (!task) return;
+    if (impl_->dispatcher) {
+        impl_->dispatcher(std::move(task));
+        return;
+    }
+    task();
+}
 
 PlaybackController::~PlaybackController() {
     close();
@@ -355,7 +367,7 @@ void PlaybackController::setHardwareDecode(bool enabled) {
 void PlaybackController::setState(State s) {
     if (impl_->state == s) return;
     impl_->state = s;
-    emit stateChanged(s);
+    if (onStateChanged) onStateChanged(s);
 }
 
 bool PlaybackController::open(const std::string& filePath) {
@@ -366,9 +378,9 @@ bool PlaybackController::open(const std::string& filePath) {
     impl_->decodeThread.onOpened = [this, alive](
         double dur, double fps, bool seekable, FramePtr firstFrame,
         uint64_t generation, AudioSpec audioSpec, bool hasAudio) {
-        QMetaObject::invokeMethod(this, [this, alive, dur, fps, seekable,
-                                         firstFrame, generation, audioSpec,
-                                         hasAudio] {
+        dispatch([this, alive, dur, fps, seekable,
+                  firstFrame, generation, audioSpec,
+                  hasAudio] {
             if (!*alive) return;
             impl_->activeGeneration.store(generation,
                                           std::memory_order_release);
@@ -382,34 +394,35 @@ bool PlaybackController::open(const std::string& filePath) {
             impl_->currentAudioOffset = 0;
             impl_->audioSamplePos.store(0, std::memory_order_relaxed);
             impl_->audioCallbackCount.store(0, std::memory_order_relaxed);
-            emit durationChanged(dur);
+            if (onDurationChanged) onDurationChanged(dur);
 
             if (firstFrame) {
                 impl_->lastDisplayedPtsMs = frameTimeMilliseconds(*firstFrame);
-                emit frameDecoded(firstFrame);
-                emit positionChanged(frameTimeSeconds(*firstFrame));
+                if (onFrameDecoded) onFrameDecoded(firstFrame);
+                if (onPositionChanged) onPositionChanged(frameTimeSeconds(*firstFrame));
             }
 
             LOG_INFO("PlaybackController: streaming audio {}",
                      impl_->hasAudio ? "enabled" : "unavailable");
 
             setState(Paused);
-        }, Qt::QueuedConnection);
+        });
     };
 
     impl_->decodeThread.onOpenFailed = [this, alive](const std::string& reason) {
-        QMetaObject::invokeMethod(this, [this, alive, reason] {
+        dispatch([this, alive, reason] {
             if (!*alive) return;
             LOG_ERROR("PlaybackController: open failed — {}", reason);
             impl_->seekable = false;
             setState(Idle);
-        }, Qt::QueuedConnection);
+            if (onOpenFailed) onOpenFailed(reason);
+        });
     };
 
     impl_->decodeThread.onScrubFrame = [this, alive](uint64_t requestId,
                                                       FramePtr frame) {
-        QMetaObject::invokeMethod(this, [this, alive, requestId,
-                                         frame = std::move(frame)]() mutable {
+        dispatch([this, alive, requestId,
+                  frame = std::move(frame)]() mutable {
             if (!*alive || impl_->state != Scrubbing) return;
             if (requestId != impl_->latestScrubRequestId) return;
 
@@ -423,8 +436,8 @@ bool PlaybackController::open(const std::string& filePath) {
                                              * impl_->audioSpec.sampleRate),
                         std::memory_order_relaxed);
                 }
-                emit frameDecoded(std::move(frame));
-                emit positionChanged(selectedSeconds);
+                if (onFrameDecoded) onFrameDecoded(std::move(frame));
+                if (onPositionChanged) onPositionChanged(selectedSeconds);
             }
 
             if (!impl_->scrubEnding
@@ -437,7 +450,7 @@ bool PlaybackController::open(const std::string& filePath) {
             impl_->wasPlayingBeforeScrub = false;
             setState(Paused);
             if (shouldResume) play();
-        }, Qt::QueuedConnection);
+        });
     };
 
     impl_->decodeThread.start();
@@ -596,9 +609,9 @@ void PlaybackController::seek(double seconds) {
                                                               uint64_t generation,
                                                               AudioSpec audioSpec,
                                                               bool hasAudio) {
-        QMetaObject::invokeMethod(this, [this, alive, dur, fps, wasPlaying,
-                                         keyFrame, generation, audioSpec,
-                                         hasAudio] {
+        dispatch([this, alive, dur, fps, wasPlaying,
+                  keyFrame, generation, audioSpec,
+                  hasAudio] {
             if (!*alive) return;
             impl_->activeGeneration.store(generation,
                                           std::memory_order_release);
@@ -619,8 +632,8 @@ void PlaybackController::seek(double seconds) {
                         static_cast<int64_t>(selectedSeconds * impl_->audioSpec.sampleRate),
                         std::memory_order_relaxed);
                 }
-                emit frameDecoded(keyFrame);
-                emit positionChanged(frameTimeSeconds(*keyFrame));
+                if (onFrameDecoded) onFrameDecoded(keyFrame);
+                if (onPositionChanged) onPositionChanged(frameTimeSeconds(*keyFrame));
             }
 
             const bool shouldResume = wasPlaying || impl_->pendingPlayAfterSeek;
@@ -633,7 +646,7 @@ void PlaybackController::seek(double seconds) {
             } else {
                 setState(Paused);
             }
-        }, Qt::QueuedConnection);
+        });
     };
 
     setState(Loading);

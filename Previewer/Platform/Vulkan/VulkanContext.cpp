@@ -83,6 +83,7 @@ std::vector<const char*> VulkanContext::requiredInstanceExtensions() const {
 }
 
 void VulkanContext::createInstance(bool enableValidation) {
+    if (impl_->vkInstance) return;
     if (!impl_->loaderInitialized) {
         throw std::runtime_error("VulkanContext: initLoader() must be called first");
     }
@@ -152,6 +153,7 @@ std::optional<uint32_t> VulkanContext::findAloneCompute(vk::PhysicalDevice physD
 }
 
 void VulkanContext::createDevice() {
+    if (impl_->vkDevice) return;
     if (!impl_->vkInstance) {
         throw std::runtime_error("VulkanContext: createInstance() must be called first");
     }

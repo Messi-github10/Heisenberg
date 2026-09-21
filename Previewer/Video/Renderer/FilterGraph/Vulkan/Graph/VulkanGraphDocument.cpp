@@ -1,13 +1,10 @@
 #include "VulkanGraphDocument.hpp"
 #include "../VulkanFilterRegistry.hpp"
-#include <QFile>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonParseError>
-#include <QString>
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <queue>
@@ -17,6 +14,8 @@
 
 namespace heisenberg::filtergraph {
 namespace {
+
+using json = nlohmann::json;
 
 struct PinCounts {
     int32_t inputs = 0;
@@ -60,96 +59,97 @@ void setError(std::string* error, const char* message) {
     if (error) *error = message;
 }
 
-void setError(std::string* error, const QString& message) {
-    if (error) *error = message.toStdString();
+void setError(std::string* error, const std::string& message) {
+    if (error) *error = message;
 }
 
-bool readNodeId(const QJsonObject& object, const char* key,
+const json& jsonField(const json& object, const char* key) {
+    static const json missing;
+    const auto it = object.find(key);
+    return it == object.end() ? missing : *it;
+}
+
+bool readNodeId(const json& object, const char* key,
                 VulkanGraphNodeId& result, std::string* error) {
-    const QJsonValue value = object.value(QLatin1String(key));
-    const double number = value.toDouble(-1.0);
-    if (!value.isDouble() || number < 1.0
+    const json& value = jsonField(object, key);
+    const double number = value.is_number() ? value.get<double>() : -1.0;
+    if (!value.is_number() || number < 1.0
         || number > 9007199254740991.0
         || std::floor(number) != number) {
-        setError(error, QStringLiteral("JSON field '%1' must be a positive integer")
-            .arg(QLatin1String(key)));
+        setError(error, std::string("JSON field '") + key + "' must be a positive integer");
         return false;
     }
     result = static_cast<VulkanGraphNodeId>(number);
     return true;
 }
 
-bool readPin(const QJsonObject& object, const char* key,
+bool readPin(const json& object, const char* key,
              int32_t& result, std::string* error) {
-    const QJsonValue value = object.value(QLatin1String(key));
-    const double number = value.toDouble(-1.0);
-    if (!value.isDouble() || number < 0.0
+    const json& value = jsonField(object, key);
+    const double number = value.is_number() ? value.get<double>() : -1.0;
+    if (!value.is_number() || number < 0.0
         || number > static_cast<double>(std::numeric_limits<int32_t>::max())
         || std::floor(number) != number) {
-        setError(error, QStringLiteral("JSON field '%1' must be a nonnegative integer")
-            .arg(QLatin1String(key)));
+        setError(error, std::string("JSON field '") + key + "' must be a nonnegative integer");
         return false;
     }
     result = static_cast<int32_t>(number);
     return true;
 }
 
-bool readNodePin(const QJsonObject& edgeObject, const char* key,
+bool readNodePin(const json& edgeObject, const char* key,
                  NodePin& result, std::string* error) {
-    const QJsonValue value = edgeObject.value(QLatin1String(key));
-    if (!value.isObject()) {
-        setError(error, QStringLiteral("JSON field '%1' must be an object")
-            .arg(QLatin1String(key)));
+    const json& value = jsonField(edgeObject, key);
+    if (!value.is_object()) {
+        setError(error, std::string("JSON field '") + key + "' must be an object");
         return false;
     }
-    const QJsonObject object = value.toObject();
-    return readNodeId(object, "nodeId", result.nodeId, error)
-        && readPin(object, "pinIndex", result.pinIndex, error);
+    return readNodeId(value, "nodeId", result.nodeId, error)
+        && readPin(value, "pinIndex", result.pinIndex, error);
 }
 
-bool parseFilterId(const QString& name, std::string& filterId,
+bool parseFilterId(const std::string& name, std::string& filterId,
                    std::string* error) {
-    if (name.isEmpty()) {
+    if (name.empty()) {
         setError(error, "Vulkan graph node has an empty filter id");
         return false;
     }
-    filterId = name.toStdString();
+    filterId = name;
     if (filterId == "input" || filterId == "output") return true;
     std::string lookupError;
     if (!VulkanFilterRegistry::instance().find(filterId, &lookupError)) {
-        setError(error, QStringLiteral("Vulkan graph node has an unregistered filter id '%1'")
-            .arg(name));
+        setError(error, "Vulkan graph node has an unregistered filter id '" + name + "'");
         return false;
     }
     return true;
 }
 
-bool readFiniteFloat(const QJsonObject& object, const char* key,
+bool readFiniteFloat(const json& object, const char* key,
                      float defaultValue, float& result,
                      std::string* error) {
-    const QJsonValue value = object.value(QLatin1String(key));
-    if (value.isUndefined()) {
+    const json& value = jsonField(object, key);
+    if (value.is_null() && !object.contains(key)) {
         result = defaultValue;
         return true;
     }
-    const double number = value.toDouble(
-        std::numeric_limits<double>::quiet_NaN());
-    if (!value.isDouble() || !std::isfinite(number)
+    const double number = value.is_number()
+        ? value.get<double>()
+        : std::numeric_limits<double>::quiet_NaN();
+    if (!value.is_number() || !std::isfinite(number)
         || number < -static_cast<double>(std::numeric_limits<float>::max())
         || number > static_cast<double>(std::numeric_limits<float>::max())) {
-        setError(error, QStringLiteral("JSON field '%1' must be a finite number")
-            .arg(QLatin1String(key)));
+        setError(error, std::string("JSON field '") + key + "' must be a finite number");
         return false;
     }
     result = static_cast<float>(number);
     return true;
 }
 
-bool parseParameter(const std::string& filterId, const QJsonObject& object,
+bool parseParameter(const std::string& filterId, const json& object,
                     VulkanGraphParameter& result, std::string* error) {
     if (filterId == "input" || filterId == "output") {
         result.clear();
-        return object.isEmpty();
+        return object.empty();
     }
     std::string lookupError;
     const auto* descriptor = VulkanFilterRegistry::instance().find(filterId, &lookupError);
@@ -161,67 +161,73 @@ bool parseParameter(const std::string& filterId, const QJsonObject& object,
 
 bool VulkanGraphDocument::loadFromJsonFile(
     const std::string& path, std::string* error) {
-    QFile file(QString::fromStdString(path));
-    if (!file.open(QIODevice::ReadOnly)) {
-        setError(error, QStringLiteral("Failed to open Vulkan graph JSON '%1': %2")
-            .arg(file.fileName(), file.errorString()));
+    std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
+    if (!file) {
+        setError(error, "Failed to open Vulkan graph JSON '" + path + "'");
         return false;
     }
 
-    QJsonParseError parseError;
-    const QJsonDocument json = QJsonDocument::fromJson(file.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !json.isObject()) {
-        setError(error, QStringLiteral("Invalid Vulkan graph JSON: %1")
-            .arg(parseError.errorString()));
+    json root;
+    try {
+        root = json::parse(file);
+    } catch (const json::parse_error& parseError) {
+        setError(error, std::string("Invalid Vulkan graph JSON: ") + parseError.what());
+        return false;
+    }
+    if (!root.is_object()) {
+        setError(error, "Invalid Vulkan graph JSON: root must be an object");
         return false;
     }
 
     VulkanGraphDocument parsed;
-    const QJsonObject root = json.object();
-    const int version = root.value("version").toInt(-1);
+    const json& versionValue = jsonField(root, "version");
+    const int version = versionValue.is_number()
+        ? static_cast<int>(versionValue.get<double>()) : -1;
     if (version != 1) {
         setError(error, "Unsupported Vulkan graph JSON version");
         return false;
     }
     parsed.version_ = static_cast<uint32_t>(version);
 
-    const QJsonValue nodesValue = root.value("nodes");
-    const QJsonValue edgesValue = root.value("edges");
-    if (!nodesValue.isArray() || !edgesValue.isArray()) {
+    const json& nodesValue = jsonField(root, "nodes");
+    const json& edgesValue = jsonField(root, "edges");
+    if (!nodesValue.is_array() || !edgesValue.is_array()) {
         setError(error, "Vulkan graph JSON requires nodes and edges arrays");
         return false;
     }
 
     VulkanGraphNodeId maximumNodeId = 2;
-    for (const QJsonValue& nodeValue : nodesValue.toArray()) {
-        if (!nodeValue.isObject()) {
+    for (const json& nodeValue : nodesValue) {
+        if (!nodeValue.is_object()) {
             setError(error, "Every Vulkan graph node must be an object");
             return false;
         }
-        const QJsonObject nodeObject = nodeValue.toObject();
+        const json& nodeObject = nodeValue;
         VulkanGraphNodeDesc node;
         if (!readNodeId(nodeObject, "id", node.id, error)) return false;
-        const QJsonValue filterValue = nodeObject.contains("filterId")
-            ? nodeObject.value("filterId") : nodeObject.value("type");
-        if (!filterValue.isString()
-            || !parseFilterId(filterValue.toString(), node.filterId, error)) {
+        const json& filterValue = nodeObject.contains("filterId")
+            ? jsonField(nodeObject, "filterId") : jsonField(nodeObject, "type");
+        if (!filterValue.is_string()
+            || !parseFilterId(filterValue.get<std::string>(), node.filterId, error)) {
             return false;
         }
-        const QJsonValue parametersValue = nodeObject.value("parameters");
-        if (!parametersValue.isUndefined() && !parametersValue.isObject()) {
+        const json& parametersValue = jsonField(nodeObject, "parameters");
+        if (nodeObject.contains("parameters") && !parametersValue.is_object()) {
             setError(error, "Vulkan graph node parameters must be an object");
             return false;
         }
-        if (!parseParameter(node.filterId, parametersValue.toObject(),
+        const json emptyObject = json::object();
+        if (!parseParameter(node.filterId,
+                            parametersValue.is_object() ? parametersValue : emptyObject,
                             node.parameter, error)) {
             return false;
         }
-        const QJsonValue positionValue = nodeObject.value("position");
-        if (!positionValue.isUndefined() && !positionValue.isObject()) {
+        const json& positionValue = jsonField(nodeObject, "position");
+        if (nodeObject.contains("position") && !positionValue.is_object()) {
             setError(error, "Vulkan graph node position must be an object");
             return false;
         }
-        const QJsonObject position = positionValue.toObject();
+        const json& position = positionValue.is_object() ? positionValue : emptyObject;
         if (!readFiniteFloat(position, "x", 0.0f, node.position.x, error)
             || !readFiniteFloat(position, "y", 0.0f, node.position.y, error)) {
             return false;
@@ -230,15 +236,14 @@ bool VulkanGraphDocument::loadFromJsonFile(
         maximumNodeId = std::max(maximumNodeId, parsed.nodes_.back().id);
     }
 
-    for (const QJsonValue& edgeValue : edgesValue.toArray()) {
-        if (!edgeValue.isObject()) {
+    for (const json& edgeValue : edgesValue) {
+        if (!edgeValue.is_object()) {
             setError(error, "Every Vulkan graph edge must be an object");
             return false;
         }
-        const QJsonObject edgeObject = edgeValue.toObject();
         GraphEdge edge;
-        if (!readNodePin(edgeObject, "output", edge.output, error)
-            || !readNodePin(edgeObject, "input", edge.input, error)) {
+        if (!readNodePin(edgeValue, "output", edge.output, error)
+            || !readNodePin(edgeValue, "input", edge.input, error)) {
             return false;
         }
         parsed.edges_.push_back(edge);

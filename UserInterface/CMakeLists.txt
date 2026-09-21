@@ -1,3 +1,7 @@
+set(QT_PATH "D:/Environment/Qt/6.8.3/msvc2022_64" CACHE PATH "Qt 6 installation root")
+list(APPEND CMAKE_PREFIX_PATH "${QT_PATH}")
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+
 file(GLOB_RECURSE UI_SOURCES *.cpp *.hpp)
 
 add_executable(MainApp

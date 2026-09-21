@@ -1,79 +1,74 @@
-//
-// Created by NiceFold on 2026/7/9.
-//
-
 #pragma once
 
-#include <memory>
+#include <cstdint>
 #include <functional>
-#include <Common/NonCopy.hpp>
-
-extern "C" {
-#include <libplacebo/gpu.h>
-#include <libplacebo/renderer.h>
-#include <libplacebo/vulkan.h>
-}
-
-struct AVFrame;
-struct ID3D11Device;
-struct ID3D11DeviceContext;
+#include <memory>
+#include <string>
 
 namespace heisenberg {
 
-namespace filtergraph {
-    class IInputNode;
-    class IOutputNode;
-    class IPipeGraph;
-    struct VulkanImageRef;
-}
-
-namespace renderer {
-
-class SwapChain;
-class SoftwareContext;
-class RenderEngine;
-class D3D11VulkanInterop;
-
-class IPreviewer : public NonCopy {
+class IPreviewer {
 public:
-    using ResizeCallback  = std::function<void(int width, int height)>;
-    using PresentCallback = std::function<void()>;
+    enum class State {
+        Idle,
+        Loading,
+        Playing,
+        Paused,
+        Scrubbing,
+        Ended
+    };
 
-    IPreviewer();
-    ~IPreviewer();
+    using Task = std::function<void()>;
+    using TaskDispatcher = std::function<void(Task)>;
 
-    IPreviewer(IPreviewer&&)            = delete;
-    IPreviewer& operator=(IPreviewer&&) = delete;
+    class Listener {
+    public:
+        virtual ~Listener() = default;
+        virtual void onStateChanged(State /*state*/) {}
+        virtual void onPositionChanged(double /*seconds*/) {}
+        virtual void onDurationChanged(double /*seconds*/) {}
+        virtual void onEndOfStream() {}
+        virtual void onOpenFailed(const std::string& /*reason*/) {}
+        virtual void onFilterGraphChanged(const std::string& /*path*/) {}
+        virtual void onFilterGraphFailed(const std::string& /*message*/) {}
+    };
 
-    bool initialize(pl_gpu gpu, pl_vulkan vk,
-                    std::unique_ptr<SwapChain> swapChain,
-                    int width, int height);
+    static void initLoader();
+    static std::unique_ptr<IPreviewer> create();
 
-    bool presentFrame(const AVFrame* frame);
+    virtual ~IPreviewer() = default;
 
-    void resize(int width, int height);
+    virtual void setTaskDispatcher(TaskDispatcher dispatcher) = 0;
+    virtual void setListener(Listener* listener) = 0;
 
-    void setOnResize(ResizeCallback cb);
-    void setOnPresent(PresentCallback cb);
+    virtual void attachWindow(void* nativeSurface, int w, int h) = 0;
+    virtual void detachWindow() = 0;
+    virtual void resize(int w, int h) = 0;
+    virtual void open(const std::string& path) = 0;
+    virtual void close() = 0;
+    virtual void play() = 0;
+    virtual void pause() = 0;
+    virtual void togglePlayPause() = 0;
+    virtual void seek(double seconds) = 0;
+    virtual void beginScrub() = 0;
+    virtual void scrubToFrame(int64_t frameIndex) = 0;
+    virtual void endScrub(int64_t frameIndex) = 0;
+    virtual void stepForward(int frames = 1) = 0;
+    virtual void stepBackward(int frames = 1) = 0;
+    virtual void goToStart() = 0;
+    virtual void goToEnd() = 0;
+    virtual void setHardwareDecode(bool enabled) = 0;
+    virtual void openFilterGraph(const std::string& path) = 0;
+    virtual void shutdown() = 0;
 
-    void setFilterGraph(heisenberg::filtergraph::IPipeGraph* graph,
-                        heisenberg::filtergraph::IInputNode* input,
-                        heisenberg::filtergraph::IOutputNode* output);
-
-    void setD3D11Device(ID3D11Device* device, ID3D11DeviceContext* context);
-
-    void shutdown();
-
-private:
-    bool buildIntermediateTarget(int width, int height);
-    void releaseIntermediateTarget();
-    bool renderToSwapChain(const pl_frame* source, int width, int height);
-    bool renderToSwapChain(const filtergraph::VulkanImageRef& image);
-    bool presentHardwareFrame(const AVFrame* frame);
-
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
+    virtual State state() const = 0;
+    virtual bool isPlaying() const = 0;
+    virtual double currentTime() const = 0;
+    virtual double duration() const = 0;
+    virtual bool isSeekable() const = 0;
+    virtual double fps() const = 0;
+    virtual int64_t frameCount() const = 0;
+    virtual const std::string& filterGraphPath() const = 0;
 };
 
-} // namespace renderer
 } // namespace heisenberg

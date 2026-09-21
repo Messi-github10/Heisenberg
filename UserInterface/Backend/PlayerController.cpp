@@ -1,36 +1,27 @@
-//
-// Created by NiceFold on 2026/6/30.
-//
-
 #include "PlayerController.hpp"
 
-#include <Controller/PlaybackController.hpp>
-#include <IPreviewer.hpp>
-#include <Platform/GpuContext.hpp>
-#include <Platform/Vulkan/VulkanContext.hpp>
-#include <Platform/D3D11/D3D11Context.hpp>
-#include <Video/Renderer/SwapChain.hpp>
-#include <Video/Renderer/FilterGraph/Vulkan/Graph/VulkanFilterGraph.hpp>
-#include <Video/Renderer/FilterGraph/Interface/INodeFactory.hpp>
 #include <MainWidget/VideoWidget.hpp>
 #include <Utiles/Logger.hpp>
 
-#include <windows.h>
+#include <QMetaObject>
 
-#include <stdexcept>
-#include <string>
-
-extern "C" {
-#include <libavutil/frame.h>
-#include <libavutil/pixfmt.h>
-}
+#include <utility>
 
 namespace heisenberg {
 namespace ui {
 
 PlayerController::PlayerController(QObject* parent)
-    : QObject(parent) {
-    previewer_ = std::make_unique<renderer::IPreviewer>();
+    : QObject(parent)
+    , previewer_(heisenberg::IPreviewer::create())
+    , previewerAlive_(std::make_shared<std::atomic<bool>>(true)) {
+    previewer_->setTaskDispatcher(
+        [this, alive = previewerAlive_](heisenberg::IPreviewer::Task task) {
+            QMetaObject::invokeMethod(this, [alive, task = std::move(task)]() mutable {
+                if (!alive->load() || !task) return;
+                task();
+            }, Qt::QueuedConnection);
+        });
+    previewer_->setListener(this);
 }
 
 PlayerController::~PlayerController() {
@@ -41,298 +32,53 @@ void PlayerController::shutdown() {
     if (shutdownDone_) return;
     shutdownDone_ = true;
 
-    // Playback owns the decode, audio and consumer threads. Stop it before
-    // tearing down anything those callbacks may still reference.
-    if (ctrl_) {
-        ctrl_->close();
-    }
-
+    if (previewerAlive_) previewerAlive_->store(false);
     if (previewer_) {
-        previewer_->setFilterGraph(nullptr, nullptr, nullptr);
-    }
-    filterGraph_.reset();
-    if (previewer_) {
+        previewer_->setListener(nullptr);
         previewer_->shutdown();
         previewer_.reset();
     }
-    gpuCtx_.reset();
 
     LOG_INFO("PlayerController: GPU resources released");
 }
 
-// ============================================================
-// 依赖注入
-// ============================================================
-
-void PlayerController::setPlaybackController(ctrl::PlaybackController* ctrl) {
-    ctrl_ = ctrl;
-    if (!ctrl_) return;
-
-    connect(ctrl_, &ctrl::PlaybackController::frameDecoded,
-            this, &PlayerController::onFrameDecoded);
-
-    connect(ctrl_, &ctrl::PlaybackController::positionChanged,
-            this, [this](double seconds) {
-        currentTime_ = seconds;
-        emit currentTimeChanged();
-    });
-
-    connect(ctrl_, &ctrl::PlaybackController::stateChanged,
-            this, [this](ctrl::PlaybackController::State s) {
-        bool playing = (s == ctrl::PlaybackController::Playing);
-        if (isPlaying_ != playing) {
-            isPlaying_ = playing;
-            emit isPlayingChanged();
-        }
-    });
-
-    connect(ctrl_, &ctrl::PlaybackController::durationChanged,
-            this, [this](double d) {
-        duration_ = d;
-        frameCount_ = ctrl_ ? ctrl_->frameCount() : 0;
-        emit durationChanged();
-        emit frameCountChanged();
-    });
-
-    connect(ctrl_, &ctrl::PlaybackController::endOfStream,
-            this, [this]() {
-        if (isPlaying_) {
-            isPlaying_ = false;
-            emit isPlayingChanged();
-        }
-        if (currentTime_ != duration_) {
-            currentTime_ = duration_;
-            emit currentTimeChanged();
-        }
-    });
-}
-
-// ============================================================
-// VideoWidget 绑定 + 管线初始化
-// ============================================================
-
 void PlayerController::bindVideoOutput(VideoWidget* widget) {
-    if (!widget) return;
+    if (!widget || !previewer_) return;
     videoOutput_ = widget;
-    initPipeline(widget);
+
+    const int width = widget->width() > 0 ? widget->width() : 640;
+    const int height = widget->height() > 0 ? widget->height() : 360;
+    previewer_->attachWindow(widget->nativeWindow(), width, height);
+
+    connect(widget, &VideoWidget::windowResized, this, [this](int w, int h) {
+        if (previewer_) previewer_->resize(w, h);
+    });
 }
 
 void PlayerController::setHardwareDecode(bool enabled) {
-    if (ctrl_) ctrl_->setHardwareDecode(enabled);
-}
-
-bool PlayerController::loadFilterGraph(const QString& path, QString* error) {
-    if (path.trimmed().isEmpty()) {
-        if (error) *error = QStringLiteral("Filter graph path is empty");
-        return false;
-    }
-    if (!previewer_ || !gpuCtx_) {
-        if (error) *error = QStringLiteral("Vulkan previewer is not initialized");
-        return false;
-    }
-
-    auto& vkCtx = renderer::VulkanContext::instance();
-    filtergraph::VulkanGraphContext graphContext;
-    graphContext.instance = static_cast<VkInstance>(vkCtx.vkInstance());
-    graphContext.physicalDevice =
-        static_cast<VkPhysicalDevice>(vkCtx.physicalDevice());
-    graphContext.device = static_cast<VkDevice>(vkCtx.device());
-    graphContext.queue = static_cast<VkQueue>(vkCtx.graphicsQueue());
-    graphContext.queueFamilyIndex = vkCtx.graphicsQueueFamily();
-
-    filtergraph::VulkanGraphDocument graphDocument;
-    std::string graphError;
-    if (!graphDocument.loadFromJsonFile(path.toStdString(), &graphError)) {
-        if (error) *error = QString::fromStdString(graphError);
-        return false;
-    }
-
-    std::unique_ptr<filtergraph::VulkanFilterGraph> nextGraph;
-    try {
-        nextGraph = std::make_unique<filtergraph::VulkanFilterGraph>(
-            graphContext, graphDocument);
-    } catch (const std::exception& exception) {
-        if (error) *error = QString::fromUtf8(exception.what());
-        return false;
-    }
-
-    // Do not destroy resources that may still be referenced by the queue.
-    vkCtx.device().waitIdle();
-    previewer_->setFilterGraph(nullptr, nullptr, nullptr);
-    filterGraph_.reset();
-    filterGraph_ = std::move(nextGraph);
-    previewer_->setFilterGraph(filterGraph_->graph(), filterGraph_->input(),
-                               filterGraph_->output());
-
-    filterGraphVerificationFrame_ = 0;
-    filterGraphPath_ = path;
-    emit filterGraphPathChanged();
-    if (lastFrame_) previewer_->presentFrame(lastFrame_.get());
-    return true;
+    if (previewer_) previewer_->setHardwareDecode(enabled);
 }
 
 void PlayerController::openFilterGraph(const QString& path) {
-    QString error;
-    if (!loadFilterGraph(path, &error)) {
-        LOG_ERROR("PlayerController: filter graph load failed: {}",
-                  error.toStdString());
-        emit filterGraphLoadFailed(error);
-        return;
-    }
-    LOG_INFO("PlayerController: loaded filter graph '{}'", path.toStdString());
+    if (previewer_) previewer_->openFilterGraph(path.toStdString());
 }
-
-void PlayerController::initPipeline(VideoWidget* widget) {
-    HWND hwnd = widget->nativeWindow();
-    if (!hwnd) {
-        LOG_ERROR("PlayerController: VideoWidget has no native window");
-        return;
-    }
-
-    // ---- 从 VulkanContext 获取独立 Vulkan 资源 ----
-    auto& vkCtx = renderer::VulkanContext::instance();
-    auto vkInst    = vkCtx.vkInstance();
-    auto vkPhysDev = vkCtx.physicalDevice();
-    auto vkDev     = vkCtx.device();
-    uint32_t qf    = vkCtx.graphicsQueueFamily();
-    auto vkQueue   = vkCtx.graphicsQueue();
-
-    // ---- 构建 GpuContext ----
-    renderer::VulkanResources vkRes;
-    vkRes.instance      = vkInst;
-    vkRes.physDevice    = vkPhysDev;
-    vkRes.device        = vkDev;
-    vkRes.graphicsQF    = qf;
-    vkRes.graphicsQueue = vkQueue;
-    vkRes.getProcAddr   = vkCtx.getInstanceProcAddr();
-
-    try {
-        gpuCtx_ = std::make_unique<renderer::GpuContext>(vkRes);
-    } catch (const std::exception& e) {
-        LOG_ERROR("PlayerController: GpuContext creation failed — {}", e.what());
-        return;
-    }
-
-    // ---- 创建 SwapChain ----
-    int w = widget->width()  > 0 ? widget->width()  : 640;
-    int h = widget->height() > 0 ? widget->height() : 360;
-
-    auto swapChain = std::make_unique<renderer::SwapChain>();
-    if (!swapChain->initialize(gpuCtx_->plVulkan(), vkInst, hwnd, w, h)) {
-        LOG_ERROR("PlayerController: SwapChain initialization failed");
-        gpuCtx_.reset();
-        return;
-    }
-
-    // ---- 初始化 IPreviewer ----
-    bool ok = previewer_->initialize(gpuCtx_->plGpu(), gpuCtx_->plVulkan(),
-                                      std::move(swapChain), w, h);
-    if (!ok) {
-        LOG_ERROR("PlayerController: IPreviewer::initialize() failed");
-        gpuCtx_.reset();
-        return;
-    }
-
-    // ---- 尺寸跟随 ----
-    previewer_->setD3D11Device(
-        renderer::D3D11Context::instance().device(),
-        renderer::D3D11Context::instance().context());
-
-    connect(widget, &VideoWidget::windowResized, this, [this](int w, int h) {
-        if (previewer_) {
-            previewer_->resize(w, h);
-            if (lastFrame_) {
-                previewer_->presentFrame(lastFrame_.get());
-            }
-        }
-    });
-
-    previewer_->setOnResize([this](int w, int h) {
-        videoWidth_  = w;
-        videoHeight_ = h;
-    });
-
-    LOG_INFO("PlayerController: Vulkan pipeline initialized — HWND=0x{:x} {}x{}",
-             reinterpret_cast<uintptr_t>(hwnd), w, h);
-}
-
-// ============================================================
-// 帧回调
-// ============================================================
-
-void PlayerController::onFrameDecoded(std::shared_ptr<AVFrame> frame) {
-    if (!frame || !frame->data[0]) return;
-    if (!previewer_) return;
-
-    lastFrame_ = frame;
-
-    if (videoWidth_ <= 0 || videoHeight_ <= 0) {
-        videoWidth_  = frame->width;
-        videoHeight_ = frame->height;
-    }
-
-    const bool hardware = frame->format == AV_PIX_FMT_D3D11;
-    if (frame->pts != AV_NOPTS_VALUE && frame->time_base.num > 0
-        && frame->time_base.den > 0) {
-        const int64_t ptsUs = av_rescale_q(
-            frame->pts, frame->time_base, AVRational{1, 1'000'000});
-        LOG_DEBUG("PlayerController: decoded frame mode={} pts={} ptsUs={} "
-                  "timeBase={}/{} format={} size={}x{} range={} colorspace={} "
-                  "primaries={} transfer={} chromaLocation={}",
-                  hardware ? "hardware" : "software", frame->pts, ptsUs,
-                  frame->time_base.num, frame->time_base.den, frame->format,
-                  frame->width, frame->height,
-                  static_cast<int>(frame->color_range),
-                  static_cast<int>(frame->colorspace),
-                  static_cast<int>(frame->color_primaries),
-                  static_cast<int>(frame->color_trc),
-                  static_cast<int>(frame->chroma_location));
-    }
-
-    if (!previewer_->presentFrame(frame.get())) {
-        LOG_WARN("PlayerController: presentFrame failed (format={}, {}x{})",
-                 frame->format, frame->width, frame->height);
-        return;
-    }
-
-    // Runtime smoke check for the graph selected by the UI.
-    if (!filterGraph_ || (++filterGraphVerificationFrame_ % 60) != 0) return;
-
-    filtergraph::VulkanImageRef output;
-    if (!filterGraph_->output()->getVulkanOutput(output)) {
-        LOG_WARN("FilterGraph verify: output is unavailable");
-        return;
-    }
-
-    LOG_INFO("FilterGraph verify: output={}x{} is ready",
-             output.extent.width, output.extent.height);
-}
-
-// ============================================================
-// 文件加载
-// ============================================================
 
 bool PlayerController::openFile(const QString& path) {
-    if (!ctrl_) return false;
-
-    bool ok = ctrl_->open(path.toStdString());
-    if (ok) {
-        currentFile_ = path;
-        emit currentFileChanged();
-    }
-    return ok;
+    if (!previewer_) return false;
+    previewer_->open(path.toStdString());
+    currentFile_ = path;
+    emit currentFileChanged();
+    return true;
 }
 
 void PlayerController::closeFile() {
-    if (ctrl_) ctrl_->close();
+    if (previewer_) previewer_->close();
     currentFile_.clear();
     currentTime_ = 0.0;
     duration_    = 0.0;
     frameCount_  = 0;
     isSeekable_  = false;
     isPlaying_   = false;
-    videoWidth_  = 0;
-    videoHeight_ = 0;
     emit currentFileChanged();
     emit currentTimeChanged();
     emit durationChanged();
@@ -341,25 +87,72 @@ void PlayerController::closeFile() {
     emit isPlayingChanged();
 }
 
-// ============================================================
-// 播放控制
-// ============================================================
-
-void PlayerController::play()             { if (ctrl_) ctrl_->play(); }
-void PlayerController::pause()            { if (ctrl_) ctrl_->pause(); }
-void PlayerController::togglePlayPause()  { if (ctrl_) ctrl_->togglePlayPause(); }
-void PlayerController::seek(double s)     { if (ctrl_) ctrl_->seek(s); }
-void PlayerController::beginScrub()       { if (ctrl_) ctrl_->beginScrub(); }
+void PlayerController::play()            { if (previewer_) previewer_->play(); }
+void PlayerController::pause()           { if (previewer_) previewer_->pause(); }
+void PlayerController::togglePlayPause() { if (previewer_) previewer_->togglePlayPause(); }
+void PlayerController::seek(double s)    { if (previewer_) previewer_->seek(s); }
+void PlayerController::beginScrub()      { if (previewer_) previewer_->beginScrub(); }
 void PlayerController::scrubToFrame(qint64 frame) {
-    if (ctrl_) ctrl_->scrubToFrame(frame);
+    if (previewer_) previewer_->scrubToFrame(frame);
 }
 void PlayerController::endScrub(qint64 frame) {
-    if (ctrl_) ctrl_->endScrub(frame);
+    if (previewer_) previewer_->endScrub(frame);
 }
-void PlayerController::stepForward(int n) { if (ctrl_) ctrl_->stepForward(n); }
-void PlayerController::stepBackward(int n){ if (ctrl_) ctrl_->stepBackward(n); }
-void PlayerController::goToStart()        { if (ctrl_) ctrl_->goToStart(); }
-void PlayerController::goToEnd()          { if (ctrl_) ctrl_->goToEnd(); }
+void PlayerController::stepForward(int n)  { if (previewer_) previewer_->stepForward(n); }
+void PlayerController::stepBackward(int n) { if (previewer_) previewer_->stepBackward(n); }
+void PlayerController::goToStart()         { if (previewer_) previewer_->goToStart(); }
+void PlayerController::goToEnd()           { if (previewer_) previewer_->goToEnd(); }
+
+void PlayerController::onStateChanged(heisenberg::IPreviewer::State state) {
+    const bool playing = (state == heisenberg::IPreviewer::State::Playing);
+    if (isPlaying_ != playing) {
+        isPlaying_ = playing;
+        emit isPlayingChanged();
+    }
+    if (!previewer_) return;
+    const bool seekable = previewer_->isSeekable();
+    if (isSeekable_ != seekable) {
+        isSeekable_ = seekable;
+        emit isSeekableChanged();
+    }
+}
+
+void PlayerController::onPositionChanged(double seconds) {
+    currentTime_ = seconds;
+    emit currentTimeChanged();
+}
+
+void PlayerController::onDurationChanged(double seconds) {
+    duration_ = seconds;
+    frameCount_ = previewer_ ? previewer_->frameCount() : 0;
+    emit durationChanged();
+    emit frameCountChanged();
+}
+
+void PlayerController::onEndOfStream() {
+    if (isPlaying_) {
+        isPlaying_ = false;
+        emit isPlayingChanged();
+    }
+    if (currentTime_ != duration_) {
+        currentTime_ = duration_;
+        emit currentTimeChanged();
+    }
+}
+
+void PlayerController::onOpenFailed(const std::string& reason) {
+    LOG_ERROR("PlayerController: open failed — {}", reason);
+}
+
+void PlayerController::onFilterGraphChanged(const std::string& path) {
+    filterGraphPath_ = QString::fromStdString(path);
+    emit filterGraphPathChanged();
+}
+
+void PlayerController::onFilterGraphFailed(const std::string& message) {
+    LOG_ERROR("PlayerController: filter graph load failed: {}", message);
+    emit filterGraphLoadFailed(QString::fromStdString(message));
+}
 
 } // namespace ui
 } // namespace heisenberg

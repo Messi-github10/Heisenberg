@@ -1,24 +1,18 @@
-//
-// Created by NiceFold on 2026/7/7.
-//
-
 #pragma once
 
-#include <QObject>
 #include <cstdint>
+#include <functional>
 #include <memory>
-#include <Video/Decoder/DecoderFactory.hpp>
+#include <string>
 
 extern "C" {
 struct AVFrame;
 }
 
 namespace heisenberg {
-
 namespace ctrl {
 
-class PlaybackController : public QObject {
-    Q_OBJECT
+class PlaybackController {
 public:
     enum State {
         Idle,
@@ -28,10 +22,18 @@ public:
         Scrubbing,
         Ended
     };
-    Q_ENUM(State)
 
-    explicit PlaybackController(QObject* parent = nullptr);
-    ~PlaybackController() override;
+    using Task = std::function<void()>;
+    using TaskDispatcher = std::function<void(Task)>;
+    using FramePtr = std::shared_ptr<AVFrame>;
+
+    PlaybackController();
+    ~PlaybackController();
+
+    PlaybackController(const PlaybackController&) = delete;
+    PlaybackController& operator=(const PlaybackController&) = delete;
+
+    void setTaskDispatcher(TaskDispatcher dispatcher);
 
     bool open(const std::string& filePath);
     void close();
@@ -57,18 +59,19 @@ public:
     int64_t frameCount() const;
     void setHardwareDecode(bool enabled);
 
-signals:
-    void stateChanged(heisenberg::ctrl::PlaybackController::State newState);
-    void frameDecoded(std::shared_ptr<AVFrame> frame);
-    void positionChanged(double seconds);
-    void durationChanged(double seconds);
-    void endOfStream();
+    std::function<void(State)> onStateChanged;
+    std::function<void(FramePtr)> onFrameDecoded;
+    std::function<void(double)> onPositionChanged;
+    std::function<void(double)> onDurationChanged;
+    std::function<void()> onEndOfStream;
+    std::function<void(const std::string&)> onOpenFailed;
 
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 
     void setState(State s);
+    void dispatch(Task task);
 };
 
 } // namespace ctrl
