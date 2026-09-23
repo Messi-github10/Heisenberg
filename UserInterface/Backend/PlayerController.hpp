@@ -51,12 +51,19 @@ public slots:
     void goToEnd();
 
     bool openFile(const QString& path);
+    bool openPlaylist(const QString& path);
     void openFilterGraph(const QString& path);
     void closeFile();
 
     void shutdown();
     void bindVideoOutput(VideoWidget* widget);
     void setHardwareDecode(bool enabled);
+    bool setFilterParameter(const QString& filterId,
+                            const QString& name,
+                            float value);
+    bool getFilterParameter(const QString& filterId,
+                            const QString& name,
+                            float& value) const;
 
 signals:
     void isPlayingChanged();

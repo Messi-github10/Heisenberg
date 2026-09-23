@@ -15,6 +15,7 @@ public:
     ~VulkanManifestComputeNode() override;
 
     bool setExternalInput(int32_t index, const VulkanImageRef& image);
+    bool setParameters(const VulkanGraphParameter& parameter);
 
     // Graph-owned Resource 接口
     std::vector<LogicalResourceRequest> declareResourceRequests() const override;

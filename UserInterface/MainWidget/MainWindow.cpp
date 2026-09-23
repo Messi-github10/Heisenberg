@@ -14,6 +14,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QCloseEvent>
+#include <QSignalBlocker>
 
 #include <algorithm>
 #include <cmath>
@@ -59,20 +60,31 @@ void MainWindow::setupUi() {
     timeLabel_ = new QLabel("00:00 / 00:00", controlBar);
 
     openFileBtn_ = new QPushButton("Open", controlBar);
+    openPlaylistBtn_ = new QPushButton("Open Timeline", controlBar);
     openFilterGraphBtn_ = new QPushButton("Open Graph", controlBar);
     hardwareDecodeCheck_ = new QCheckBox("HW Decode", controlBar);
     hardwareDecodeCheck_->setChecked(true);
     filterGraphLabel_ = new QLabel("Graph: none", controlBar);
     filterGraphLabel_->setMinimumWidth(150);
     filterGraphLabel_->setToolTip("No filter graph loaded");
+    exposureLabel_ = new QLabel("EV --", controlBar);
+    exposureSlider_ = new QSlider(Qt::Horizontal, controlBar);
+    exposureSlider_->setRange(-400, 400);
+    exposureSlider_->setValue(0);
+    exposureSlider_->setEnabled(false);
+    exposureSlider_->setFixedWidth(140);
+    exposureSlider_->setToolTip("Live exposure, applied to the current frame");
 
     controlLayout->addWidget(playPauseBtn_);
     controlLayout->addWidget(progressBar_, 1);
     controlLayout->addWidget(timeLabel_);
     controlLayout->addWidget(openFileBtn_);
+    controlLayout->addWidget(openPlaylistBtn_);
     controlLayout->addWidget(openFilterGraphBtn_);
     controlLayout->addWidget(hardwareDecodeCheck_);
     controlLayout->addWidget(filterGraphLabel_);
+    controlLayout->addWidget(exposureLabel_);
+    controlLayout->addWidget(exposureSlider_);
 
     mainLayout->addWidget(controlBar);
     setCentralWidget(central);
@@ -101,6 +113,14 @@ void MainWindow::setupConnections() {
         }
     });
 
+    connect(openPlaylistBtn_, &QPushButton::clicked, this, [this]() {
+        QString path = QFileDialog::getOpenFileName(this, "Open Timeline", "",
+            "Timeline JSON (*.json);;All Files (*)");
+        if (!path.isEmpty()) {
+            emit openPlaylistRequested(path);
+        }
+    });
+
     connect(openFilterGraphBtn_, &QPushButton::clicked, this, [this]() {
         QString path = QFileDialog::getOpenFileName(this, "Open Filter Graph", "",
             "Filter Graphs (*.json);;All Files (*)");
@@ -111,6 +131,12 @@ void MainWindow::setupConnections() {
 
     connect(hardwareDecodeCheck_, &QCheckBox::toggled,
             this, &MainWindow::hardwareDecodeToggled);
+
+    connect(exposureSlider_, &QSlider::valueChanged, this, [this](int value) {
+        const double ev = static_cast<double>(value) / 100.0;
+        exposureLabel_->setText(QString("EV %1").arg(ev, 0, 'f', 2));
+        emit exposureChanged(ev);
+    });
 }
 
 bool MainWindow::hardwareDecodeEnabled() const {
@@ -159,6 +185,21 @@ void MainWindow::setFilterGraphError(const QString& message) {
     filterGraphLabel_->setText("Graph: load failed");
     filterGraphLabel_->setToolTip(message);
     filterGraphLabel_->setStyleSheet("color: #c0392b;");
+    setExposureEnabled(false);
+}
+
+void MainWindow::setExposure(double value) {
+    if (!exposureSlider_ || !exposureLabel_) return;
+    const int slider = static_cast<int>(std::lround(value * 100.0));
+    const QSignalBlocker blocker(exposureSlider_);
+    exposureSlider_->setValue(std::clamp(slider, exposureSlider_->minimum(),
+                                         exposureSlider_->maximum()));
+    exposureLabel_->setText(QString("EV %1").arg(value, 0, 'f', 2));
+}
+
+void MainWindow::setExposureEnabled(bool enabled) {
+    if (exposureSlider_) exposureSlider_->setEnabled(enabled);
+    if (!enabled && exposureLabel_) exposureLabel_->setText("EV --");
 }
 
 void MainWindow::setPlayingState(bool playing) {

@@ -376,6 +376,9 @@ bool VulkanGraphDocument::updateParameter(
 
     VulkanGraphParameter merged =
         VulkanFilterRegistry::instance().defaultParameters(*descriptor);
+    for (const auto& [name, value] : node->parameter) {
+        if (merged.contains(name)) merged[name] = value;
+    }
     for (auto& [name, value] : parameter) {
         if (merged.contains(name)) merged[name] = std::move(value);
     }

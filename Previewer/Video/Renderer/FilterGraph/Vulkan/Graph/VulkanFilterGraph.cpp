@@ -2,6 +2,7 @@
 
 #include "VulkanPipeGraph.hpp"
 #include "../Nodes/VulkanManifestComputeNode.hpp"
+#include "../Nodes/VulkanMultiPassNode.hpp"
 #include "../Nodes/VulkanReadbackNode.hpp"
 
 #include <stdexcept>
@@ -30,6 +31,19 @@ VulkanFilterGraph::~VulkanFilterGraph() = default;
 IBaseNode* VulkanFilterGraph::node(VulkanGraphNodeId nodeId) const {
     const auto found = nodes_.find(nodeId);
     return found == nodes_.end() ? nullptr : found->second;
+}
+
+bool VulkanFilterGraph::setParameters(
+    VulkanGraphNodeId nodeId, const VulkanGraphParameter& parameter) {
+    IBaseNode* base = node(nodeId);
+    if (!base) return false;
+    if (auto* compute = dynamic_cast<VulkanManifestComputeNode*>(base)) {
+        return compute->setParameters(parameter);
+    }
+    if (auto* multiPass = dynamic_cast<VulkanMultiPassNode*>(base)) {
+        return multiPass->setParameters(parameter);
+    }
+    return false;
 }
 
 bool VulkanFilterGraph::setLutImage(

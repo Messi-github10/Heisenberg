@@ -11,8 +11,10 @@
 
 #include <Utiles/Logger.hpp>
 
+#include <cstdint>
 #include <stdexcept>
 #include <utility>
+#include <variant>
 
 extern "C" {
 #include <libavutil/frame.h>
@@ -117,11 +119,15 @@ public:
     void resize(int w, int h) override {
         if (!presenter_) return;
         presenter_->resize(w, h);
-        if (lastFrame_) presenter_->presentFrame(lastFrame_.get());
+        presentCurrentFrame();
     }
 
     void open(const std::string& path) override {
         if (playback_) playback_->open(path);
+    }
+
+    void openPlaylist(const std::string& path) override {
+        if (playback_) playback_->openPlaylist(path);
     }
 
     void close() override {
@@ -189,6 +195,53 @@ public:
         LOG_INFO("IPreviewer: loaded filter graph '{}'", path);
     }
 
+    bool setNodeParameter(uint64_t nodeId,
+                          const std::string& name,
+                          float value) override {
+        if (!filterGraph_) return false;
+        filtergraph::VulkanGraphParameter patch;
+        patch[name] = value;
+        if (!graphDocument_.updateParameter(nodeId, patch)) return false;
+        const auto* node = findDocumentNode(nodeId);
+        if (!node || !filterGraph_->setParameters(nodeId, node->parameter)) {
+            return false;
+        }
+        presentCurrentFrame();
+        return true;
+    }
+
+    bool setFilterParameter(const std::string& filterId,
+                            const std::string& name,
+                            float value) override {
+        const uint64_t nodeId = findNodeByFilterId(filterId);
+        return nodeId != 0 && setNodeParameter(nodeId, name, value);
+    }
+
+    bool getFilterParameter(const std::string& filterId,
+                            const std::string& name,
+                            float& value) const override {
+        const auto* node = findDocumentNode(findNodeByFilterId(filterId));
+        if (!node) return false;
+        const auto found = node->parameter.find(name);
+        if (found == node->parameter.end()) return false;
+        if (const auto* number = std::get_if<float>(&found->second)) {
+            value = *number;
+            return true;
+        }
+        if (const auto* number = std::get_if<int32_t>(&found->second)) {
+            value = static_cast<float>(*number);
+            return true;
+        }
+        return false;
+    }
+
+    uint64_t findNodeByFilterId(const std::string& filterId) const override {
+        for (const auto& node : graphDocument_.nodes()) {
+            if (node.filterId == filterId) return node.id;
+        }
+        return 0;
+    }
+
     void shutdown() override {
         if (shutdownDone_) return;
         shutdownDone_ = true;
@@ -197,6 +250,7 @@ public:
         if (playback_) playback_->close();
         detachWindow();
         filterGraph_.reset();
+        graphDocument_ = {};
         gpuCtx_.reset();
         LOG_INFO("IPreviewer: GPU resources released");
     }
@@ -308,11 +362,7 @@ private:
                       static_cast<int>(frame->chroma_location));
         }
 
-        if (!presenter_->presentFrame(frame.get())) {
-            LOG_WARN("IPreviewer: presentFrame failed (format={}, {}x{})",
-                     frame->format, frame->width, frame->height);
-            return;
-        }
+        presentCurrentFrame();
 
         if (!filterGraph_ || (++filterGraphVerificationFrame_ % 60) != 0) return;
 
@@ -364,14 +414,31 @@ private:
         presenter_->setFilterGraph(nullptr, nullptr, nullptr);
         filterGraph_.reset();
         filterGraph_ = std::move(nextGraph);
+        graphDocument_ = std::move(graphDocument);
         presenter_->setFilterGraph(filterGraph_->graph(), filterGraph_->input(),
                                    filterGraph_->output());
 
         filterGraphVerificationFrame_ = 0;
         filterGraphPath_ = path;
         if (listener_) listener_->onFilterGraphChanged(path);
-        if (lastFrame_) presenter_->presentFrame(lastFrame_.get());
+        presentCurrentFrame();
         return true;
+    }
+
+    void presentCurrentFrame() {
+        if (!presenter_ || !lastFrame_ || !lastFrame_->data[0]) return;
+        if (!presenter_->presentFrame(lastFrame_.get())) {
+            LOG_WARN("IPreviewer: presentFrame failed (format={}, {}x{})",
+                     lastFrame_->format, lastFrame_->width, lastFrame_->height);
+        }
+    }
+
+    const filtergraph::VulkanGraphNodeDesc* findDocumentNode(
+        uint64_t nodeId) const {
+        for (const auto& node : graphDocument_.nodes()) {
+            if (node.id == nodeId) return &node;
+        }
+        return nullptr;
     }
 
     TaskDispatcher dispatcher_;
@@ -380,6 +447,7 @@ private:
     std::unique_ptr<renderer::GpuContext> gpuCtx_;
     std::unique_ptr<renderer::VideoPresenter> presenter_;
     std::unique_ptr<filtergraph::VulkanFilterGraph> filterGraph_;
+    filtergraph::VulkanGraphDocument graphDocument_;
     std::shared_ptr<AVFrame> lastFrame_;
     std::string filterGraphPath_;
     void* nativeSurface_ = nullptr;

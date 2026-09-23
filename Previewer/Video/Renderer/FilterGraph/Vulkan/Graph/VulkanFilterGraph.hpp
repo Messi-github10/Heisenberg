@@ -6,6 +6,7 @@
 
 #include <array>
 #include <memory>
+#include <unordered_map>
 
 namespace heisenberg::filtergraph {
 
@@ -23,6 +24,8 @@ public:
     IInputNode* input() const { return input_; }
     IOutputNode* output() const { return output_; }
     IBaseNode* node(VulkanGraphNodeId nodeId) const;
+    bool setParameters(VulkanGraphNodeId nodeId,
+                       const VulkanGraphParameter& parameter);
     bool setLutImage(VulkanGraphNodeId nodeId,
                      const VulkanImageRef& image);
     bool histogramBins(VulkanGraphNodeId nodeId,

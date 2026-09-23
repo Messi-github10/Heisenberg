@@ -1,4 +1,5 @@
 file(GLOB_RECURSE PREVIEWER_SOURCES CONFIGURE_DEPENDS *.cpp *.hpp)
+list(FILTER PREVIEWER_SOURCES EXCLUDE REGEX "/Test/")
 
 set(VULKAN_SDK_PATH "D:/Environment/VulkanSDK" CACHE PATH
     "Path to the Vulkan SDK used to compile filter shaders")
@@ -139,6 +140,7 @@ target_include_directories(HeisenbergPreviewer PUBLIC
 
 target_link_libraries(HeisenbergPreviewer PUBLIC
     ffmpeg
+    HeisenbergCore
     HeisenbergUtiles
     libplacebo
     miniaudio

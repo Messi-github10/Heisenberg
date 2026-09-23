@@ -63,9 +63,33 @@ void PlayerController::openFilterGraph(const QString& path) {
     if (previewer_) previewer_->openFilterGraph(path.toStdString());
 }
 
+bool PlayerController::setFilterParameter(const QString& filterId,
+                                          const QString& name,
+                                          float value) {
+    return previewer_
+        && previewer_->setFilterParameter(filterId.toStdString(),
+                                          name.toStdString(), value);
+}
+
+bool PlayerController::getFilterParameter(const QString& filterId,
+                                          const QString& name,
+                                          float& value) const {
+    return previewer_
+        && previewer_->getFilterParameter(filterId.toStdString(),
+                                          name.toStdString(), value);
+}
+
 bool PlayerController::openFile(const QString& path) {
     if (!previewer_) return false;
     previewer_->open(path.toStdString());
+    currentFile_ = path;
+    emit currentFileChanged();
+    return true;
+}
+
+bool PlayerController::openPlaylist(const QString& path) {
+    if (!previewer_) return false;
+    previewer_->openPlaylist(path.toStdString());
     currentFile_ = path;
     emit currentFileChanged();
     return true;

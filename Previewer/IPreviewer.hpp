@@ -45,6 +45,7 @@ public:
     virtual void detachWindow() = 0;
     virtual void resize(int w, int h) = 0;
     virtual void open(const std::string& path) = 0;
+    virtual void openPlaylist(const std::string& path) = 0;
     virtual void close() = 0;
     virtual void play() = 0;
     virtual void pause() = 0;
@@ -59,6 +60,16 @@ public:
     virtual void goToEnd() = 0;
     virtual void setHardwareDecode(bool enabled) = 0;
     virtual void openFilterGraph(const std::string& path) = 0;
+    virtual bool setNodeParameter(uint64_t nodeId,
+                                  const std::string& name,
+                                  float value) = 0;
+    virtual bool setFilterParameter(const std::string& filterId,
+                                    const std::string& name,
+                                    float value) = 0;
+    virtual bool getFilterParameter(const std::string& filterId,
+                                    const std::string& name,
+                                    float& value) const = 0;
+    virtual uint64_t findNodeByFilterId(const std::string& filterId) const = 0;
     virtual void shutdown() = 0;
 
     virtual State state() const = 0;

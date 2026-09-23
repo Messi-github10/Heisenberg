@@ -45,9 +45,11 @@ static const StaticFormatEntry kStaticFormats[] = {
     { AV_PIX_FMT_YUV420P,     {0, 1, 2, -1},  8, 1, 1 },
     { AV_PIX_FMT_NV12,        {0, 1, 1, -1},  8, 1, 1 },
     { AV_PIX_FMT_YUV420P10LE, {0, 1, 2, -1}, 10, 1, 1 },
+    { AV_PIX_FMT_RGBAF16,     {0, 0, 0,  0}, 16, 0, 0 },
 };
 
 static const char* getPlaneFormatName(int bytesPerComp, int components) {
+    if (components == 4 && bytesPerComp == 2) return "rgba16hf";
     if (components < 1 || components > 2) return nullptr;
     if (bytesPerComp < 1 || bytesPerComp > 2) return nullptr;
     static const char* table[2][2] = {
@@ -237,6 +239,9 @@ const pl_frame* SoftwareContext::uploadAvFrame(const AVFrame* avframe) {
             }
 
             pl_fmt fmt = pl_find_named_fmt(impl_->gpu, fmtName);
+            if (!fmt && std::strcmp(fmtName, "rgba16hf") == 0) {
+                fmt = pl_find_named_fmt(impl_->gpu, "rgba16f");
+            }
             if (!fmt) {
                 LOG_ERROR("SoftwareContext: GPU does not support format '{}'", fmtName);
                 releaseUploadTextures();
@@ -253,6 +258,14 @@ const pl_frame* SoftwareContext::uploadAvFrame(const AVFrame* avframe) {
             impl_->uploadPlanes[i] = pl_tex_create(impl_->gpu, &tp);
             if (!impl_->uploadPlanes[i]) {
                 LOG_ERROR("SoftwareContext: pl_tex_create() failed for plane {}", i);
+                releaseUploadTextures();
+                return nullptr;
+            }
+            if (avfmt == AV_PIX_FMT_RGBAF16 &&
+                impl_->uploadPlanes[i]->params.format &&
+                impl_->uploadPlanes[i]->params.format->texel_size != 8) {
+                LOG_ERROR("SoftwareContext: GPU rgba16f texel_size={} does not match RGBAF16",
+                          impl_->uploadPlanes[i]->params.format->texel_size);
                 releaseUploadTextures();
                 return nullptr;
             }

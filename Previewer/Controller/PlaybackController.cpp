@@ -9,6 +9,8 @@
 #include <Common/FrameTime.hpp>
 #include <Common/MediaFrame.hpp>
 #include <Audio/Output/AudioDevice.hpp>
+#include <Producer/Playlist.hpp>
+#include <Producer/ProducerPump.hpp>
 #include <Utiles/Logger.hpp>
 
 extern "C" {
@@ -34,6 +36,10 @@ struct PlaybackController::Impl {
     RingBuffer<MediaFrame> frameBuffer{16};
     RingBuffer<MediaFrame> audioFrameBuffer{64};
     DecodeThread decodeThread{frameBuffer, audioFrameBuffer};
+    ProducerPump producerPump{frameBuffer, audioFrameBuffer};
+    std::unique_ptr<Playlist> playlist;
+    bool usingProducer = false;
+    bool hardwareDecode = true;
 
     double durationSecs = 0.0;
     double fps          = 0.0;
@@ -357,11 +363,13 @@ int64_t PlaybackController::frameCount() const {
 }
 
 void PlaybackController::setHardwareDecode(bool enabled) {
+    impl_->hardwareDecode = enabled;
     decoder::DecoderConfig config;
     config.preferred = enabled ? decoder::DecoderBackend::D3D11
                                : decoder::DecoderBackend::Software;
     config.allowFallback = enabled;
     impl_->decodeThread.setDecoderConfig(config);
+    if (impl_->playlist) impl_->playlist->setHardwareDecode(enabled);
 }
 
 void PlaybackController::setState(State s) {
@@ -370,8 +378,16 @@ void PlaybackController::setState(State s) {
     if (onStateChanged) onStateChanged(s);
 }
 
+int64_t PlaybackController::frameFromSeconds(double seconds) const {
+    if (impl_->fps <= 0.0) return 0;
+    return std::clamp<int64_t>(
+        static_cast<int64_t>(std::llround(seconds * impl_->fps)),
+        0, std::max<int64_t>(0, frameCount() - 1));
+}
+
 bool PlaybackController::open(const std::string& filePath) {
     close();
+    impl_->usingProducer = false;
 
     auto alive = impl_->alive;
 
@@ -459,6 +475,96 @@ bool PlaybackController::open(const std::string& filePath) {
     return true;
 }
 
+bool PlaybackController::openPlaylist(const std::string& jsonPath) {
+    close();
+    impl_->usingProducer = true;
+    impl_->playlist = std::make_unique<Playlist>();
+    impl_->playlist->setHardwareDecode(impl_->hardwareDecode);
+    std::string error;
+    if (!impl_->playlist->loadFromJsonFile(jsonPath, &error)) {
+        LOG_ERROR("PlaybackController: playlist open failed — {}", error);
+        impl_->playlist.reset();
+        impl_->usingProducer = false;
+        setState(Idle);
+        if (onOpenFailed) onOpenFailed(error);
+        return false;
+    }
+
+    auto alive = impl_->alive;
+    impl_->producerPump.onOpened = [this, alive](
+        double dur, double fps, bool seekable, FramePtr firstFrame,
+        uint64_t generation, AudioSpec audioSpec, bool hasAudio) {
+        dispatch([this, alive, dur, fps, seekable,
+                  firstFrame, generation, audioSpec,
+                  hasAudio] {
+            if (!*alive) return;
+            impl_->activeGeneration.store(generation,
+                                          std::memory_order_release);
+            impl_->durationSecs = dur;
+            impl_->fps          = fps;
+            impl_->seekable     = seekable;
+            impl_->audioSpec    = audioSpec;
+            impl_->hasAudio     = hasAudio && audioSpec.valid();
+            impl_->audioEof.store(false, std::memory_order_relaxed);
+            impl_->currentAudioFrame.reset();
+            impl_->currentAudioOffset = 0;
+            impl_->audioSamplePos.store(0, std::memory_order_relaxed);
+            impl_->audioCallbackCount.store(0, std::memory_order_relaxed);
+            if (onDurationChanged) onDurationChanged(dur);
+
+            if (firstFrame) {
+                impl_->lastDisplayedPtsMs = frameTimeMilliseconds(*firstFrame);
+                if (onFrameDecoded) onFrameDecoded(firstFrame);
+                if (onPositionChanged) onPositionChanged(frameTimeSeconds(*firstFrame));
+            }
+            setState(Paused);
+        });
+    };
+    impl_->producerPump.onOpenFailed = [this, alive](const std::string& reason) {
+        dispatch([this, alive, reason] {
+            if (!*alive) return;
+            LOG_ERROR("PlaybackController: playlist pump failed — {}", reason);
+            impl_->seekable = false;
+            setState(Idle);
+            if (onOpenFailed) onOpenFailed(reason);
+        });
+    };
+    impl_->producerPump.onScrubFrame = [this, alive](uint64_t requestId,
+                                                      FramePtr frame) {
+        dispatch([this, alive, requestId,
+                  frame = std::move(frame)]() mutable {
+            if (!*alive || impl_->state != Scrubbing) return;
+            if (requestId != impl_->latestScrubRequestId) return;
+            if (frame) {
+                impl_->lastDisplayedPtsMs = frameTimeMilliseconds(*frame);
+                const double selectedSeconds = std::max(
+                    0.0, impl_->lastDisplayedPtsMs / 1000.0);
+                if (impl_->hasAudio) {
+                    impl_->audioSamplePos.store(
+                        static_cast<int64_t>(selectedSeconds
+                                             * impl_->audioSpec.sampleRate),
+                        std::memory_order_relaxed);
+                }
+                if (onFrameDecoded) onFrameDecoded(std::move(frame));
+                if (onPositionChanged) onPositionChanged(selectedSeconds);
+            }
+            if (!impl_->scrubEnding
+                || requestId != impl_->endingScrubRequestId) {
+                return;
+            }
+            const bool shouldResume = impl_->wasPlayingBeforeScrub;
+            impl_->scrubEnding = false;
+            impl_->wasPlayingBeforeScrub = false;
+            setState(Paused);
+            if (shouldResume) play();
+        });
+    };
+
+    impl_->producerPump.start(impl_->playlist.get());
+    setState(Loading);
+    return true;
+}
+
 void PlaybackController::close() {
     *impl_->alive = false;
 
@@ -483,6 +589,9 @@ void PlaybackController::close() {
     impl_->lastRequestedScrubFrame = 0;
 
     impl_->decodeThread.stop();
+    impl_->producerPump.stop();
+    impl_->playlist.reset();
+    impl_->usingProducer = false;
 
     // ── Destroy audio ─────────────────────────────────────
     impl_->audioDevice.reset();
@@ -650,7 +759,12 @@ void PlaybackController::seek(double seconds) {
     };
 
     setState(Loading);
-    impl_->decodeThread.seek(seconds, std::max(0.0, currentTime()));
+    if (impl_->usingProducer) {
+        impl_->producerPump.seek(frameFromSeconds(seconds),
+                                 frameFromSeconds(currentTime()));
+    } else {
+        impl_->decodeThread.seek(seconds, std::max(0.0, currentTime()));
+    }
 }
 
 void PlaybackController::beginScrub() {
@@ -675,7 +789,8 @@ void PlaybackController::beginScrub() {
     impl_->consumerCv.notify_all();
     if (impl_->audioDevice) impl_->audioDevice->stop();
 
-    impl_->decodeThread.beginScrub();
+    if (impl_->usingProducer) impl_->producerPump.beginScrub();
+    else impl_->decodeThread.beginScrub();
     setState(Scrubbing);
 }
 
@@ -687,8 +802,13 @@ void PlaybackController::scrubToFrame(int64_t frameIndex) {
     const int64_t originFrame = impl_->lastRequestedScrubFrame;
     impl_->lastRequestedScrubFrame = frameIndex;
     const uint64_t requestId = ++impl_->latestScrubRequestId;
-    impl_->decodeThread.scrubToFrame(frameIndex, originFrame,
-                                     requestId, false);
+    if (impl_->usingProducer) {
+        impl_->producerPump.scrubToFrame(frameIndex, originFrame,
+                                         requestId, false);
+    } else {
+        impl_->decodeThread.scrubToFrame(frameIndex, originFrame,
+                                         requestId, false);
+    }
 }
 
 void PlaybackController::endScrub(int64_t frameIndex) {
@@ -700,8 +820,13 @@ void PlaybackController::endScrub(int64_t frameIndex) {
     impl_->lastRequestedScrubFrame = frameIndex;
     impl_->scrubEnding = true;
     impl_->endingScrubRequestId = ++impl_->latestScrubRequestId;
-    impl_->decodeThread.scrubToFrame(frameIndex, originFrame,
-                                     impl_->endingScrubRequestId, true);
+    if (impl_->usingProducer) {
+        impl_->producerPump.scrubToFrame(frameIndex, originFrame,
+                                         impl_->endingScrubRequestId, true);
+    } else {
+        impl_->decodeThread.scrubToFrame(frameIndex, originFrame,
+                                         impl_->endingScrubRequestId, true);
+    }
 }
 
 void PlaybackController::stepForward(int frames) {

@@ -131,6 +131,13 @@ inline pl_color_repr colorReprFromAvFrame(const AVFrame* frame) {
     repr.levels = frame->color_range == AVCOL_RANGE_JPEG
         ? PL_COLOR_LEVELS_PC : PL_COLOR_LEVELS_TV;
     repr.sys = colorSystemFromAvFrame(frame);
+    if (frame->format == AV_PIX_FMT_RGBAF16 ||
+        frame->format == AV_PIX_FMT_RGBA ||
+        frame->format == AV_PIX_FMT_RGBA64) {
+        repr.sys = PL_COLOR_SYSTEM_RGB;
+        repr.levels = PL_COLOR_LEVELS_PC;
+        repr.alpha = PL_ALPHA_INDEPENDENT;
+    }
     return repr;
 }
 

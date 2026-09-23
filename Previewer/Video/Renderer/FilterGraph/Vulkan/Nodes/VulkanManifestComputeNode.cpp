@@ -68,6 +68,35 @@ VulkanManifestComputeNode::~VulkanManifestComputeNode() {
     destroyAuxiliaryUpload();
 }
 
+bool VulkanManifestComputeNode::setParameters(
+    const VulkanGraphParameter& parameter) {
+    std::string error;
+    if (!VulkanFilterRegistry::instance().validateParameters(
+            descriptor_, parameter, &error)) {
+        return false;
+    }
+
+    bool sizeChanged = false;
+    if (descriptor_.resizeOutput) {
+        const auto previousWidth = parameters_.find("width");
+        const auto previousHeight = parameters_.find("height");
+        const auto nextWidth = parameter.find("width");
+        const auto nextHeight = parameter.find("height");
+        const bool widthChanged = previousWidth != parameters_.end()
+            && nextWidth != parameter.end()
+            && previousWidth->second != nextWidth->second;
+        const bool heightChanged = previousHeight != parameters_.end()
+            && nextHeight != parameter.end()
+            && previousHeight->second != nextHeight->second;
+        sizeChanged = widthChanged || heightChanged;
+    }
+
+    parameters_ = parameter;
+    updateUniform(parameters_);
+    if (sizeChanged) invalidateGraph();
+    return true;
+}
+
 bool VulkanManifestComputeNode::setExternalInput(
     int32_t index, const VulkanImageRef& image) {
     if (index < 0 || static_cast<size_t>(index) >= externalInputs_.size()) {

@@ -36,6 +36,7 @@ public:
     void setTaskDispatcher(TaskDispatcher dispatcher);
 
     bool open(const std::string& filePath);
+    bool openPlaylist(const std::string& jsonPath);
     void close();
 
     void play();
@@ -72,6 +73,7 @@ private:
 
     void setState(State s);
     void dispatch(Task task);
+    int64_t frameFromSeconds(double seconds) const;
 };
 
 } // namespace ctrl

@@ -30,8 +30,10 @@ signals:
     void scrubFrameRequested(qint64 frameIndex);
     void scrubFinished(qint64 frameIndex);
     void openFileRequested(const QString& path);
+    void openPlaylistRequested(const QString& path);
     void openFilterGraphRequested(const QString& path);
     void hardwareDecodeToggled(bool enabled);
+    void exposureChanged(double value);
 
 public slots:
     void setDuration(double seconds);
@@ -40,6 +42,8 @@ public slots:
     void setPlayingState(bool playing);
     void setFilterGraphPath(const QString& path);
     void setFilterGraphError(const QString& message);
+    void setExposure(double value);
+    void setExposureEnabled(bool enabled);
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -55,10 +59,13 @@ private:
     QSlider*     progressBar_ = nullptr;
     QPushButton* playPauseBtn_ = nullptr;
     QPushButton* openFileBtn_  = nullptr;
+    QPushButton* openPlaylistBtn_ = nullptr;
     QPushButton* openFilterGraphBtn_ = nullptr;
     QLabel*      timeLabel_    = nullptr;
     QLabel*      filterGraphLabel_ = nullptr;
     QCheckBox*   hardwareDecodeCheck_ = nullptr;
+    QSlider*     exposureSlider_ = nullptr;
+    QLabel*      exposureLabel_ = nullptr;
 
     double duration_ = 0.0;
     qint64 frameCount_ = 0;

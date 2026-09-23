@@ -39,6 +39,8 @@ int main(int argc, char* argv[])
                      &playerCtrl, &heisenberg::ui::PlayerController::endScrub);
     QObject::connect(&mainWindow, &MainWindow::openFileRequested,
                      &playerCtrl, &heisenberg::ui::PlayerController::openFile);
+    QObject::connect(&mainWindow, &MainWindow::openPlaylistRequested,
+                     &playerCtrl, &heisenberg::ui::PlayerController::openPlaylist);
     QObject::connect(&mainWindow, &MainWindow::openFilterGraphRequested,
                      &playerCtrl, &heisenberg::ui::PlayerController::openFilterGraph);
     QObject::connect(&mainWindow, &MainWindow::hardwareDecodeToggled,
@@ -46,9 +48,22 @@ int main(int argc, char* argv[])
     QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::filterGraphPathChanged,
                      &mainWindow, [&]() {
                          mainWindow.setFilterGraphPath(playerCtrl.filterGraphPath());
+                         float exposure = 0.0f;
+                         if (playerCtrl.getFilterParameter("exposure", "exposure",
+                                                           exposure)) {
+                             mainWindow.setExposureEnabled(true);
+                             mainWindow.setExposure(exposure);
+                         } else {
+                             mainWindow.setExposureEnabled(false);
+                         }
                      });
     QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::filterGraphLoadFailed,
                      &mainWindow, &MainWindow::setFilterGraphError);
+    QObject::connect(&mainWindow, &MainWindow::exposureChanged,
+                     &playerCtrl, [&](double value) {
+                         playerCtrl.setFilterParameter(
+                             "exposure", "exposure", static_cast<float>(value));
+                     });
 
     QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::isPlayingChanged,
                      &mainWindow, [&]() { mainWindow.setPlayingState(playerCtrl.isPlaying()); });
