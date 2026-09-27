@@ -16,11 +16,11 @@ target_include_directories(MainApp PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/Backend
     ${CMAKE_CURRENT_LIST_DIR}/MainWidget
-    ${CMAKE_SOURCE_DIR}/Previewer
+    ${CMAKE_SOURCE_DIR}/Framework
 )
 
 target_link_libraries(MainApp PRIVATE
-    HeisenbergPreviewer HeisenbergUtiles
+    HeisenbergFramework HeisenbergUtiles
     spdlog ffmpeg libplacebo vulkan volk
     Qt6::Core Qt6::Gui Qt6::Widgets
 )

@@ -1,0 +1,169 @@
+file(GLOB_RECURSE FRAMEWORK_SOURCES CONFIGURE_DEPENDS *.cpp *.hpp)
+list(FILTER FRAMEWORK_SOURCES EXCLUDE REGEX "/Test/")
+
+set(VULKAN_SDK_PATH "D:/Environment/VulkanSDK" CACHE PATH
+    "Path to the Vulkan SDK used to compile filter shaders")
+find_program(GLSLANG_VALIDATOR
+    NAMES glslangValidator
+    HINTS "$ENV{VULKAN_SDK}/Bin" "${VULKAN_SDK_PATH}/Bin"
+    REQUIRED
+)
+find_program(SPIRV_VAL
+    NAMES spirv-val
+    HINTS "$ENV{VULKAN_SDK}/Bin" "${VULKAN_SDK_PATH}/Bin"
+    REQUIRED
+)
+find_program(SPIRV_CROSS
+    NAMES spirv-cross
+    HINTS "$ENV{VULKAN_SDK}/Bin" "${VULKAN_SDK_PATH}/Bin"
+    REQUIRED
+)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+set(FILTER_SHADER_SOURCE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Shaders")
+set(FILTER_SHADER_BINARY_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Shaders")
+set(SHADER_CONTRACT_MANIFEST
+    "${FILTER_SHADER_SOURCE_DIR}/shader_manifest.json")
+set(SHADER_CONTRACT_VALIDATOR
+    "${CMAKE_CURRENT_SOURCE_DIR}/MultiMedia/Video/Renderer/FilterGraph/Vulkan/validate_shader_contract.py")
+set(FILTER_CONTRACT_TEST
+    "${CMAKE_CURRENT_SOURCE_DIR}/MultiMedia/Video/Renderer/FilterGraph/Vulkan/shader_source_contract_test.py")
+
+function(add_filter_shader output_variable source_name)
+    set(shader_source "${FILTER_SHADER_SOURCE_DIR}/${source_name}")
+    set(shader_output "${FILTER_SHADER_BINARY_DIR}/${source_name}.spv")
+    add_custom_command(
+        OUTPUT "${shader_output}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${FILTER_SHADER_BINARY_DIR}"
+        COMMAND "${GLSLANG_VALIDATOR}" -V --target-env vulkan1.2
+                "${shader_source}" -o "${shader_output}"
+        COMMAND "${SPIRV_VAL}" --target-env vulkan1.2 "${shader_output}"
+        DEPENDS "${shader_source}"
+        COMMENT "Compiling Vulkan filter shader: ${source_name}"
+        VERBATIM
+    )
+    set(${output_variable} "${shader_output}" PARENT_SCOPE)
+endfunction()
+
+set(FILTER_SHADER_SPECS)
+
+# Compile newly registered shaders automatically. The small compatibility list
+# remains only for special nodes that still consume shader path macros.
+file(GLOB FILTER_SHADER_SOURCES CONFIGURE_DEPENDS
+    "${FILTER_SHADER_SOURCE_DIR}/*.comp")
+set(FILTER_SHADER_KNOWN_SOURCES)
+foreach(shader_spec IN LISTS FILTER_SHADER_SPECS)
+    string(REPLACE "|" ";" shader_parts "${shader_spec}")
+    list(GET shader_parts 1 shader_source_name)
+    list(APPEND FILTER_SHADER_KNOWN_SOURCES "${shader_source_name}")
+endforeach()
+
+set(FILTER_SHADER_OUTPUTS)
+set(FILTER_SHADER_DEFINITIONS)
+foreach(shader_spec IN LISTS FILTER_SHADER_SPECS)
+    string(REPLACE "|" ";" shader_parts "${shader_spec}")
+    list(GET shader_parts 0 shader_id)
+    list(GET shader_parts 1 shader_source_name)
+    set(shader_variable "FILTER_SHADER_${shader_id}")
+    add_filter_shader(${shader_variable} "${shader_source_name}")
+    list(APPEND FILTER_SHADER_OUTPUTS "${${shader_variable}}")
+    list(APPEND FILTER_SHADER_DEFINITIONS
+        "HEISENBERG_${shader_id}_SHADER_PATH=\"${${shader_variable}}\"")
+endforeach()
+
+foreach(shader_source_path IN LISTS FILTER_SHADER_SOURCES)
+    get_filename_component(shader_source_name "${shader_source_path}" NAME)
+    if(NOT shader_source_name IN_LIST FILTER_SHADER_KNOWN_SOURCES)
+        add_filter_shader(shader_output "${shader_source_name}")
+        list(APPEND FILTER_SHADER_OUTPUTS "${shader_output}")
+    endif()
+endforeach()
+
+add_custom_target(HeisenbergFilterShaders DEPENDS
+    ${FILTER_SHADER_OUTPUTS}
+)
+
+set(SHADER_CONTRACT_STAMP
+    "${FILTER_SHADER_BINARY_DIR}/shader_contract.stamp")
+add_custom_command(
+    OUTPUT "${SHADER_CONTRACT_STAMP}"
+    COMMAND "${Python3_EXECUTABLE}" "${SHADER_CONTRACT_VALIDATOR}"
+            --spirv-cross "${SPIRV_CROSS}"
+            --manifest "${SHADER_CONTRACT_MANIFEST}"
+            --shader-dir "${FILTER_SHADER_BINARY_DIR}"
+            --stamp "${SHADER_CONTRACT_STAMP}"
+    DEPENDS ${FILTER_SHADER_OUTPUTS}
+            "${SHADER_CONTRACT_MANIFEST}"
+            "${SHADER_CONTRACT_VALIDATOR}"
+    COMMENT "Validating Vulkan Shader ABI contracts"
+    VERBATIM
+)
+add_custom_target(HeisenbergShaderContractTests
+    DEPENDS "${SHADER_CONTRACT_STAMP}")
+
+set(FILTER_CONTRACT_STAMP
+    "${FILTER_SHADER_BINARY_DIR}/filter_contract.stamp")
+add_custom_command(
+    OUTPUT "${FILTER_CONTRACT_STAMP}"
+    COMMAND "${Python3_EXECUTABLE}" "${FILTER_CONTRACT_TEST}"
+            --shader-dir "${FILTER_SHADER_SOURCE_DIR}"
+            --manifest "${SHADER_CONTRACT_MANIFEST}"
+            --stamp "${FILTER_CONTRACT_STAMP}"
+    DEPENDS ${FILTER_SHADER_OUTPUTS}
+            "${SHADER_CONTRACT_MANIFEST}"
+            "${FILTER_CONTRACT_TEST}"
+    COMMENT "Checking Vulkan filter source contracts"
+    VERBATIM
+)
+add_custom_target(HeisenbergShaderSourceContractTests
+    DEPENDS "${FILTER_CONTRACT_STAMP}")
+
+add_library(HeisenbergFramework STATIC
+    ${FRAMEWORK_SOURCES}
+)
+
+add_dependencies(HeisenbergFramework HeisenbergFilterShaders)
+add_dependencies(HeisenbergFramework HeisenbergShaderContractTests)
+add_dependencies(HeisenbergFramework HeisenbergShaderSourceContractTests)
+
+target_include_directories(HeisenbergFramework PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/MultiMedia/Video/Renderer/FilterGraph/Common
+    ${CMAKE_CURRENT_LIST_DIR}/MultiMedia/Video/Renderer/FilterGraph/Vulkan
+    ${CMAKE_CURRENT_LIST_DIR}/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Filters
+    ${CMAKE_CURRENT_LIST_DIR}/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Graph
+    ${CMAKE_CURRENT_LIST_DIR}/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Nodes
+    ${CMAKE_CURRENT_LIST_DIR}/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Resources
+)
+
+target_link_libraries(HeisenbergFramework PUBLIC
+    ffmpeg
+    HeisenbergUtiles
+    libplacebo
+    miniaudio
+    nlohmann_json
+    vulkan
+    volk
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(HeisenbergFramework PUBLIC
+    VK_NO_PROTOTYPES
+    VK_USE_PLATFORM_WIN32_KHR
+    VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN
+)
+
+target_compile_definitions(HeisenbergFramework PRIVATE
+    ${FILTER_SHADER_DEFINITIONS}
+    HEISENBERG_SHADER_MANIFEST_PATH="${SHADER_CONTRACT_MANIFEST}"
+    HEISENBERG_FILTER_SHADER_BINARY_DIR="${FILTER_SHADER_BINARY_DIR}"
+)
+
+if(MSVC)
+    target_compile_options(HeisenbergFramework PRIVATE /utf-8)
+endif()

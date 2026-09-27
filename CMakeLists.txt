@@ -9,7 +9,6 @@ enable_testing()
 
 add_subdirectory(Dependence)
 add_subdirectory(Utiles)
-add_subdirectory(Core)
-add_subdirectory(Previewer)
+add_subdirectory(Framework)
 add_subdirectory(UserInterface)
 add_subdirectory(Tests)

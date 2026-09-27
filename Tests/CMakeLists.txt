@@ -1,2 +1,1 @@
-add_subdirectory(Core)
-add_subdirectory(Previewer)
+add_subdirectory(Framework)
