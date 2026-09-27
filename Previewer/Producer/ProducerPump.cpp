@@ -61,14 +61,22 @@ void ProducerPump::stop() {
     lastPumpedFrame_ = -1;
 }
 
+void ProducerPump::resetBuffers() {
+    buffer_->interrupt();
+    audioBuffer_->interrupt();
+    buffer_->flush();
+    audioBuffer_->flush();
+    buffer_->resume();
+    audioBuffer_->resume();
+}
+
 void ProducerPump::seek(int64_t frameIndex, int64_t currentFrameIndex) {
     {
         std::lock_guard<std::mutex> lock(cmdMutex_);
         pendingCmd_ = Cmd::Seek;
         seekTarget_ = frameIndex;
         seekOrigin_ = currentFrameIndex;
-        buffer_->interrupt();
-        audioBuffer_->interrupt();
+        resetBuffers();
     }
     cmdCv_.notify_all();
 }
@@ -77,8 +85,7 @@ void ProducerPump::beginScrub() {
     {
         std::lock_guard<std::mutex> lock(cmdMutex_);
         scrubbing_.store(true, std::memory_order_release);
-        buffer_->interrupt();
-        audioBuffer_->interrupt();
+        resetBuffers();
     }
     cmdCv_.notify_all();
 }
@@ -92,8 +99,7 @@ void ProducerPump::scrubToFrame(int64_t targetFrame, int64_t currentFrame,
         scrubOriginFrame_ = currentFrame;
         scrubRequestId_ = requestId;
         resumePrefetchAfterScrub_ = resumePrefetch;
-        buffer_->interrupt();
-        audioBuffer_->interrupt();
+        resetBuffers();
     }
     cmdCv_.notify_all();
 }
@@ -265,29 +271,28 @@ void ProducerPump::processCommand(Cmd cmd) {
             target, 0, std::max<int64_t>(0, producer_->length() - 1));
         eof_ = false;
         pendingEof_ = false;
-        buffer_->resume();
-        audioBuffer_->resume();
-        audioBuffer_->flush();
+        resetBuffers();
 
         const ProducerFrame frame = pull(target);
         lastVideo_ = stampVideo(frame);
         lastPumpedFrame_ = target;
         lastVideoQueued_ = false;
-        if (lastVideo_) {
+        bool superseded = false;
+        {
             std::lock_guard<std::mutex> lock(cmdMutex_);
-            if (pendingCmd_ == Cmd::None) {
-                buffer_->resume();
-                if (pushVideoFront(lastVideo_)) lastVideoQueued_ = true;
-                if (hasAudio_) pushAudio(stampAudio(frame));
-                if (target >= producer_->length() - 1) pendingEof_ = true;
-                queuePendingEof();
-                const double fps = producer_->profile().fps();
-                const double duration = producer_->profile().secondsFromFrame(
-                    producer_->length());
-                if (onOpened) {
-                    onOpened(duration, fps, producer_->seekable(), lastVideo_,
-                             generation_, audioSpec_, hasAudio_);
-                }
+            superseded = pendingCmd_ != Cmd::None;
+        }
+        if (!superseded && lastVideo_) {
+            lastVideoQueued_ = pushVideoFront(lastVideo_);
+            if (hasAudio_) pushAudio(stampAudio(frame));
+            if (target >= producer_->length() - 1) pendingEof_ = true;
+            queuePendingEof();
+            const double fps = producer_->profile().fps();
+            const double duration = producer_->profile().secondsFromFrame(
+                producer_->length());
+            if (onOpened) {
+                onOpened(duration, fps, producer_->seekable(), lastVideo_,
+                         generation_, audioSpec_, hasAudio_);
             }
         }
         break;
@@ -309,8 +314,7 @@ void ProducerPump::processCommand(Cmd cmd) {
             target, 0, std::max<int64_t>(0, producer_->length() - 1));
         eof_ = false;
         pendingEof_ = false;
-        buffer_->resume();
-        audioBuffer_->resume();
+        resetBuffers();
 
         const ProducerFrame frame = pull(target);
         FramePtr video = stampVideo(frame);
@@ -320,14 +324,15 @@ void ProducerPump::processCommand(Cmd cmd) {
             lastVideoQueued_ = false;
         }
 
-        std::lock_guard<std::mutex> lock(cmdMutex_);
-        if (pendingCmd_ != Cmd::None || requestId != scrubRequestId_) break;
+        bool superseded = false;
+        {
+            std::lock_guard<std::mutex> lock(cmdMutex_);
+            superseded = pendingCmd_ != Cmd::None || requestId != scrubRequestId_;
+        }
+        if (superseded) break;
         if (resumePrefetch) {
-            buffer_->resume();
-            audioBuffer_->resume();
             if (video) {
-                if (!pushVideoFront(video)) break;
-                lastVideoQueued_ = true;
+                lastVideoQueued_ = pushVideoFront(video);
                 if (hasAudio_) pushAudio(stampAudio(frame));
                 if (target >= producer_->length() - 1) pendingEof_ = true;
                 queuePendingEof();

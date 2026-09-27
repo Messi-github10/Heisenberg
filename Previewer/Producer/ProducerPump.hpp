@@ -62,6 +62,7 @@ private:
     bool pushVideoFront(const FramePtr& frame);
     bool pushAudio(const AudioFramePtr& frame);
     void queuePendingEof();
+    void resetBuffers();
     ProducerFrame pull(int64_t position);
 
     RingBuffer<MediaFrame>* buffer_ = nullptr;
