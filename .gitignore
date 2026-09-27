@@ -72,6 +72,8 @@ CMakeSettings.json
 *.bak
 *.swp
 
+.zcodeignore
+
 # vcpkg
 vcpkg_installed/
 
