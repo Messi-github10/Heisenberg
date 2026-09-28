@@ -110,6 +110,18 @@ bool readInt64(const json& object,
     return true;
 }
 
+bool readOptionalInt64(const json& object,
+                       const char* key,
+                       int64_t min,
+                       int64_t max,
+                       int64_t& result,
+                       const char* context,
+                       std::string* error) {
+    const json& value = jsonField(object, key);
+    if (value.is_null() && !object.contains(key)) return true;
+    return readInt64(object, key, min, max, result, context, error);
+}
+
 bool readString(const json& object,
                 const char* key,
                 std::string& result,
@@ -165,6 +177,7 @@ struct Playlist::Impl {
     std::string resource = "<playlist>";
     bool hardwareDecode = false;
     std::vector<PlaylistClip> clips;
+    std::vector<PlaylistFilter> filters;
     std::unordered_map<std::string, std::unique_ptr<Producer>> producers;
     std::unique_ptr<BlankProducer> blank;
     int64_t length = 0;
@@ -172,6 +185,7 @@ struct Playlist::Impl {
 
     void reset() {
         clips.clear();
+        filters.clear();
         producers.clear();
         blank.reset();
         length = 0;
@@ -232,7 +246,8 @@ bool Playlist::loadFromJson(const std::string& text,
         setError(error, "Playlist JSON root must be an object");
         return false;
     }
-    if (!expectKeys(root, {"version", "profile", "clips"}, "playlist", error)) {
+    if (!expectKeys(root, {"version", "profile", "clips", "filters"},
+                    "playlist", error)) {
         return false;
     }
 
@@ -309,6 +324,48 @@ bool Playlist::loadFromJson(const std::string& text,
         clips.push_back(std::move(clip));
     }
 
+    std::vector<PlaylistFilter> filters;
+    const json& filtersValue = jsonField(root, "filters");
+    if (root.contains("filters")) {
+        if (!expectArray(filtersValue, "filters", error)) return false;
+        filters.reserve(filtersValue.size());
+        for (size_t index = 0; index < filtersValue.size(); ++index) {
+            const json& filterValue = filtersValue[index];
+            const std::string context = "filters[" + std::to_string(index) + "]";
+            if (!expectObject(filterValue, context.c_str(), error) ||
+                !expectKeys(filterValue, {"id", "graph", "in", "out"},
+                            context.c_str(), error)) {
+                return false;
+            }
+
+            PlaylistFilter filter;
+            std::string graph;
+            if (!readString(filterValue, "id", filter.id, context.c_str(),
+                            error, false) ||
+                !parseClipId(filter.id, filter.id, error) ||
+                !readString(filterValue, "graph", graph, context.c_str(),
+                            error, true) ||
+                !readOptionalInt64(filterValue, "in", 0,
+                                   std::numeric_limits<int64_t>::max(),
+                                   filter.in, context.c_str(), error) ||
+                !readOptionalInt64(filterValue, "out", 0,
+                                   std::numeric_limits<int64_t>::max(),
+                                   filter.out, context.c_str(), error)) {
+                return false;
+            }
+            if (graph.empty()) {
+                setError(error, context + " graph must not be empty");
+                return false;
+            }
+            if (filter.out != 0 && filter.out < filter.in) {
+                setError(error, context + " out must be >= in");
+                return false;
+            }
+            filter.graph = resolveResource(graph, baseDir);
+            filters.push_back(std::move(filter));
+        }
+    }
+
     std::unordered_map<std::string, std::unique_ptr<Producer>> producers;
     auto blank = std::make_unique<BlankProducer>(profile);
     blank->setHardwareDecode(impl_->hardwareDecode);
@@ -344,13 +401,14 @@ bool Playlist::loadFromJson(const std::string& text,
 
     impl_->profile = std::move(profile);
     impl_->clips = std::move(clips);
+    impl_->filters = std::move(filters);
     impl_->producers = std::move(producers);
     impl_->blank = std::move(blank);
     impl_->length = timeline;
     impl_->position = 0;
     impl_->resource = "<playlist>";
-    LOG_INFO("Playlist: loaded {} clips, {} frames",
-             impl_->clips.size(), impl_->length);
+    LOG_INFO("Playlist: loaded {} clips, {} filters, {} frames",
+             impl_->clips.size(), impl_->filters.size(), impl_->length);
     return true;
 }
 
@@ -365,10 +423,23 @@ std::string Playlist::toJson() const {
         clips.push_back(std::move(object));
     }
 
+    json filters = json::array();
+    for (const PlaylistFilter& filter : impl_->filters) {
+        json object;
+        if (!filter.id.empty()) object["id"] = filter.id;
+        object["graph"] = filter.graph;
+        if (filter.in != 0 || filter.out != 0) {
+            object["in"] = filter.in;
+            object["out"] = filter.out;
+        }
+        filters.push_back(std::move(object));
+    }
+
     json root;
     root["version"] = 1;
     root["profile"] = json::parse(impl_->profile.toJson());
     root["clips"] = std::move(clips);
+    if (!filters.empty()) root["filters"] = std::move(filters);
     return root.dump(2);
 }
 
@@ -376,9 +447,20 @@ const std::vector<PlaylistClip>& Playlist::clips() const {
     return impl_->clips;
 }
 
+const std::vector<PlaylistFilter>& Playlist::filters() const {
+    return impl_->filters;
+}
+
 bool Playlist::isBlankAt(int64_t position) const {
     const PlaylistClip* clip = impl_->clipAt(position);
     return clip && isBlankResource(clip->resource);
+}
+
+const PlaylistFilter* Playlist::filterAt(int64_t position) const {
+    for (const PlaylistFilter& filter : impl_->filters) {
+        if (filter.covers(position)) return &filter;
+    }
+    return nullptr;
 }
 
 const Profile& Playlist::profile() const {

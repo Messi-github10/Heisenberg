@@ -372,6 +372,11 @@ void PlaybackController::setHardwareDecode(bool enabled) {
     if (impl_->playlist) impl_->playlist->setHardwareDecode(enabled);
 }
 
+const std::vector<PlaylistFilter>& PlaybackController::playlistFilters() const {
+    static const std::vector<PlaylistFilter> empty;
+    return impl_->playlist ? impl_->playlist->filters() : empty;
+}
+
 void PlaybackController::setState(State s) {
     if (impl_->state == s) return;
     impl_->state = s;

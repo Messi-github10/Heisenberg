@@ -1,9 +1,12 @@
 #pragma once
 
+#include <Producer/Playlist.hpp>
+
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 extern "C" {
 struct AVFrame;
@@ -59,6 +62,7 @@ public:
     double fps() const;
     int64_t frameCount() const;
     void setHardwareDecode(bool enabled);
+    const std::vector<PlaylistFilter>& playlistFilters() const;
 
     std::function<void(State)> onStateChanged;
     std::function<void(FramePtr)> onFrameDecoded;

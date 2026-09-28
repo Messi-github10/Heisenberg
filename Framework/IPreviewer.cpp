@@ -91,11 +91,11 @@ public:
             videoWidth_ = width;
             videoHeight_ = height;
         });
-        if (filterGraph_) {
-            presenter_->setFilterGraph(filterGraph_->graph(),
-                                       filterGraph_->input(),
-                                       filterGraph_->output());
+        attachedGraph_ = nullptr;
+        if (!timelineGraph_ && !pendingTimelineGraph_.empty()) {
+            loadPlaylistFilters();
         }
+        applyGraphForFrame(lastFrame_.get());
 
         nativeSurface_ = nativeSurface;
         videoWidth_ = width;
@@ -112,6 +112,7 @@ public:
         }
         nativeSurface_ = nullptr;
         lastFrame_.reset();
+        attachedGraph_ = nullptr;
         videoWidth_ = 0;
         videoHeight_ = 0;
     }
@@ -123,15 +124,27 @@ public:
     }
 
     void open(const std::string& path) override {
+        clearTimelineGraph();
         if (playback_) playback_->open(path);
     }
 
     void openPlaylist(const std::string& path) override {
-        if (playback_) playback_->openPlaylist(path);
+        clearTimelineGraph();
+        if (!playback_) return;
+        playback_->openPlaylist(path);
+        const auto& filters = playback_->playlistFilters();
+        if (!filters.empty()) {
+            pendingTimelineGraph_ = filters.front().graph;
+            if (filters.size() > 1) {
+                LOG_WARN("IPreviewer: v1 applies only the first Playlist filter");
+            }
+            loadPlaylistFilters();
+        }
     }
 
     void close() override {
         if (playback_) playback_->close();
+        clearTimelineGraph();
         lastFrame_.reset();
         videoWidth_ = 0;
         videoHeight_ = 0;
@@ -249,8 +262,10 @@ public:
         listener_ = nullptr;
         if (playback_) playback_->close();
         detachWindow();
+        clearTimelineGraph();
         filterGraph_.reset();
         graphDocument_ = {};
+        timelineGraph_.reset();
         gpuCtx_.reset();
         LOG_INFO("IPreviewer: GPU resources released");
     }
@@ -319,6 +334,9 @@ private:
             if (listener_) listener_->onStateChanged(toPreviewerState(state));
         };
         playback_->onFrameDecoded = [this](std::shared_ptr<AVFrame> frame) {
+            if (!timelineGraph_ && !pendingTimelineGraph_.empty()) {
+                loadPlaylistFilters();
+            }
             presentDecodedFrame(std::move(frame));
         };
         playback_->onPositionChanged = [this](double seconds) {
@@ -364,10 +382,11 @@ private:
 
         presentCurrentFrame();
 
-        if (!filterGraph_ || (++filterGraphVerificationFrame_ % 60) != 0) return;
+        filtergraph::VulkanFilterGraph* active = attachedGraph_;
+        if (!active || (++filterGraphVerificationFrame_ % 60) != 0) return;
 
         filtergraph::VulkanImageRef output;
-        if (!filterGraph_->output()->getVulkanOutput(output)) {
+        if (!active->output()->getVulkanOutput(output)) {
             LOG_WARN("FilterGraph verify: output is unavailable");
             return;
         }
@@ -412,12 +431,10 @@ private:
 
         vkCtx.device().waitIdle();
         presenter_->setFilterGraph(nullptr, nullptr, nullptr);
+        attachedGraph_ = nullptr;
         filterGraph_.reset();
         filterGraph_ = std::move(nextGraph);
         graphDocument_ = std::move(graphDocument);
-        presenter_->setFilterGraph(filterGraph_->graph(), filterGraph_->input(),
-                                   filterGraph_->output());
-
         filterGraphVerificationFrame_ = 0;
         filterGraphPath_ = path;
         if (listener_) listener_->onFilterGraphChanged(path);
@@ -425,8 +442,123 @@ private:
         return true;
     }
 
+    void loadPlaylistFilters() {
+        if (!playback_) return;
+        const auto& filters = playback_->playlistFilters();
+        if (filters.empty()) return;
+        if (filters.size() > 1) {
+            LOG_WARN("IPreviewer: v1 applies only the first Playlist filter");
+        }
+        std::string error;
+        if (!loadTimelineGraph(filters.front().graph, &error)) {
+            LOG_ERROR("IPreviewer: playlist filter graph load failed: {}", error);
+            if (listener_) listener_->onFilterGraphFailed(error);
+            return;
+        }
+        LOG_INFO("IPreviewer: loaded playlist filter graph '{}' in={} out={}",
+                 filters.front().graph, filters.front().in, filters.front().out);
+    }
+
+    bool loadTimelineGraph(const std::string& path, std::string* error) {
+        if (path.empty()) {
+            if (error) *error = "Filter graph path is empty";
+            return false;
+        }
+        if (!gpuCtx_) {
+            pendingTimelineGraph_ = path;
+            return true;
+        }
+        if (!presenter_) {
+            pendingTimelineGraph_ = path;
+            return true;
+        }
+
+        auto& vkCtx = renderer::VulkanContext::instance();
+        filtergraph::VulkanGraphContext graphContext;
+        graphContext.instance = static_cast<VkInstance>(vkCtx.vkInstance());
+        graphContext.physicalDevice =
+            static_cast<VkPhysicalDevice>(vkCtx.physicalDevice());
+        graphContext.device = static_cast<VkDevice>(vkCtx.device());
+        graphContext.queue = static_cast<VkQueue>(vkCtx.graphicsQueue());
+        graphContext.queueFamilyIndex = vkCtx.graphicsQueueFamily();
+
+        filtergraph::VulkanGraphDocument graphDocument;
+        std::string graphError;
+        if (!graphDocument.loadFromJsonFile(path, &graphError)) {
+            if (error) *error = graphError;
+            return false;
+        }
+
+        std::unique_ptr<filtergraph::VulkanFilterGraph> nextGraph;
+        try {
+            nextGraph = std::make_unique<filtergraph::VulkanFilterGraph>(
+                graphContext, graphDocument);
+        } catch (const std::exception& exception) {
+            if (error) *error = exception.what();
+            return false;
+        }
+
+        vkCtx.device().waitIdle();
+        presenter_->setFilterGraph(nullptr, nullptr, nullptr);
+        attachedGraph_ = nullptr;
+        timelineGraph_.reset();
+        timelineGraph_ = std::move(nextGraph);
+        timelineDocument_ = std::move(graphDocument);
+        timelineGraphPath_ = path;
+        pendingTimelineGraph_.clear();
+        return true;
+    }
+
+    void clearTimelineGraph() {
+        if (presenter_ && attachedGraph_ && attachedGraph_ == timelineGraph_.get()) {
+            presenter_->setFilterGraph(nullptr, nullptr, nullptr);
+        }
+        attachedGraph_ = nullptr;
+        timelineGraph_.reset();
+        timelineDocument_ = {};
+        timelineGraphPath_.clear();
+        pendingTimelineGraph_.clear();
+        timelineGraphEnabled_ = false;
+    }
+
+    filtergraph::VulkanFilterGraph* graphForFrame(const AVFrame* frame) {
+        if (timelineGraph_ && playback_ && frame) {
+            const auto& filters = playback_->playlistFilters();
+            if (!filters.empty() && filters.front().covers(frame->pts)) {
+                return timelineGraph_.get();
+            }
+        }
+        if (filterGraph_) return filterGraph_.get();
+        return nullptr;
+    }
+
+    void applyGraphForFrame(const AVFrame* frame) {
+        if (!presenter_) return;
+        if (!timelineGraph_ && !pendingTimelineGraph_.empty()) {
+            std::string error;
+            loadTimelineGraph(pendingTimelineGraph_, &error);
+        }
+        filtergraph::VulkanFilterGraph* wanted = graphForFrame(frame);
+        if (wanted == attachedGraph_) return;
+        if (wanted) {
+            presenter_->setFilterGraph(wanted->graph(), wanted->input(),
+                                       wanted->output());
+        } else {
+            presenter_->setFilterGraph(nullptr, nullptr, nullptr);
+        }
+        const bool enabled = wanted == timelineGraph_.get() && wanted != nullptr;
+        if (enabled != timelineGraphEnabled_) {
+            timelineGraphEnabled_ = enabled;
+            LOG_INFO("IPreviewer: playlist filter {} at frame {}",
+                     enabled ? "on" : "off",
+                     frame ? frame->pts : -1);
+        }
+        attachedGraph_ = wanted;
+    }
+
     void presentCurrentFrame() {
         if (!presenter_ || !lastFrame_ || !lastFrame_->data[0]) return;
+        applyGraphForFrame(lastFrame_.get());
         if (!presenter_->presentFrame(lastFrame_.get())) {
             LOG_WARN("IPreviewer: presentFrame failed (format={}, {}x{})",
                      lastFrame_->format, lastFrame_->width, lastFrame_->height);
@@ -448,8 +580,14 @@ private:
     std::unique_ptr<renderer::VideoPresenter> presenter_;
     std::unique_ptr<filtergraph::VulkanFilterGraph> filterGraph_;
     filtergraph::VulkanGraphDocument graphDocument_;
+    std::unique_ptr<filtergraph::VulkanFilterGraph> timelineGraph_;
+    filtergraph::VulkanGraphDocument timelineDocument_;
+    filtergraph::VulkanFilterGraph* attachedGraph_ = nullptr;
     std::shared_ptr<AVFrame> lastFrame_;
     std::string filterGraphPath_;
+    std::string timelineGraphPath_;
+    std::string pendingTimelineGraph_;
+    bool timelineGraphEnabled_ = false;
     void* nativeSurface_ = nullptr;
     int videoWidth_ = 0;
     int videoHeight_ = 0;

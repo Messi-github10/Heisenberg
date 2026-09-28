@@ -18,6 +18,18 @@ struct PlaylistClip {
     int64_t duration() const { return out >= in ? out - in + 1 : 0; }
 };
 
+struct PlaylistFilter {
+    std::string id;
+    std::string graph;
+    int64_t in = 0;
+    int64_t out = 0;
+
+    bool covers(int64_t position) const {
+        if (in == 0 && out == 0) return true;
+        return position >= in && (out == 0 || position <= out);
+    }
+};
+
 class Playlist final : public IProducer {
 public:
     Playlist();
@@ -34,7 +46,9 @@ public:
     std::string toJson() const;
 
     const std::vector<PlaylistClip>& clips() const;
+    const std::vector<PlaylistFilter>& filters() const;
     bool isBlankAt(int64_t position) const;
+    const PlaylistFilter* filterAt(int64_t position) const;
 
     const Profile& profile() const override;
     const std::string& resource() const override;
