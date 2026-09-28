@@ -6,23 +6,24 @@
 #include <MultiMedia/Video/Renderer/RenderEngine.hpp>
 #include <Utiles/Logger.hpp>
 
+#include <d3d11.h>
+
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <volk.h>
 
 extern "C" {
+#include <libavutil/buffer.h>
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixfmt.h>
+#include <libplacebo/d3d11.h>
 #include <libplacebo/gpu.h>
 #include <libplacebo/log.h>
 #include <libplacebo/renderer.h>
-#include <libplacebo/vulkan.h>
 }
 
 namespace heisenberg {
@@ -30,6 +31,11 @@ namespace {
 
 void avframeDeleter(AVFrame* frame) {
     av_frame_free(&frame);
+}
+
+void releaseD3D11Texture(void* opaque, uint8_t*) {
+    auto* texture = static_cast<ID3D11Texture2D*>(opaque);
+    if (texture) texture->Release();
 }
 
 void setError(std::string* error, const std::string& message) {
@@ -90,15 +96,6 @@ AVColorTransferCharacteristic avTransfer(ColorTransfer transfer) {
     return AVCOL_TRC_BT709;
 }
 
-const char* formatName(WorkingFormat format) {
-    switch (format) {
-        case WorkingFormat::Rgba8: return "rgba8";
-        case WorkingFormat::Rgba16f: return "rgba16f";
-        case WorkingFormat::Rgba32f: return "rgba32f";
-    }
-    return "rgba16f";
-}
-
 AVPixelFormat avFormat(WorkingFormat format) {
     switch (format) {
         case WorkingFormat::Rgba8: return AV_PIX_FMT_RGBA;
@@ -106,27 +103,6 @@ AVPixelFormat avFormat(WorkingFormat format) {
         case WorkingFormat::Rgba32f: return AV_PIX_FMT_RGBAF32;
     }
     return AV_PIX_FMT_RGBAF16;
-}
-
-uint16_t floatToHalf(float value) {
-    union {
-        float f;
-        uint32_t u;
-    } bits{value};
-    const uint32_t sign = (bits.u >> 16) & 0x8000u;
-    const int32_t exponent = static_cast<int32_t>((bits.u >> 23) & 0xFFu) - 127 + 15;
-    const uint32_t mantissa = bits.u & 0x7FFFFFu;
-    if (exponent <= 0) {
-        if (exponent < -10) return static_cast<uint16_t>(sign);
-        const uint32_t denorm = (mantissa | 0x800000u) >> (1 - exponent);
-        return static_cast<uint16_t>(sign | ((denorm + 0x1000u) >> 13));
-    }
-    if (exponent >= 31) {
-        if (mantissa) return static_cast<uint16_t>(sign | 0x7FFFu);
-        return static_cast<uint16_t>(sign | 0x7C00u);
-    }
-    return static_cast<uint16_t>(
-        sign | (static_cast<uint32_t>(exponent) << 10) | ((mantissa + 0x1000u) >> 13));
 }
 
 std::shared_ptr<AVFrame> transferToSoftware(const AVFrame* source,
@@ -164,6 +140,195 @@ std::shared_ptr<AVFrame> transferToSoftware(const AVFrame* source,
     return std::shared_ptr<AVFrame>(software, avframeDeleter);
 }
 
+struct WrappedSource {
+    pl_frame frame{};
+    pl_tex planes[2]{};
+
+    ~WrappedSource() {
+        // textures are owned by the caller via destroy()
+    }
+
+    void destroy(pl_gpu gpu) {
+        for (pl_tex& plane : planes) {
+            if (plane) pl_tex_destroy(gpu, &plane);
+            plane = nullptr;
+        }
+    }
+};
+
+bool wrapHardwareSource(pl_gpu gpu, const AVFrame* source, WrappedSource& wrapped) {
+    if (!gpu || !source || source->format != AV_PIX_FMT_D3D11 || !source->data[0]) {
+        return false;
+    }
+    auto* texture = reinterpret_cast<ID3D11Texture2D*>(source->data[0]);
+    const int arraySlice = static_cast<int>(
+        reinterpret_cast<intptr_t>(source->data[1]));
+    D3D11_TEXTURE2D_DESC desc{};
+    texture->GetDesc(&desc);
+    if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+        pl_d3d11_wrap_params wrap{};
+        wrap.tex = texture;
+        wrap.array_slice = arraySlice;
+        wrapped.planes[0] = pl_d3d11_wrap(gpu, &wrap);
+        if (!wrapped.planes[0]) return false;
+        wrapped.frame.num_planes = 1;
+        wrapped.frame.planes[0].texture = wrapped.planes[0];
+        wrapped.frame.planes[0].components = 4;
+        wrapped.frame.planes[0].component_mapping[0] = 0;
+        wrapped.frame.planes[0].component_mapping[1] = 1;
+        wrapped.frame.planes[0].component_mapping[2] = 2;
+        wrapped.frame.planes[0].component_mapping[3] = 3;
+        wrapped.frame.repr.sys = PL_COLOR_SYSTEM_RGB;
+        wrapped.frame.repr.levels = PL_COLOR_LEVELS_FULL;
+        wrapped.frame.repr.alpha = PL_ALPHA_INDEPENDENT;
+        wrapped.frame.color = renderer::colorSpaceFromAvFrame(source);
+        wrapped.frame.crop = {0, 0,
+                              static_cast<float>(source->width),
+                              static_cast<float>(source->height)};
+        return true;
+    }
+
+    bool is10Bit = desc.Format == DXGI_FORMAT_P010
+        || desc.Format == DXGI_FORMAT_P016;
+    if (source->hw_frames_ctx) {
+        auto* framesContext = reinterpret_cast<AVHWFramesContext*>(
+            source->hw_frames_ctx->data);
+        is10Bit = framesContext && framesContext->sw_format == AV_PIX_FMT_P010;
+    }
+
+    pl_d3d11_wrap_params yParams{};
+    yParams.tex = texture;
+    yParams.array_slice = arraySlice;
+    yParams.fmt = is10Bit ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R8_UNORM;
+    yParams.w = source->width;
+    yParams.h = source->height;
+    wrapped.planes[0] = pl_d3d11_wrap(gpu, &yParams);
+    if (!wrapped.planes[0]) return false;
+
+    pl_d3d11_wrap_params uvParams{};
+    uvParams.tex = texture;
+    uvParams.array_slice = arraySlice;
+    uvParams.fmt = is10Bit ? DXGI_FORMAT_R16G16_UNORM : DXGI_FORMAT_R8G8_UNORM;
+    uvParams.w = (source->width + 1) / 2;
+    uvParams.h = (source->height + 1) / 2;
+    wrapped.planes[1] = pl_d3d11_wrap(gpu, &uvParams);
+    if (!wrapped.planes[1]) {
+        wrapped.destroy(gpu);
+        return false;
+    }
+
+    wrapped.frame.num_planes = 2;
+    wrapped.frame.planes[0].texture = wrapped.planes[0];
+    wrapped.frame.planes[0].components = 1;
+    wrapped.frame.planes[0].component_mapping[0] = 0;
+    wrapped.frame.planes[1].texture = wrapped.planes[1];
+    wrapped.frame.planes[1].components = 2;
+    wrapped.frame.planes[1].component_mapping[0] = 1;
+    wrapped.frame.planes[1].component_mapping[1] = 2;
+    wrapped.frame.color = renderer::colorSpaceFromAvFrame(source);
+    wrapped.frame.repr.sys = renderer::colorSystemFromAvFrame(source);
+    wrapped.frame.repr.levels = source->color_range == AVCOL_RANGE_JPEG
+        ? PL_COLOR_LEVELS_FULL : PL_COLOR_LEVELS_LIMITED;
+    wrapped.frame.repr.alpha = PL_ALPHA_NONE;
+    if (is10Bit) {
+        wrapped.frame.repr.bits.sample_depth = 16;
+        wrapped.frame.repr.bits.color_depth = 10;
+        wrapped.frame.repr.bits.bit_shift = 6;
+    } else {
+        wrapped.frame.repr.bits.sample_depth = 8;
+        wrapped.frame.repr.bits.color_depth = 8;
+        wrapped.frame.repr.bits.bit_shift = 0;
+    }
+    pl_frame_set_chroma_location(&wrapped.frame, PL_CHROMA_LEFT);
+    wrapped.frame.crop = {0, 0,
+                          static_cast<float>(source->width),
+                          static_cast<float>(source->height)};
+    return true;
+}
+
+void stampFrame(AVFrame* out, const AVFrame* source, const Profile& profile) {
+    if (!out) return;
+    if (source) {
+        out->pts = source->pts;
+        out->time_base = source->time_base;
+        out->duration = source->duration;
+    }
+    out->sample_aspect_ratio = {
+        profile.sampleAspect().num,
+        profile.sampleAspect().den
+    };
+    out->color_range = profile.range() == ColorRange::Full
+        ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+    out->color_primaries = avPrimaries(profile.primaries());
+    out->color_trc = avTransfer(profile.transfer());
+    out->colorspace = AVCOL_SPC_RGB;
+}
+
+std::shared_ptr<AVFrame> makeHardwareCanvas(ID3D11Texture2D* sourceTexture,
+                                            const AVFrame* source,
+                                            const Profile& profile,
+                                            std::string* error) {
+    if (!sourceTexture) {
+        setError(error, "Profile canvas texture is missing");
+        return {};
+    }
+
+    ID3D11Device* device = nullptr;
+    sourceTexture->GetDevice(&device);
+    if (!device) {
+        setError(error, "Failed to query D3D11 device from canvas");
+        return {};
+    }
+    ID3D11Texture2D* copy = nullptr;
+    D3D11_TEXTURE2D_DESC desc{};
+    sourceTexture->GetDesc(&desc);
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    desc.CPUAccessFlags = 0;
+    desc.MiscFlags = 0;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    if (FAILED(device->CreateTexture2D(&desc, nullptr, &copy))) {
+        device->Release();
+        setError(error, "Failed to allocate hardware Profile canvas");
+        return {};
+    }
+    ID3D11DeviceContext* context = nullptr;
+    device->GetImmediateContext(&context);
+    device->Release();
+    if (!context) {
+        copy->Release();
+        setError(error, "Failed to query D3D11 context");
+        return {};
+    }
+    context->CopyResource(copy, sourceTexture);
+    context->Release();
+
+    AVFrame* out = av_frame_alloc();
+    if (!out) {
+        copy->Release();
+        setError(error, "Failed to allocate hardware canvas frame");
+        return {};
+    }
+    out->format = AV_PIX_FMT_D3D11;
+    out->width = profile.width();
+    out->height = profile.height();
+    stampFrame(out, source, profile);
+    out->data[0] = reinterpret_cast<uint8_t*>(copy);
+    out->data[1] = nullptr;
+    out->buf[0] = av_buffer_create(
+        reinterpret_cast<uint8_t*>(copy),
+        sizeof(ID3D11Texture2D*),
+        releaseD3D11Texture,
+        copy,
+        0);
+    if (!out->buf[0]) {
+        copy->Release();
+        av_frame_free(&out);
+        setError(error, "Failed to attach hardware canvas buffer");
+        return {};
+    }
+    return std::shared_ptr<AVFrame>(out, avframeDeleter);
+}
+
 pl_rect2df letterbox(int srcWidth, int srcHeight, int dstWidth, int dstHeight) {
     const float srcAspect = static_cast<float>(srcWidth) /
                             static_cast<float>(std::max(srcHeight, 1));
@@ -188,16 +353,28 @@ pl_rect2df letterbox(int srcWidth, int srcHeight, int dstWidth, int dstHeight) {
 struct ProfileNormalizer::Impl {
     Profile profile;
     pl_log log = nullptr;
-    pl_vulkan vulkan = nullptr;
+    pl_d3d11 d3d = nullptr;
     pl_gpu gpu = nullptr;
-    pl_tex target = nullptr;
+    pl_tex canvas = nullptr;
+    ID3D11Device* device = nullptr;
+    ID3D11DeviceContext* context = nullptr;
+    ID3D11Texture2D* canvasTexture = nullptr;
+    ID3D11Texture2D* stagingTexture = nullptr;
     std::unique_ptr<renderer::SoftwareContext> software;
     std::unique_ptr<renderer::RenderEngine> render;
     bool ready = false;
 
     void destroyTarget() {
-        if (gpu && target) pl_tex_destroy(gpu, &target);
-        target = nullptr;
+        if (gpu && canvas) pl_tex_destroy(gpu, &canvas);
+        canvas = nullptr;
+        if (stagingTexture) {
+            stagingTexture->Release();
+            stagingTexture = nullptr;
+        }
+        if (canvasTexture) {
+            canvasTexture->Release();
+            canvasTexture = nullptr;
+        }
     }
 
     void shutdown() {
@@ -207,10 +384,30 @@ struct ProfileNormalizer::Impl {
             software.reset();
         }
         render.reset();
-        if (vulkan) pl_vulkan_destroy(&vulkan);
+        if (d3d) pl_d3d11_destroy(&d3d);
         if (log) pl_log_destroy(&log);
         gpu = nullptr;
+        device = nullptr;
+        context = nullptr;
         ready = false;
+    }
+
+    bool createTexture(ID3D11Texture2D** out,
+                       D3D11_USAGE usage,
+                       UINT bindFlags,
+                       UINT cpuAccess) const {
+        if (!device || !out) return false;
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = static_cast<UINT>(profile.width());
+        desc.Height = static_cast<UINT>(profile.height());
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = usage;
+        desc.BindFlags = bindFlags;
+        desc.CPUAccessFlags = cpuAccess;
+        return SUCCEEDED(device->CreateTexture2D(&desc, nullptr, out));
     }
 };
 
@@ -233,11 +430,15 @@ bool ProfileNormalizer::initialize(const Profile& profile, std::string* error) {
     shutdown();
     impl_->profile = profile;
 
-    if (volkInitialize() != VK_SUCCESS) {
-        setError(error, "Failed to load the Vulkan loader");
+    auto& d3d11 = renderer::D3D11Context::instance();
+    d3d11.createDevice();
+    impl_->device = d3d11.device();
+    impl_->context = d3d11.context();
+    if (!impl_->device || !impl_->context) {
+        setError(error, "Failed to create D3D11 device for Profile canvas");
+        shutdown();
         return false;
     }
-    renderer::D3D11Context::instance().createDevice();
 
     static const auto logCallback = [](void*, enum pl_log_level level, const char* msg) {
         switch (level) {
@@ -256,45 +457,39 @@ bool ProfileNormalizer::initialize(const Profile& profile, std::string* error) {
         return false;
     }
 
-    pl_vulkan_params vulkanParams = pl_vulkan_default_params;
-    vulkanParams.allow_software = true;
-    impl_->vulkan = pl_vulkan_create(impl_->log, &vulkanParams);
-    if (!impl_->vulkan || !impl_->vulkan->gpu) {
-        setError(error, "Failed to create libplacebo Vulkan GPU");
+    pl_d3d11_params d3dParams = pl_d3d11_default_params;
+    d3dParams.device = impl_->device;
+    d3dParams.allow_software = false;
+    impl_->d3d = pl_d3d11_create(impl_->log, &d3dParams);
+    if (!impl_->d3d || !impl_->d3d->gpu) {
+        setError(error, "Failed to create libplacebo D3D11 GPU");
         shutdown();
         return false;
     }
-    impl_->gpu = impl_->vulkan->gpu;
+    impl_->gpu = impl_->d3d->gpu;
 
-    const char* name = formatName(profile.workingFormat());
-    pl_fmt format = nullptr;
-    if (profile.workingFormat() == WorkingFormat::Rgba16f) {
-        format = pl_find_named_fmt(impl_->gpu, "rgba16hf");
-        if (!format) format = pl_find_named_fmt(impl_->gpu, name);
-        if (format && format->texel_size != 8) {
-            pl_fmt half = pl_find_named_fmt(impl_->gpu, "rgba16hf");
-            if (half && half->texel_size == 8) format = half;
-        }
-    } else {
-        format = pl_find_named_fmt(impl_->gpu, name);
-    }
-    if (!format) {
-        setError(error, std::string("GPU does not support working format ") + name);
-        shutdown();
-        return false;
-    }
-
-    pl_tex_params tex{};
-    tex.w = profile.width();
-    tex.h = profile.height();
-    tex.format = format;
-    tex.renderable = true;
-    tex.blit_dst = true;
-    tex.host_readable = true;
-    tex.storable = true;
-    impl_->target = pl_tex_create(impl_->gpu, &tex);
-    if (!impl_->target) {
+    if (!impl_->createTexture(&impl_->canvasTexture,
+                              D3D11_USAGE_DEFAULT,
+                              D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+                              0)) {
         setError(error, "Failed to create Profile working texture");
+        shutdown();
+        return false;
+    }
+    if (!impl_->createTexture(&impl_->stagingTexture,
+                              D3D11_USAGE_STAGING,
+                              0,
+                              D3D11_CPU_ACCESS_READ)) {
+        setError(error, "Failed to create Profile staging texture");
+        shutdown();
+        return false;
+    }
+
+    pl_d3d11_wrap_params wrap{};
+    wrap.tex = impl_->canvasTexture;
+    impl_->canvas = pl_d3d11_wrap(impl_->gpu, &wrap);
+    if (!impl_->canvas) {
+        setError(error, "Failed to wrap Profile working texture");
         shutdown();
         return false;
     }
@@ -309,8 +504,8 @@ bool ProfileNormalizer::initialize(const Profile& profile, std::string* error) {
     }
 
     impl_->ready = true;
-    LOG_INFO("ProfileNormalizer: {}x{} {}",
-             profile.width(), profile.height(), name);
+    LOG_INFO("ProfileNormalizer: {}x{} rgba16f on D3D11",
+             profile.width(), profile.height());
     return true;
 }
 
@@ -321,18 +516,29 @@ std::shared_ptr<AVFrame> ProfileNormalizer::normalize(const AVFrame* source,
         return {};
     }
 
-    std::shared_ptr<AVFrame> software = transferToSoftware(source, error);
-    if (!software || !software->data[0]) return {};
-
-    const pl_frame* uploaded = impl_->software->uploadAvFrame(software.get());
-    if (!uploaded) {
-        setError(error, "Failed to upload source frame");
-        return {};
+    WrappedSource hardware;
+    const pl_frame* uploaded = nullptr;
+    std::shared_ptr<AVFrame> software;
+    const bool hardwareSource = source->format == AV_PIX_FMT_D3D11;
+    if (hardwareSource) {
+        if (!wrapHardwareSource(impl_->gpu, source, hardware)) {
+            setError(error, "Failed to wrap D3D11 source frame");
+            return {};
+        }
+        uploaded = &hardware.frame;
+    } else {
+        software = transferToSoftware(source, error);
+        if (!software || !software->data[0]) return {};
+        uploaded = impl_->software->uploadAvFrame(software.get());
+        if (!uploaded) {
+            setError(error, "Failed to upload source frame");
+            return {};
+        }
     }
 
     pl_frame target = {};
     target.num_planes = 1;
-    target.planes[0].texture = impl_->target;
+    target.planes[0].texture = impl_->canvas;
     target.planes[0].components = 4;
     target.planes[0].component_mapping[0] = 0;
     target.planes[0].component_mapping[1] = 1;
@@ -343,83 +549,62 @@ std::shared_ptr<AVFrame> ProfileNormalizer::normalize(const AVFrame* source,
         ? PL_COLOR_LEVELS_PC : PL_COLOR_LEVELS_TV;
     target.repr.alpha = PL_ALPHA_INDEPENDENT;
     target.color = profileColor(impl_->profile);
-    target.crop = letterbox(software->width, software->height,
+    target.crop = letterbox(source->width, source->height,
                             impl_->profile.width(), impl_->profile.height());
 
     pl_render_params params = pl_render_default_params;
     params.skip_target_clearing = false;
     params.background_transparency = 0.0f;
     params.corner_rounding = 0.0f;
-    if (!impl_->render->render(uploaded, &target, &params)) {
+    const bool rendered = impl_->render->render(uploaded, &target, &params);
+    hardware.destroy(impl_->gpu);
+    if (!rendered) {
         setError(error, "Failed to render source frame into the Profile canvas");
         return {};
     }
+    if (impl_->context) impl_->context->Flush();
 
-    const pl_fmt format = impl_->target->params.format;
-    const size_t texelSize = format && format->texel_size ? format->texel_size : 8;
-    const size_t texelAlign = format && format->texel_align ? format->texel_align : 1;
-    size_t rowPitch = static_cast<size_t>(impl_->profile.width()) * texelSize;
-    if (texelAlign > 1) {
-        rowPitch = (rowPitch + texelAlign - 1) / texelAlign * texelAlign;
+    if (hardwareSource) {
+        return makeHardwareCanvas(impl_->canvasTexture, source,
+                                  impl_->profile, error);
     }
 
-    std::vector<uint8_t> staging(rowPitch * static_cast<size_t>(impl_->profile.height()));
-    pl_tex_transfer_params download{};
-    download.tex = impl_->target;
-    download.ptr = staging.data();
-    download.row_pitch = rowPitch;
-    if (!pl_tex_download(impl_->gpu, &download)) {
-        setError(error, "Failed to download normalized frame");
+    impl_->context->CopyResource(impl_->stagingTexture, impl_->canvasTexture);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(impl_->context->Map(impl_->stagingTexture, 0,
+                                   D3D11_MAP_READ, 0, &mapped))) {
+        setError(error, "Failed to map Profile canvas");
         return {};
     }
 
     AVFrame* out = av_frame_alloc();
     if (!out) {
+        impl_->context->Unmap(impl_->stagingTexture, 0);
         setError(error, "Failed to allocate normalized frame");
         return {};
     }
     out->format = avFormat(impl_->profile.workingFormat());
     out->width = impl_->profile.width();
     out->height = impl_->profile.height();
-    out->color_range = impl_->profile.range() == ColorRange::Full
-        ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
-    out->color_primaries = avPrimaries(impl_->profile.primaries());
-    out->color_trc = avTransfer(impl_->profile.transfer());
-    out->colorspace = AVCOL_SPC_RGB;
+    stampFrame(out, software ? software.get() : source, impl_->profile);
     if (av_frame_get_buffer(out, 32) < 0) {
+        impl_->context->Unmap(impl_->stagingTexture, 0);
         av_frame_free(&out);
         setError(error, "Failed to allocate normalized frame buffer");
         return {};
     }
 
-    const int packedStride = out->linesize[0];
     const size_t packedTexel = 8;
-    const bool gpuIsFloat32 = texelSize >= 16;
+    const size_t srcPitch = mapped.RowPitch;
     for (int y = 0; y < out->height; ++y) {
-        const uint8_t* src = staging.data() + static_cast<size_t>(y) * rowPitch;
-        uint8_t* dst = out->data[0] + static_cast<size_t>(y) * packedStride;
-        if (!gpuIsFloat32 && texelSize == packedTexel) {
+        const uint8_t* src = static_cast<const uint8_t*>(mapped.pData)
+            + static_cast<size_t>(y) * srcPitch;
+        uint8_t* dst = out->data[0] + static_cast<size_t>(y) * out->linesize[0];
+        if (srcPitch >= static_cast<size_t>(out->width) * packedTexel) {
             std::memcpy(dst, src, static_cast<size_t>(out->width) * packedTexel);
-            continue;
-        }
-        for (int x = 0; x < out->width; ++x) {
-            const float* pixel = reinterpret_cast<const float*>(
-                src + static_cast<size_t>(x) * texelSize);
-            uint16_t* half = reinterpret_cast<uint16_t*>(
-                dst + static_cast<size_t>(x) * packedTexel);
-            for (int c = 0; c < 4; ++c) {
-                half[c] = floatToHalf(pixel[c]);
-            }
         }
     }
-
-    out->pts = software->pts;
-    out->time_base = software->time_base;
-    out->duration = software->duration;
-    out->sample_aspect_ratio = {
-        impl_->profile.sampleAspect().num,
-        impl_->profile.sampleAspect().den
-    };
+    impl_->context->Unmap(impl_->stagingTexture, 0);
     return std::shared_ptr<AVFrame>(out, avframeDeleter);
 }
 

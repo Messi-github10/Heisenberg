@@ -158,6 +158,94 @@ struct D3D11VulkanInterop::Impl {
     VkSemaphore readySemaphore = VK_NULL_HANDLE;
     uint64_t readyValue = 0;
 
+    FrameResource* acquireSlot() {
+        if (frames.empty()) return nullptr;
+        FrameResource& frame = frames[nextSlot];
+        nextSlot = (nextSlot + 1) % frames.size();
+        currentSlot = static_cast<int>(&frame - frames.data());
+        if (frame.reuseValue != 0) {
+            VkSemaphoreWaitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+            waitInfo.semaphoreCount = 1;
+            waitInfo.pSemaphores = &frame.reuseSemaphore;
+            waitInfo.pValues = &frame.reuseValue;
+            if (vkWaitSemaphores(vkDevice, &waitInfo, UINT64_MAX) != VK_SUCCESS) {
+                return nullptr;
+            }
+        }
+        return &frame;
+    }
+
+    bool exportToVulkan(FrameResource& frame, filtergraph::VulkanImageRef& out) {
+        ++frame.fenceValue;
+        signalD3D11Fence(d3dContext, frame.d3dFence, frame.fenceValue);
+        if (!importVulkanImage(frame)) {
+            LOG_ERROR("D3D11VulkanInterop: failed to import shared RGBA texture into Vulkan");
+            return false;
+        }
+
+        if (vkWaitForFences(vkDevice, 1, &acquireFence, VK_TRUE, UINT64_MAX)
+            != VK_SUCCESS) {
+            return false;
+        }
+        vkResetFences(vkDevice, 1, &acquireFence);
+        vkResetCommandBuffer(acquireCommand, 0);
+        VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(acquireCommand, &beginInfo) != VK_SUCCESS) {
+            return false;
+        }
+        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.oldLayout = frame.reuseValue ? VK_IMAGE_LAYOUT_GENERAL
+                                             : VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+        barrier.dstQueueFamilyIndex = graphicsQueueFamily;
+        barrier.image = frame.image;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(acquireCommand, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr,
+                             0, nullptr, 1, &barrier);
+        if (vkEndCommandBuffer(acquireCommand) != VK_SUCCESS) return false;
+
+        const uint64_t fenceValue = frame.fenceValue;
+        const uint64_t nextReady = ++readyValue;
+        VkTimelineSemaphoreSubmitInfo timelineInfo{
+            VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+        timelineInfo.waitSemaphoreValueCount = 1;
+        timelineInfo.pWaitSemaphoreValues = &fenceValue;
+        timelineInfo.signalSemaphoreValueCount = 1;
+        timelineInfo.pSignalSemaphoreValues = &nextReady;
+        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submitInfo.pNext = &timelineInfo;
+        submitInfo.waitSemaphoreCount = 1;
+        submitInfo.pWaitSemaphores = &frame.d3dDoneSemaphore;
+        submitInfo.pWaitDstStageMask = &waitStage;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &acquireCommand;
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &readySemaphore;
+        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, acquireFence)
+            != VK_SUCCESS) {
+            return false;
+        }
+
+        out = {};
+        out.image = frame.image;
+        out.view = frame.view;
+        out.vkFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+        out.extent = {static_cast<uint32_t>(width),
+                      static_cast<uint32_t>(height)};
+        out.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+        out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        out.queueFamilyIndex = graphicsQueueFamily;
+        out.ready = {readySemaphore, nextReady};
+        out.contract = filtergraph::kWorkingImageContract;
+        return true;
+    }
+
     bool createSharedTexture(FrameResource& frame) {
         D3D11_TEXTURE2D_DESC desc{};
         desc.Width = static_cast<UINT>(width);
@@ -620,17 +708,9 @@ bool D3D11VulkanInterop::processFrame(const AVFrame* hwFrame,
         logTextureDesc("shared-target", impl_->frames[impl_->nextSlot].sharedTexture);
     }
 
-    Impl::FrameResource& frame = impl_->frames[impl_->nextSlot];
-    impl_->nextSlot = (impl_->nextSlot + 1) % impl_->frames.size();
-    impl_->currentSlot = static_cast<int>(&frame - impl_->frames.data());
-    if (frame.reuseValue != 0) {
-        VkSemaphoreWaitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-        waitInfo.semaphoreCount = 1;
-        waitInfo.pSemaphores = &frame.reuseSemaphore;
-        waitInfo.pValues = &frame.reuseValue;
-        if (vkWaitSemaphores(impl_->vkDevice, &waitInfo, UINT64_MAX)
-            != VK_SUCCESS) return false;
-    }
+    Impl::FrameResource* slot = impl_->acquireSlot();
+    if (!slot) return false;
+    Impl::FrameResource& frame = *slot;
 
     const int uvWidth = (impl_->width + 1) / 2;
     const int uvHeight = (impl_->height + 1) / 2;
@@ -748,69 +828,33 @@ bool D3D11VulkanInterop::processFrame(const AVFrame* hwFrame,
     }
 
     impl_->d3dContext->Flush();
-    ++frame.fenceValue;
-    signalD3D11Fence(impl_->d3dContext, frame.d3dFence, frame.fenceValue);
-    if (!impl_->importVulkanImage(frame)) {
-        LOG_ERROR("D3D11VulkanInterop: failed to import shared RGBA texture into Vulkan");
+    return impl_->exportToVulkan(frame, out);
+}
+
+bool D3D11VulkanInterop::processRgbFrame(const AVFrame* hwFrame,
+                                         filtergraph::VulkanImageRef& out) {
+    if (!impl_ || !hwFrame || hwFrame->format != AV_PIX_FMT_D3D11
+        || !hwFrame->data[0] || impl_->frames.empty()) return false;
+
+    auto* sourceTexture = reinterpret_cast<ID3D11Texture2D*>(hwFrame->data[0]);
+    D3D11_TEXTURE2D_DESC sourceDesc{};
+    sourceTexture->GetDesc(&sourceDesc);
+    if (sourceDesc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT) return false;
+    if (static_cast<int>(sourceDesc.Width) != impl_->width
+        || static_cast<int>(sourceDesc.Height) != impl_->height) {
         return false;
     }
 
-    if (vkWaitForFences(impl_->vkDevice, 1, &impl_->acquireFence, VK_TRUE,
-                        UINT64_MAX) != VK_SUCCESS) return false;
-    vkResetFences(impl_->vkDevice, 1, &impl_->acquireFence);
-    vkResetCommandBuffer(impl_->acquireCommand, 0);
-    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vkBeginCommandBuffer(impl_->acquireCommand, &beginInfo) != VK_SUCCESS)
-        return false;
-    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrier.srcAccessMask = 0;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    barrier.oldLayout = frame.reuseValue ? VK_IMAGE_LAYOUT_GENERAL
-                                         : VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
-    barrier.dstQueueFamilyIndex = impl_->graphicsQueueFamily;
-    barrier.image = frame.image;
-    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdPipelineBarrier(impl_->acquireCommand, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &barrier);
-    if (vkEndCommandBuffer(impl_->acquireCommand) != VK_SUCCESS) return false;
-
-    const uint64_t fenceValue = frame.fenceValue;
-    const uint64_t readyValue = ++impl_->readyValue;
-    VkTimelineSemaphoreSubmitInfo timelineInfo{
-        VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
-    timelineInfo.waitSemaphoreValueCount = 1;
-    timelineInfo.pWaitSemaphoreValues = &fenceValue;
-    timelineInfo.signalSemaphoreValueCount = 1;
-    timelineInfo.pSignalSemaphoreValues = &readyValue;
-    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    submitInfo.pNext = &timelineInfo;
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = &frame.d3dDoneSemaphore;
-    submitInfo.pWaitDstStageMask = &waitStage;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &impl_->acquireCommand;
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &impl_->readySemaphore;
-    if (vkQueueSubmit(impl_->graphicsQueue, 1, &submitInfo,
-                      impl_->acquireFence) != VK_SUCCESS) return false;
-
-    out = {};
-    out.image = frame.image;
-    out.view = frame.view;
-    out.vkFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-    out.extent = {static_cast<uint32_t>(impl_->width),
-                  static_cast<uint32_t>(impl_->height)};
-    out.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
-    out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    out.queueFamilyIndex = impl_->graphicsQueueFamily;
-    out.ready = {impl_->readySemaphore, readyValue};
-    out.contract = filtergraph::kWorkingImageContract;
-    return true;
+    Impl::FrameResource* slot = impl_->acquireSlot();
+    if (!slot) return false;
+    Impl::FrameResource& frame = *slot;
+    impl_->d3dContext->CopyResource(frame.sharedTexture, sourceTexture);
+    impl_->d3dContext->Flush();
+    if (++impl_->diagnosticFrames <= 3 || impl_->diagnosticFrames % 60 == 0) {
+        LOG_INFO("D3D11VulkanInterop: frame#{} Profile canvas {}x{} rgba16f",
+                 impl_->diagnosticFrames, impl_->width, impl_->height);
+    }
+    return impl_->exportToVulkan(frame, out);
 }
 
 void D3D11VulkanInterop::releaseFrame(

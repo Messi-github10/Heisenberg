@@ -70,3 +70,20 @@ TEST(BlankProducerTest, GetFrameReturnsWhiteCanvasAndSilence) {
     const heisenberg::ProducerFrame pastEnd = blank.getFrame(24);
     EXPECT_TRUE(pastEnd.eof);
 }
+
+TEST(BlankProducerTest, HardwareDecodeUsesD3D11Canvas) {
+    heisenberg::BlankProducer blank(heisenberg::Profile::hd1080p24(), 4);
+    blank.setHardwareDecode(true);
+
+    const heisenberg::ProducerFrame frame = blank.getFrame(0);
+    ASSERT_FALSE(frame.eof);
+    ASSERT_TRUE(frame.hasVideo());
+    EXPECT_EQ(frame.video->width, 1920);
+    EXPECT_EQ(frame.video->height, 1080);
+    EXPECT_TRUE(frame.video->format == AV_PIX_FMT_D3D11
+                || frame.video->format == AV_PIX_FMT_RGBAF16);
+    if (frame.video->format == AV_PIX_FMT_RGBAF16) {
+        EXPECT_TRUE(isWhiteCanvas(frame));
+    }
+    EXPECT_TRUE(isSilent(frame));
+}

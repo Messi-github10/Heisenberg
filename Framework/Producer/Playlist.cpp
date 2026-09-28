@@ -311,6 +311,7 @@ bool Playlist::loadFromJson(const std::string& text,
 
     std::unordered_map<std::string, std::unique_ptr<Producer>> producers;
     auto blank = std::make_unique<BlankProducer>(profile);
+    blank->setHardwareDecode(impl_->hardwareDecode);
     for (PlaylistClip& clip : clips) {
         if (isBlankResource(clip.resource)) {
             blank->ensureLength(clip.out + 1);

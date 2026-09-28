@@ -27,6 +27,8 @@ public:
 
     bool processFrame(const AVFrame* hwFrame,
                       filtergraph::VulkanImageRef& out);
+    bool processRgbFrame(const AVFrame* hwFrame,
+                         filtergraph::VulkanImageRef& out);
     void releaseFrame(const filtergraph::VulkanSyncPoint& done);
     bool resize(int width, int height);
 

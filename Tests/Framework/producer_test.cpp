@@ -53,7 +53,8 @@ TEST(ProducerTest, GetFrameAndSeekUseProfileCanvas) {
     EXPECT_EQ(third.position, 2);
     EXPECT_EQ(first.video->width, 1920);
     EXPECT_EQ(first.video->height, 1080);
-    EXPECT_EQ(first.video->format, AV_PIX_FMT_RGBAF16);
+    EXPECT_TRUE(first.video->format == AV_PIX_FMT_RGBAF16
+                || first.video->format == AV_PIX_FMT_D3D11);
     if (first.hasAudio()) {
         EXPECT_EQ(first.audio->spec().sampleRate, 48000);
         EXPECT_EQ(first.audio->spec().channels, 2);

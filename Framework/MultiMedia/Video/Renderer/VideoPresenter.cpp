@@ -12,6 +12,7 @@
 #include <MultiMedia/Video/Renderer/FilterGraph/Interface/IPipeGraph.hpp>
 #include <Utiles/Logger.hpp>
 
+#include <d3d11.h>
 #include <vulkan/vulkan.hpp>
 
 #include <exception>
@@ -116,6 +117,15 @@ pl_color_space makeDisplayColor() {
 pl_color_space makeWorkingColor(const pl_frame& source) {
     (void)source;
     return workingColorSpace();
+}
+
+bool isRgb16fD3D11(const AVFrame* frame) {
+    if (!frame || frame->format != AV_PIX_FMT_D3D11 || !frame->data[0]) {
+        return false;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    reinterpret_cast<ID3D11Texture2D*>(frame->data[0])->GetDesc(&desc);
+    return desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
 }
 
 } // namespace
@@ -486,10 +496,12 @@ bool VideoPresenter::presentHardwareFrame(const AVFrame* avframe) {
     const int height = avframe->height;
     if (width <= 0 || height <= 0) return false;
 
-    // D3D11 interop and the software upload path both produce the same
-    // scene-linear BT.2020 working image. Display conversion is performed
-    // only by the final swapchain render.
-    impl_->workingColor = workingColorSpace();
+    const bool rgbCanvas = isRgb16fD3D11(avframe);
+    // Decoder NV12 still converts into the scene-linear working image.
+    // Profile canvas frames already live in the timeline working space.
+    impl_->workingColor = rgbCanvas
+        ? colorSpaceFromAvFrame(avframe)
+        : workingColorSpace();
 
     if (!impl_->interop || impl_->interopWidth != width
         || impl_->interopHeight != height) {
@@ -512,7 +524,10 @@ bool VideoPresenter::presentHardwareFrame(const AVFrame* avframe) {
     }
 
     filtergraph::VulkanImageRef graphInput;
-    if (!impl_->interop->processFrame(avframe, graphInput)) {
+    const bool imported = rgbCanvas
+        ? impl_->interop->processRgbFrame(avframe, graphInput)
+        : impl_->interop->processFrame(avframe, graphInput);
+    if (!imported) {
         LOG_ERROR("VideoPresenter: D3D11/Vulkan interop processFrame failed");
         return false;
     }

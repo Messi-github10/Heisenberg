@@ -15,6 +15,7 @@ public:
     BlankProducer(const BlankProducer&) = delete;
     BlankProducer& operator=(const BlankProducer&) = delete;
 
+    void setHardwareDecode(bool enabled);
     void ensureLength(int64_t length);
 
     const Profile& profile() const override;
