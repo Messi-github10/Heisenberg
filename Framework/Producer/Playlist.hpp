@@ -34,6 +34,7 @@ public:
     std::string toJson() const;
 
     const std::vector<PlaylistClip>& clips() const;
+    bool isBlankAt(int64_t position) const;
 
     const Profile& profile() const override;
     const std::string& resource() const override;

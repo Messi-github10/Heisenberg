@@ -1,3 +1,4 @@
+#include <Producer/IProducer.hpp>
 #include <Producer/Playlist.hpp>
 #include <Utiles/Logger.hpp>
 
@@ -88,6 +89,64 @@ TEST(PlaylistTest, SequentialGetFrameCrossesCutsOnProfileCanvas) {
         ASSERT_TRUE(frame.hasVideo()) << index;
         EXPECT_EQ(frame.position, index);
     }
+
+    const heisenberg::ProducerFrame pastEnd = playlist.getFrame(playlist.length());
+    EXPECT_TRUE(pastEnd.eof);
+}
+
+TEST(PlaylistTest, BlankClipFillsGapWithWhiteCanvas) {
+    const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
+    const std::string clipB = HEISENBERG_PLAYLIST_CLIP_B;
+    ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
+    ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipB)));
+
+    const std::string json =
+        std::string("{\n") +
+        "  \"version\": 1,\n" +
+        "  \"profile\": { \"id\": \"hd_1080p_24\" },\n" +
+        "  \"clips\": [\n" +
+        "    { \"id\": \"a\", \"resource\": \"" + jsonEscape(clipA) +
+        "\", \"in\": 0, \"out\": 4 },\n" +
+        "    { \"id\": \"gap\", \"resource\": \"blank\", \"in\": 0, \"out\": 2 },\n" +
+        "    { \"id\": \"b\", \"resource\": \"" + jsonEscape(clipB) +
+        "\", \"in\": 0, \"out\": 4 }\n" +
+        "  ]\n" +
+        "}\n";
+
+    heisenberg::Playlist playlist;
+    playlist.setHardwareDecode(false);
+    std::string error;
+    ASSERT_TRUE(playlist.loadFromJson(json, &error)) << error;
+    ASSERT_EQ(playlist.clips().size(), 3u);
+    ASSERT_EQ(playlist.length(), 13);
+    EXPECT_EQ(playlist.clips()[1].resource, heisenberg::kBlankResource);
+    EXPECT_EQ(playlist.clips()[1].start, 5);
+    EXPECT_FALSE(playlist.isBlankAt(4));
+    EXPECT_TRUE(playlist.isBlankAt(5));
+    EXPECT_TRUE(playlist.isBlankAt(7));
+    EXPECT_FALSE(playlist.isBlankAt(8));
+
+    const heisenberg::ProducerFrame beforeGap = playlist.getFrame(4);
+    const heisenberg::ProducerFrame gapStart = playlist.getFrame(5);
+    const heisenberg::ProducerFrame gapEnd = playlist.getFrame(7);
+    const heisenberg::ProducerFrame afterGap = playlist.getFrame(8);
+    ASSERT_FALSE(beforeGap.eof || gapStart.eof || gapEnd.eof || afterGap.eof);
+    EXPECT_TRUE(isCanvas(beforeGap));
+    EXPECT_TRUE(isCanvas(gapStart));
+    EXPECT_TRUE(isCanvas(gapEnd));
+    EXPECT_TRUE(isCanvas(afterGap));
+    EXPECT_EQ(gapStart.position, 5);
+    EXPECT_EQ(gapEnd.position, 7);
+
+    const uint16_t white = 0x3C00;
+    const uint16_t* pixel = reinterpret_cast<const uint16_t*>(gapStart.video->data[0]);
+    EXPECT_EQ(pixel[0], white);
+    EXPECT_EQ(pixel[1], white);
+    EXPECT_EQ(pixel[2], white);
+    EXPECT_EQ(pixel[3], white);
+    ASSERT_TRUE(gapStart.hasAudio());
+    EXPECT_EQ(gapStart.audio->samples(), 2000);
+    EXPECT_EQ(gapStart.audio->channelRo(0)[0], 0.0f);
 
     const heisenberg::ProducerFrame pastEnd = playlist.getFrame(playlist.length());
     EXPECT_TRUE(pastEnd.eof);

@@ -6,10 +6,17 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 
 struct AVFrame;
 
 namespace heisenberg {
+
+inline constexpr const char* kBlankResource = "blank";
+
+inline bool isBlankResource(std::string_view resource) {
+    return resource == kBlankResource;
+}
 
 struct ProducerFrame {
     int64_t position = 0;
@@ -34,6 +41,7 @@ public:
     virtual bool seekable() const = 0;
     virtual bool seek(int64_t position) = 0;
     virtual ProducerFrame getFrame(int64_t position) = 0;
+    virtual bool isBlank() const { return false; }
 };
 
 } // namespace heisenberg

@@ -56,6 +56,7 @@ add_custom_target(HeisenbergFrameworkTestMedia
 add_executable(HeisenbergFrameworkTests
     profile_test.cpp
     producer_test.cpp
+    blank_test.cpp
     playlist_test.cpp
 )
 add_dependencies(HeisenbergFrameworkTests HeisenbergFrameworkTestMedia)

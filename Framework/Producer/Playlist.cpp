@@ -1,5 +1,6 @@
 #include "Playlist.hpp"
 
+#include "BlankProducer.hpp"
 #include "Producer.hpp"
 
 #include <nlohmann/json.hpp>
@@ -165,20 +166,23 @@ struct Playlist::Impl {
     bool hardwareDecode = false;
     std::vector<PlaylistClip> clips;
     std::unordered_map<std::string, std::unique_ptr<Producer>> producers;
+    std::unique_ptr<BlankProducer> blank;
     int64_t length = 0;
     int64_t position = 0;
 
     void reset() {
         clips.clear();
         producers.clear();
+        blank.reset();
         length = 0;
         position = 0;
         resource = "<playlist>";
         profile = Profile::hd1080p24();
     }
 
-    Producer* producerFor(const std::string& path) {
-        const auto found = producers.find(path);
+    IProducer* producerFor(const PlaylistClip& clip) const {
+        if (isBlankResource(clip.resource)) return blank.get();
+        const auto found = producers.find(clip.resource);
         return found == producers.end() ? nullptr : found->second.get();
     }
 
@@ -295,14 +299,24 @@ bool Playlist::loadFromJson(const std::string& text,
             setError(error, context + " out must be >= in");
             return false;
         }
-        clip.resource = resolveResource(resource, baseDir);
+        if (isBlankResource(resource)) {
+            clip.resource = kBlankResource;
+        } else {
+            clip.resource = resolveResource(resource, baseDir);
+        }
         clip.start = timeline;
         timeline += clip.duration();
         clips.push_back(std::move(clip));
     }
 
     std::unordered_map<std::string, std::unique_ptr<Producer>> producers;
+    auto blank = std::make_unique<BlankProducer>(profile);
     for (PlaylistClip& clip : clips) {
+        if (isBlankResource(clip.resource)) {
+            blank->ensureLength(clip.out + 1);
+            continue;
+        }
+
         Producer* producer = nullptr;
         const auto found = producers.find(clip.resource);
         if (found == producers.end()) {
@@ -330,6 +344,7 @@ bool Playlist::loadFromJson(const std::string& text,
     impl_->profile = std::move(profile);
     impl_->clips = std::move(clips);
     impl_->producers = std::move(producers);
+    impl_->blank = std::move(blank);
     impl_->length = timeline;
     impl_->position = 0;
     impl_->resource = "<playlist>";
@@ -360,6 +375,11 @@ const std::vector<PlaylistClip>& Playlist::clips() const {
     return impl_->clips;
 }
 
+bool Playlist::isBlankAt(int64_t position) const {
+    const PlaylistClip* clip = impl_->clipAt(position);
+    return clip && isBlankResource(clip->resource);
+}
+
 const Profile& Playlist::profile() const {
     return impl_->profile;
 }
@@ -385,7 +405,7 @@ int64_t Playlist::position() const {
 }
 
 bool Playlist::seekable() const {
-    if (impl_->producers.empty()) return false;
+    if (impl_->length <= 0) return false;
     for (const auto& [path, producer] : impl_->producers) {
         if (!producer || !producer->seekable()) return false;
     }
@@ -413,7 +433,7 @@ ProducerFrame Playlist::getFrame(int64_t position) {
     }
 
     const PlaylistClip* clip = impl_->clipAt(position);
-    Producer* producer = clip ? impl_->producerFor(clip->resource) : nullptr;
+    IProducer* producer = clip ? impl_->producerFor(*clip) : nullptr;
     if (!clip || !producer) {
         frame.eof = true;
         frame.position = position;
