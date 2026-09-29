@@ -360,6 +360,7 @@ struct ProfileNormalizer::Impl {
     ID3D11DeviceContext* context = nullptr;
     ID3D11Texture2D* canvasTexture = nullptr;
     ID3D11Texture2D* stagingTexture = nullptr;
+    ID3D11RenderTargetView* canvasRtv = nullptr;
     std::unique_ptr<renderer::SoftwareContext> software;
     std::unique_ptr<renderer::RenderEngine> render;
     bool ready = false;
@@ -367,6 +368,10 @@ struct ProfileNormalizer::Impl {
     void destroyTarget() {
         if (gpu && canvas) pl_tex_destroy(gpu, &canvas);
         canvas = nullptr;
+        if (canvasRtv) {
+            canvasRtv->Release();
+            canvasRtv = nullptr;
+        }
         if (stagingTexture) {
             stagingTexture->Release();
             stagingTexture = nullptr;
@@ -484,6 +489,12 @@ bool ProfileNormalizer::initialize(const Profile& profile, std::string* error) {
         shutdown();
         return false;
     }
+    if (FAILED(impl_->device->CreateRenderTargetView(
+            impl_->canvasTexture, nullptr, &impl_->canvasRtv))) {
+        setError(error, "Failed to create Profile canvas render target");
+        shutdown();
+        return false;
+    }
 
     pl_d3d11_wrap_params wrap{};
     wrap.tex = impl_->canvasTexture;
@@ -552,8 +563,15 @@ std::shared_ptr<AVFrame> ProfileNormalizer::normalize(const AVFrame* source,
     target.crop = letterbox(source->width, source->height,
                             impl_->profile.width(), impl_->profile.height());
 
+    // Wrapped D3D11 textures do not advertise blit_dst. Letterbox bars are
+    // cleared with an RTV so libplacebo does not have to blit-clear the canvas.
+    if (impl_->context && impl_->canvasRtv) {
+        const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        impl_->context->ClearRenderTargetView(impl_->canvasRtv, black);
+    }
+
     pl_render_params params = pl_render_default_params;
-    params.skip_target_clearing = false;
+    params.skip_target_clearing = true;
     params.background_transparency = 0.0f;
     params.corner_rounding = 0.0f;
     const bool rendered = impl_->render->render(uploaded, &target, &params);
