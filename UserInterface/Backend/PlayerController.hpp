@@ -1,6 +1,6 @@
 #pragma once
 
-#include <IPreviewer.hpp>
+#include <Preview/IPreviewer.hpp>
 
 #include <QObject>
 #include <QString>

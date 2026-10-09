@@ -1,6 +1,6 @@
 #include "Producer.hpp"
 
-#include "ProfileNormalizer.hpp"
+#include <Compositing/ProfileNormalizer.hpp>
 
 #include <Common/FrameTime.hpp>
 #include <Common/Packet.hpp>

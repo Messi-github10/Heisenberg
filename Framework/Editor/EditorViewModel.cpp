@@ -1,6 +1,6 @@
 #include "EditorViewModel.hpp"
 
-#include <Producer/Producer.hpp>
+#include <Preview/Producer.hpp>
 #include <Utiles/Logger.hpp>
 
 #include <algorithm>
@@ -76,7 +76,7 @@ struct EditorViewModel::Impl {
     bool hardwareDecode = false;
     std::string projectDir;
     MediaManifest manifest;
-    Playlist playlist;
+    Timeline timeline;
 
     std::unordered_map<std::string, std::string> mediaPaths() const {
         std::unordered_map<std::string, std::string> paths;
@@ -96,12 +96,12 @@ EditorViewModel::~EditorViewModel() = default;
 
 void EditorViewModel::setHardwareDecode(bool enabled) {
     impl_->hardwareDecode = enabled;
-    impl_->playlist.setHardwareDecode(enabled);
+    impl_->timeline.setHardwareDecode(enabled);
 }
 
 void EditorViewModel::setProfile(Profile profile) {
     impl_->profile = std::move(profile);
-    impl_->playlist.setProfile(impl_->profile);
+    impl_->timeline.setProfile(impl_->profile);
 }
 
 bool EditorViewModel::importMedia(const std::string& path, std::string* error) {
@@ -143,7 +143,7 @@ std::string EditorViewModel::placeClip(const std::string& mediaRef,
         return {};
     }
 
-    PlaylistClip clip;
+    Clip clip;
     clip.mediaRef = mediaRef;
     clip.resource = asset.path;
     clip.start = start;
@@ -156,16 +156,16 @@ std::string EditorViewModel::placeClip(const std::string& mediaRef,
         setError(error, "mediaRef '" + mediaRef + "' has empty duration");
         return {};
     }
-    if (!impl_->playlist.addClip(clip, error)) return {};
+    if (!impl_->timeline.addClip(clip, error)) return {};
     return clip.id;
 }
 
 bool EditorViewModel::removeClip(const std::string& clipId, std::string* error) {
-    return impl_->playlist.removeClip(clipId, error);
+    return impl_->timeline.removeClip(clipId, error);
 }
 
 bool EditorViewModel::moveClip(const std::string& clipId, int64_t start, std::string* error) {
-    return impl_->playlist.moveClip(clipId, start, error);
+    return impl_->timeline.moveClip(clipId, start, error);
 }
 
 bool EditorViewModel::load(const std::string& projectDir, std::string* error) {
@@ -187,23 +187,23 @@ bool EditorViewModel::load(const std::string& projectDir, std::string* error) {
         if (!path.empty()) paths.emplace(entry.id, path);
     }
 
-    Playlist playlist;
-    playlist.setHardwareDecode(impl_->hardwareDecode);
-    if (!playlist.loadFromJson(timelineText, error, utf8FromPath(dir), paths)) {
+    Timeline timeline;
+    timeline.setHardwareDecode(impl_->hardwareDecode);
+    if (!timeline.loadFromJson(timelineText, error, utf8FromPath(dir), paths)) {
         return false;
     }
 
     impl_->projectDir = utf8FromPath(dir);
     impl_->manifest = std::move(manifest);
-    impl_->playlist = std::move(playlist);
-    impl_->profile = impl_->playlist.profile();
+    impl_->timeline = std::move(timeline);
+    impl_->profile = impl_->timeline.profile();
     return true;
 }
 
 bool EditorViewModel::save(const std::string& projectDir, std::string* error) const {
     const auto dir = std::filesystem::u8path(projectDir);
     return writeTextFile(dir / "media.json", impl_->manifest.toJson(), error) &&
-           writeTextFile(dir / "timeline.json", impl_->playlist.toJson(), error);
+           writeTextFile(dir / "timeline.json", impl_->timeline.toJson(), error);
 }
 
 const MediaManifest& EditorViewModel::manifest() const {
@@ -214,12 +214,12 @@ MediaResolver EditorViewModel::resolver() const {
     return MediaResolver(impl_->manifest, impl_->projectDir);
 }
 
-const Playlist& EditorViewModel::playlist() const {
-    return impl_->playlist;
+const Timeline& EditorViewModel::timeline() const {
+    return impl_->timeline;
 }
 
-Playlist& EditorViewModel::playlist() {
-    return impl_->playlist;
+Timeline& EditorViewModel::timeline() {
+    return impl_->timeline;
 }
 
 std::vector<MediaAsset> EditorViewModel::assets() const {

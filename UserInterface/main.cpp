@@ -4,7 +4,7 @@
 #include <MainWidget/MainWindow.hpp>
 #include <Backend/PlayerController.hpp>
 
-#include <IPreviewer.hpp>
+#include <Preview/IPreviewer.hpp>
 #include <Utiles/Logger.hpp>
 
 int main(int argc, char* argv[])

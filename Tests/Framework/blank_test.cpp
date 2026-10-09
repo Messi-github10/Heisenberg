@@ -1,4 +1,4 @@
-#include <Producer/BlankProducer.hpp>
+#include <Compositing/BlankProducer.hpp>
 
 #include <gtest/gtest.h>
 

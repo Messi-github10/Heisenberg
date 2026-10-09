@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Clip.hpp"
 #include "IProducer.hpp"
 
 #include <memory>
@@ -9,42 +10,15 @@
 
 namespace heisenberg {
 
-struct PlaylistClip {
-    std::string id;
-    std::string mediaRef;
-    std::string resource;
-    int64_t start = 0;
-    int64_t in = 0;
-    int64_t out = 0;
-
-    int64_t duration() const { return out >= in ? out - in + 1 : 0; }
-    int64_t end() const { return start + duration(); }
-    bool covers(int64_t position) const {
-        return position >= start && position < end();
-    }
-};
-
-struct PlaylistFilter {
-    std::string id;
-    std::string graph;
-    int64_t in = 0;
-    int64_t out = 0;
-
-    bool covers(int64_t position) const {
-        if (in == 0 && out == 0) return true;
-        return position >= in && (out == 0 || position <= out);
-    }
-};
-
-class Playlist final : public IProducer {
+class Timeline final : public IProducer {
 public:
-    Playlist();
-    ~Playlist() override;
+    Timeline();
+    ~Timeline() override;
 
-    Playlist(const Playlist&) = delete;
-    Playlist& operator=(const Playlist&) = delete;
-    Playlist(Playlist&&) noexcept;
-    Playlist& operator=(Playlist&&) noexcept;
+    Timeline(const Timeline&) = delete;
+    Timeline& operator=(const Timeline&) = delete;
+    Timeline(Timeline&&) noexcept;
+    Timeline& operator=(Timeline&&) noexcept;
 
     void setHardwareDecode(bool enabled);
     void setProfile(Profile profile);
@@ -55,15 +29,15 @@ public:
                       const std::unordered_map<std::string, std::string>& mediaPaths = {});
     std::string toJson() const;
 
-    bool addClip(PlaylistClip& clip, std::string* error = nullptr);
+    bool addClip(Clip& clip, std::string* error = nullptr);
     bool removeClip(const std::string& id, std::string* error = nullptr);
     bool moveClip(const std::string& id, int64_t start, std::string* error = nullptr);
 
-    const std::vector<PlaylistClip>& clips() const;
-    const std::vector<PlaylistFilter>& filters() const;
-    const PlaylistClip* clipById(const std::string& id) const;
+    const std::vector<Clip>& clips() const;
+    const std::vector<TimelineFilter>& filters() const;
+    const Clip* clipById(const std::string& id) const;
     bool isBlankAt(int64_t position) const;
-    const PlaylistFilter* filterAt(int64_t position) const;
+    const TimelineFilter* filterAt(int64_t position) const;
 
     const Profile& profile() const override;
     const std::string& resource() const override;

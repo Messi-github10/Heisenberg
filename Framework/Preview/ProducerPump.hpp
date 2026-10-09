@@ -3,7 +3,7 @@
 #include <Common/AudioSpec.hpp>
 #include <Common/MediaFrame.hpp>
 #include <Common/RingBuffer.hpp>
-#include <Producer/IProducer.hpp>
+#include <Models/IProducer.hpp>
 
 #include <atomic>
 #include <condition_variable>

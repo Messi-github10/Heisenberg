@@ -1,9 +1,9 @@
 #pragma once
 
-#include "MediaManifest.hpp"
-#include "MediaResolver.hpp"
+#include <Models/MediaManifest.hpp>
+#include <Models/MediaResolver.hpp>
 
-#include <Producer/Playlist.hpp>
+#include <Models/Timeline.hpp>
 #include <Profiles/Profile.hpp>
 
 #include <memory>
@@ -37,8 +37,8 @@ public:
 
     const MediaManifest& manifest() const;
     MediaResolver resolver() const;
-    const Playlist& playlist() const;
-    Playlist& playlist();
+    const Timeline& timeline() const;
+    Timeline& timeline();
     std::vector<MediaAsset> assets() const;
     const std::string& projectDir() const;
 

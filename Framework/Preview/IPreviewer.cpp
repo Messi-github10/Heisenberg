@@ -1,6 +1,6 @@
 #include "IPreviewer.hpp"
 
-#include "Controller/PlaybackController.hpp"
+#include "PlaybackController.hpp"
 #include "Platform/D3D11/D3D11Context.hpp"
 #include "Platform/GpuContext.hpp"
 #include "Platform/Vulkan/VulkanContext.hpp"
@@ -132,7 +132,7 @@ public:
         clearTimelineGraph();
         if (!playback_) return;
         playback_->openPlaylist(path);
-        const auto& filters = playback_->playlistFilters();
+        const auto& filters = playback_->timelineFilters();
         if (!filters.empty()) {
             pendingTimelineGraph_ = filters.front().graph;
             if (filters.size() > 1) {
@@ -444,7 +444,7 @@ private:
 
     void loadPlaylistFilters() {
         if (!playback_) return;
-        const auto& filters = playback_->playlistFilters();
+        const auto& filters = playback_->timelineFilters();
         if (filters.empty()) return;
         if (filters.size() > 1) {
             LOG_WARN("IPreviewer: v1 applies only the first Playlist filter");
@@ -523,7 +523,7 @@ private:
 
     filtergraph::VulkanFilterGraph* graphForFrame(const AVFrame* frame) {
         if (timelineGraph_ && playback_ && frame) {
-            const auto& filters = playback_->playlistFilters();
+            const auto& filters = playback_->timelineFilters();
             if (!filters.empty() && filters.front().covers(frame->pts)) {
                 return timelineGraph_.get();
             }

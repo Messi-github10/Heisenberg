@@ -1,5 +1,5 @@
-#include <Producer/IProducer.hpp>
-#include <Producer/Playlist.hpp>
+#include <Models/IProducer.hpp>
+#include <Models/Timeline.hpp>
 #include <Utiles/Logger.hpp>
 
 #include <gtest/gtest.h>
@@ -49,7 +49,7 @@ bool isWhiteCanvas(const heisenberg::ProducerFrame& frame) {
 
 } // namespace
 
-TEST(PlaylistTest, SequentialGetFrameCrossesCutsOnProfileCanvas) {
+TEST(TimelineTest, SequentialGetFrameCrossesCutsOnProfileCanvas) {
     const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
     const std::string clipB = HEISENBERG_PLAYLIST_CLIP_B;
     ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
@@ -69,24 +69,24 @@ TEST(PlaylistTest, SequentialGetFrameCrossesCutsOnProfileCanvas) {
         "  ]\n" +
         "}\n";
 
-    heisenberg::Playlist playlist;
-    playlist.setHardwareDecode(false);
+    heisenberg::Timeline timeline;
+    timeline.setHardwareDecode(false);
     std::string error;
-    ASSERT_TRUE(playlist.loadFromJson(json, &error)) << error;
-    ASSERT_EQ(playlist.clips().size(), 3u);
-    ASSERT_EQ(playlist.length(), 18);
-    EXPECT_EQ(playlist.clips()[0].start, 0);
-    EXPECT_EQ(playlist.clips()[1].start, 10);
-    EXPECT_EQ(playlist.clips()[2].start, 15);
-    EXPECT_EQ(playlist.in(), 0);
-    EXPECT_EQ(playlist.out(), 17);
+    ASSERT_TRUE(timeline.loadFromJson(json, &error)) << error;
+    ASSERT_EQ(timeline.clips().size(), 3u);
+    ASSERT_EQ(timeline.length(), 18);
+    EXPECT_EQ(timeline.clips()[0].start, 0);
+    EXPECT_EQ(timeline.clips()[1].start, 10);
+    EXPECT_EQ(timeline.clips()[2].start, 15);
+    EXPECT_EQ(timeline.in(), 0);
+    EXPECT_EQ(timeline.out(), 17);
 
-    const heisenberg::ProducerFrame first = playlist.getFrame(0);
-    const heisenberg::ProducerFrame beforeCut = playlist.getFrame(9);
-    const heisenberg::ProducerFrame afterCut = playlist.getFrame(10);
-    const heisenberg::ProducerFrame beforeReturn = playlist.getFrame(14);
-    const heisenberg::ProducerFrame returned = playlist.getFrame(15);
-    const heisenberg::ProducerFrame last = playlist.getFrame(17);
+    const heisenberg::ProducerFrame first = timeline.getFrame(0);
+    const heisenberg::ProducerFrame beforeCut = timeline.getFrame(9);
+    const heisenberg::ProducerFrame afterCut = timeline.getFrame(10);
+    const heisenberg::ProducerFrame beforeReturn = timeline.getFrame(14);
+    const heisenberg::ProducerFrame returned = timeline.getFrame(15);
+    const heisenberg::ProducerFrame last = timeline.getFrame(17);
     ASSERT_FALSE(first.eof || beforeCut.eof || afterCut.eof ||
                  beforeReturn.eof || returned.eof || last.eof);
     ASSERT_TRUE(first.hasVideo());
@@ -102,18 +102,18 @@ TEST(PlaylistTest, SequentialGetFrameCrossesCutsOnProfileCanvas) {
     EXPECT_TRUE(isCanvas(returned));
     EXPECT_TRUE(isCanvas(last));
 
-    for (int64_t index = 0; index < playlist.length(); ++index) {
-        const heisenberg::ProducerFrame frame = playlist.getFrame(index);
+    for (int64_t index = 0; index < timeline.length(); ++index) {
+        const heisenberg::ProducerFrame frame = timeline.getFrame(index);
         ASSERT_FALSE(frame.eof) << index;
         ASSERT_TRUE(frame.hasVideo()) << index;
         EXPECT_EQ(frame.position, index);
     }
 
-    const heisenberg::ProducerFrame pastEnd = playlist.getFrame(playlist.length());
+    const heisenberg::ProducerFrame pastEnd = timeline.getFrame(timeline.length());
     EXPECT_TRUE(pastEnd.eof);
 }
 
-TEST(PlaylistTest, GapWithoutClipIsBlackCanvas) {
+TEST(TimelineTest, GapWithoutClipIsBlackCanvas) {
     const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
     const std::string clipB = HEISENBERG_PLAYLIST_CLIP_B;
     ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
@@ -131,23 +131,23 @@ TEST(PlaylistTest, GapWithoutClipIsBlackCanvas) {
         "  ]\n" +
         "}\n";
 
-    heisenberg::Playlist playlist;
-    playlist.setHardwareDecode(false);
+    heisenberg::Timeline timeline;
+    timeline.setHardwareDecode(false);
     std::string error;
-    ASSERT_TRUE(playlist.loadFromJson(json, &error)) << error;
-    ASSERT_EQ(playlist.clips().size(), 2u);
-    ASSERT_EQ(playlist.length(), 13);
-    EXPECT_EQ(playlist.clips()[0].start, 0);
-    EXPECT_EQ(playlist.clips()[1].start, 8);
-    EXPECT_FALSE(playlist.isBlankAt(4));
-    EXPECT_FALSE(playlist.isBlankAt(5));
-    EXPECT_FALSE(playlist.isBlankAt(7));
-    EXPECT_FALSE(playlist.isBlankAt(8));
+    ASSERT_TRUE(timeline.loadFromJson(json, &error)) << error;
+    ASSERT_EQ(timeline.clips().size(), 2u);
+    ASSERT_EQ(timeline.length(), 13);
+    EXPECT_EQ(timeline.clips()[0].start, 0);
+    EXPECT_EQ(timeline.clips()[1].start, 8);
+    EXPECT_FALSE(timeline.isBlankAt(4));
+    EXPECT_FALSE(timeline.isBlankAt(5));
+    EXPECT_FALSE(timeline.isBlankAt(7));
+    EXPECT_FALSE(timeline.isBlankAt(8));
 
-    const heisenberg::ProducerFrame beforeGap = playlist.getFrame(4);
-    const heisenberg::ProducerFrame gapStart = playlist.getFrame(5);
-    const heisenberg::ProducerFrame gapEnd = playlist.getFrame(7);
-    const heisenberg::ProducerFrame afterGap = playlist.getFrame(8);
+    const heisenberg::ProducerFrame beforeGap = timeline.getFrame(4);
+    const heisenberg::ProducerFrame gapStart = timeline.getFrame(5);
+    const heisenberg::ProducerFrame gapEnd = timeline.getFrame(7);
+    const heisenberg::ProducerFrame afterGap = timeline.getFrame(8);
     ASSERT_FALSE(beforeGap.eof || gapStart.eof || gapEnd.eof || afterGap.eof);
     EXPECT_TRUE(isCanvas(beforeGap));
     EXPECT_TRUE(isCanvas(gapStart));
@@ -161,11 +161,11 @@ TEST(PlaylistTest, GapWithoutClipIsBlackCanvas) {
     EXPECT_EQ(gapStart.audio->samples(), 2000);
     EXPECT_EQ(gapStart.audio->channelRo(0)[0], 0.0f);
 
-    const heisenberg::ProducerFrame pastEnd = playlist.getFrame(playlist.length());
+    const heisenberg::ProducerFrame pastEnd = timeline.getFrame(timeline.length());
     EXPECT_TRUE(pastEnd.eof);
 }
 
-TEST(PlaylistTest, BlankClipStillProducesWhiteCanvas) {
+TEST(TimelineTest, BlankClipStillProducesWhiteCanvas) {
     const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
     ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
 
@@ -180,24 +180,24 @@ TEST(PlaylistTest, BlankClipStillProducesWhiteCanvas) {
         "  ]\n" +
         "}\n";
 
-    heisenberg::Playlist playlist;
-    playlist.setHardwareDecode(false);
+    heisenberg::Timeline timeline;
+    timeline.setHardwareDecode(false);
     std::string error;
-    ASSERT_TRUE(playlist.loadFromJson(json, &error)) << error;
-    ASSERT_EQ(playlist.clips().size(), 2u);
-    ASSERT_EQ(playlist.length(), 8);
-    EXPECT_EQ(playlist.clips()[1].resource, heisenberg::kBlankResource);
-    EXPECT_EQ(playlist.clips()[1].start, 5);
-    EXPECT_FALSE(playlist.isBlankAt(4));
-    EXPECT_TRUE(playlist.isBlankAt(5));
-    EXPECT_TRUE(playlist.isBlankAt(7));
+    ASSERT_TRUE(timeline.loadFromJson(json, &error)) << error;
+    ASSERT_EQ(timeline.clips().size(), 2u);
+    ASSERT_EQ(timeline.length(), 8);
+    EXPECT_EQ(timeline.clips()[1].resource, heisenberg::kBlankResource);
+    EXPECT_EQ(timeline.clips()[1].start, 5);
+    EXPECT_FALSE(timeline.isBlankAt(4));
+    EXPECT_TRUE(timeline.isBlankAt(5));
+    EXPECT_TRUE(timeline.isBlankAt(7));
 
-    const heisenberg::ProducerFrame white = playlist.getFrame(5);
+    const heisenberg::ProducerFrame white = timeline.getFrame(5);
     ASSERT_FALSE(white.eof);
     EXPECT_TRUE(isWhiteCanvas(white));
 }
 
-TEST(PlaylistTest, LengthIsLastClipEndAndLeadingGapIsBlack) {
+TEST(TimelineTest, LengthIsLastClipEndAndLeadingGapIsBlack) {
     const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
     ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
 
@@ -211,24 +211,24 @@ TEST(PlaylistTest, LengthIsLastClipEndAndLeadingGapIsBlack) {
         "  ]\n" +
         "}\n";
 
-    heisenberg::Playlist playlist;
-    playlist.setHardwareDecode(false);
+    heisenberg::Timeline timeline;
+    timeline.setHardwareDecode(false);
     std::string error;
-    ASSERT_TRUE(playlist.loadFromJson(json, &error)) << error;
-    ASSERT_EQ(playlist.clips().size(), 1u);
-    ASSERT_EQ(playlist.length(), 29);
-    EXPECT_EQ(playlist.clips()[0].start, 24);
+    ASSERT_TRUE(timeline.loadFromJson(json, &error)) << error;
+    ASSERT_EQ(timeline.clips().size(), 1u);
+    ASSERT_EQ(timeline.length(), 29);
+    EXPECT_EQ(timeline.clips()[0].start, 24);
 
-    const heisenberg::ProducerFrame leading = playlist.getFrame(0);
-    const heisenberg::ProducerFrame beforeClip = playlist.getFrame(23);
-    const heisenberg::ProducerFrame firstClip = playlist.getFrame(24);
+    const heisenberg::ProducerFrame leading = timeline.getFrame(0);
+    const heisenberg::ProducerFrame beforeClip = timeline.getFrame(23);
+    const heisenberg::ProducerFrame firstClip = timeline.getFrame(24);
     ASSERT_FALSE(leading.eof || beforeClip.eof || firstClip.eof);
     EXPECT_TRUE(isBlackCanvas(leading));
     EXPECT_TRUE(isBlackCanvas(beforeClip));
     EXPECT_TRUE(isCanvas(firstClip));
 }
 
-TEST(PlaylistTest, OverlappingClipsAreRejected) {
+TEST(TimelineTest, OverlappingClipsAreRejected) {
     const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
     ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
 
@@ -244,13 +244,13 @@ TEST(PlaylistTest, OverlappingClipsAreRejected) {
         "  ]\n" +
         "}\n";
 
-    heisenberg::Playlist playlist;
+    heisenberg::Timeline timeline;
     std::string error;
-    EXPECT_FALSE(playlist.loadFromJson(json, &error));
+    EXPECT_FALSE(timeline.loadFromJson(json, &error));
     EXPECT_NE(error.find("overlaps"), std::string::npos);
 }
 
-TEST(PlaylistTest, FilterInOutUsesTimelineFrames) {
+TEST(TimelineTest, FilterInOutUsesTimelineFrames) {
     const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
     ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
 
@@ -269,160 +269,160 @@ TEST(PlaylistTest, FilterInOutUsesTimelineFrames) {
         "  ]\n" +
         "}\n";
 
-    heisenberg::Playlist playlist;
-    playlist.setHardwareDecode(false);
+    heisenberg::Timeline timeline;
+    timeline.setHardwareDecode(false);
     std::string error;
-    ASSERT_TRUE(playlist.loadFromJson(json, &error, ".")) << error;
-    ASSERT_EQ(playlist.length(), 20);
-    ASSERT_EQ(playlist.filters().size(), 1u);
-    EXPECT_EQ(playlist.filters()[0].id, "grade");
-    EXPECT_EQ(playlist.filters()[0].in, 5);
-    EXPECT_EQ(playlist.filters()[0].out, 12);
-    EXPECT_TRUE(playlist.filters()[0].graph.find("brightness.json") !=
+    ASSERT_TRUE(timeline.loadFromJson(json, &error, ".")) << error;
+    ASSERT_EQ(timeline.length(), 20);
+    ASSERT_EQ(timeline.filters().size(), 1u);
+    EXPECT_EQ(timeline.filters()[0].id, "grade");
+    EXPECT_EQ(timeline.filters()[0].in, 5);
+    EXPECT_EQ(timeline.filters()[0].out, 12);
+    EXPECT_TRUE(timeline.filters()[0].graph.find("brightness.json") !=
                 std::string::npos);
 
-    EXPECT_EQ(playlist.filterAt(4), nullptr);
-    ASSERT_NE(playlist.filterAt(5), nullptr);
-    EXPECT_EQ(playlist.filterAt(5)->id, "grade");
-    ASSERT_NE(playlist.filterAt(12), nullptr);
-    EXPECT_EQ(playlist.filterAt(13), nullptr);
-    EXPECT_TRUE(playlist.filters()[0].covers(5));
-    EXPECT_TRUE(playlist.filters()[0].covers(12));
-    EXPECT_FALSE(playlist.filters()[0].covers(4));
+    EXPECT_EQ(timeline.filterAt(4), nullptr);
+    ASSERT_NE(timeline.filterAt(5), nullptr);
+    EXPECT_EQ(timeline.filterAt(5)->id, "grade");
+    ASSERT_NE(timeline.filterAt(12), nullptr);
+    EXPECT_EQ(timeline.filterAt(13), nullptr);
+    EXPECT_TRUE(timeline.filters()[0].covers(5));
+    EXPECT_TRUE(timeline.filters()[0].covers(12));
+    EXPECT_FALSE(timeline.filters()[0].covers(4));
 }
 
-TEST(PlaylistTest, AddMoveRemoveClipsOnSingleTrack) {
+TEST(TimelineTest, AddMoveRemoveClipsOnSingleTrack) {
     const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
     const std::string clipB = HEISENBERG_PLAYLIST_CLIP_B;
     ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
     ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipB)));
 
-    heisenberg::Playlist playlist;
-    playlist.setHardwareDecode(false);
+    heisenberg::Timeline timeline;
+    timeline.setHardwareDecode(false);
     std::string error;
 
-    heisenberg::PlaylistClip first;
+    heisenberg::Clip first;
     first.id = "a";
     first.resource = clipA;
     first.start = 0;
     first.in = 0;
     first.out = 9;
-    ASSERT_TRUE(playlist.addClip(first, &error)) << error;
-    ASSERT_EQ(playlist.clips().size(), 1u);
-    ASSERT_EQ(playlist.length(), 10);
+    ASSERT_TRUE(timeline.addClip(first, &error)) << error;
+    ASSERT_EQ(timeline.clips().size(), 1u);
+    ASSERT_EQ(timeline.length(), 10);
 
-    heisenberg::PlaylistClip second;
+    heisenberg::Clip second;
     second.id = "b";
     second.resource = clipB;
     second.start = 24;
     second.in = 0;
     second.out = 4;
-    ASSERT_TRUE(playlist.addClip(second, &error)) << error;
-    ASSERT_EQ(playlist.clips().size(), 2u);
-    ASSERT_EQ(playlist.length(), 29);
-    EXPECT_EQ(playlist.clips()[0].id, "a");
-    EXPECT_EQ(playlist.clips()[1].id, "b");
-    EXPECT_EQ(playlist.clipById("b")->start, 24);
+    ASSERT_TRUE(timeline.addClip(second, &error)) << error;
+    ASSERT_EQ(timeline.clips().size(), 2u);
+    ASSERT_EQ(timeline.length(), 29);
+    EXPECT_EQ(timeline.clips()[0].id, "a");
+    EXPECT_EQ(timeline.clips()[1].id, "b");
+    EXPECT_EQ(timeline.clipById("b")->start, 24);
 
-    const heisenberg::ProducerFrame gap = playlist.getFrame(10);
+    const heisenberg::ProducerFrame gap = timeline.getFrame(10);
     ASSERT_FALSE(gap.eof);
     EXPECT_TRUE(isBlackCanvas(gap));
 
-    ASSERT_TRUE(playlist.moveClip("b", 10, &error)) << error;
-    EXPECT_EQ(playlist.clipById("b")->start, 10);
-    ASSERT_EQ(playlist.length(), 15);
-    EXPECT_EQ(playlist.clips()[0].id, "a");
-    EXPECT_EQ(playlist.clips()[1].id, "b");
+    ASSERT_TRUE(timeline.moveClip("b", 10, &error)) << error;
+    EXPECT_EQ(timeline.clipById("b")->start, 10);
+    ASSERT_EQ(timeline.length(), 15);
+    EXPECT_EQ(timeline.clips()[0].id, "a");
+    EXPECT_EQ(timeline.clips()[1].id, "b");
 
-    ASSERT_TRUE(playlist.moveClip("a", 20, &error)) << error;
-    EXPECT_EQ(playlist.clips()[0].id, "b");
-    EXPECT_EQ(playlist.clips()[0].start, 10);
-    EXPECT_EQ(playlist.clips()[1].id, "a");
-    EXPECT_EQ(playlist.clips()[1].start, 20);
-    ASSERT_EQ(playlist.length(), 30);
+    ASSERT_TRUE(timeline.moveClip("a", 20, &error)) << error;
+    EXPECT_EQ(timeline.clips()[0].id, "b");
+    EXPECT_EQ(timeline.clips()[0].start, 10);
+    EXPECT_EQ(timeline.clips()[1].id, "a");
+    EXPECT_EQ(timeline.clips()[1].start, 20);
+    ASSERT_EQ(timeline.length(), 30);
 
-    const heisenberg::ProducerFrame afterMove = playlist.getFrame(0);
+    const heisenberg::ProducerFrame afterMove = timeline.getFrame(0);
     ASSERT_FALSE(afterMove.eof);
     EXPECT_TRUE(isBlackCanvas(afterMove));
 
-    ASSERT_TRUE(playlist.removeClip("b", &error)) << error;
-    ASSERT_EQ(playlist.clips().size(), 1u);
-    EXPECT_EQ(playlist.clips()[0].id, "a");
-    ASSERT_EQ(playlist.length(), 30);
-    EXPECT_EQ(playlist.clipById("b"), nullptr);
+    ASSERT_TRUE(timeline.removeClip("b", &error)) << error;
+    ASSERT_EQ(timeline.clips().size(), 1u);
+    EXPECT_EQ(timeline.clips()[0].id, "a");
+    ASSERT_EQ(timeline.length(), 30);
+    EXPECT_EQ(timeline.clipById("b"), nullptr);
 
-    ASSERT_TRUE(playlist.removeClip("a", &error)) << error;
-    EXPECT_TRUE(playlist.clips().empty());
-    EXPECT_EQ(playlist.length(), 0);
-    EXPECT_TRUE(playlist.getFrame(0).eof);
+    ASSERT_TRUE(timeline.removeClip("a", &error)) << error;
+    EXPECT_TRUE(timeline.clips().empty());
+    EXPECT_EQ(timeline.length(), 0);
+    EXPECT_TRUE(timeline.getFrame(0).eof);
 }
 
-TEST(PlaylistTest, AddAndMoveRejectOverlapWithoutChangingState) {
+TEST(TimelineTest, AddAndMoveRejectOverlapWithoutChangingState) {
     const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
     ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
 
-    heisenberg::Playlist playlist;
-    playlist.setHardwareDecode(false);
+    heisenberg::Timeline timeline;
+    timeline.setHardwareDecode(false);
     std::string error;
 
-    heisenberg::PlaylistClip first;
+    heisenberg::Clip first;
     first.id = "a";
     first.resource = clipA;
     first.start = 0;
     first.in = 0;
     first.out = 9;
-    ASSERT_TRUE(playlist.addClip(first, &error)) << error;
+    ASSERT_TRUE(timeline.addClip(first, &error)) << error;
 
-    heisenberg::PlaylistClip overlapping;
+    heisenberg::Clip overlapping;
     overlapping.id = "b";
     overlapping.resource = clipA;
     overlapping.start = 5;
     overlapping.in = 0;
     overlapping.out = 4;
-    EXPECT_FALSE(playlist.addClip(overlapping, &error));
+    EXPECT_FALSE(timeline.addClip(overlapping, &error));
     EXPECT_NE(error.find("overlaps"), std::string::npos);
-    ASSERT_EQ(playlist.clips().size(), 1u);
-    EXPECT_EQ(playlist.length(), 10);
+    ASSERT_EQ(timeline.clips().size(), 1u);
+    EXPECT_EQ(timeline.length(), 10);
 
-    heisenberg::PlaylistClip second;
+    heisenberg::Clip second;
     second.id = "b";
     second.resource = clipA;
     second.start = 20;
     second.in = 0;
     second.out = 4;
-    ASSERT_TRUE(playlist.addClip(second, &error)) << error;
-    ASSERT_EQ(playlist.length(), 25);
+    ASSERT_TRUE(timeline.addClip(second, &error)) << error;
+    ASSERT_EQ(timeline.length(), 25);
 
     error.clear();
-    EXPECT_FALSE(playlist.moveClip("b", 5, &error));
+    EXPECT_FALSE(timeline.moveClip("b", 5, &error));
     EXPECT_NE(error.find("overlaps"), std::string::npos);
-    EXPECT_EQ(playlist.clipById("b")->start, 20);
-    EXPECT_EQ(playlist.length(), 25);
+    EXPECT_EQ(timeline.clipById("b")->start, 20);
+    EXPECT_EQ(timeline.length(), 25);
 }
 
-TEST(PlaylistTest, AddClipRejectsDuplicateIdAndMissingRemove) {
+TEST(TimelineTest, AddClipRejectsDuplicateIdAndMissingRemove) {
     const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
     ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
 
-    heisenberg::Playlist playlist;
-    playlist.setHardwareDecode(false);
+    heisenberg::Timeline timeline;
+    timeline.setHardwareDecode(false);
     std::string error;
 
-    heisenberg::PlaylistClip first;
+    heisenberg::Clip first;
     first.id = "a";
     first.resource = clipA;
     first.in = 0;
     first.out = 4;
-    ASSERT_TRUE(playlist.addClip(first, &error)) << error;
+    ASSERT_TRUE(timeline.addClip(first, &error)) << error;
 
-    heisenberg::PlaylistClip duplicate = first;
+    heisenberg::Clip duplicate = first;
     duplicate.start = 10;
-    EXPECT_FALSE(playlist.addClip(duplicate, &error));
+    EXPECT_FALSE(timeline.addClip(duplicate, &error));
     EXPECT_NE(error.find("already exists"), std::string::npos);
-    EXPECT_EQ(playlist.clips().size(), 1u);
+    EXPECT_EQ(timeline.clips().size(), 1u);
 
     error.clear();
-    EXPECT_FALSE(playlist.removeClip("missing", &error));
+    EXPECT_FALSE(timeline.removeClip("missing", &error));
     EXPECT_NE(error.find("was not found"), std::string::npos);
-    EXPECT_FALSE(playlist.moveClip("missing", 0, &error));
+    EXPECT_FALSE(timeline.moveClip("missing", 0, &error));
 }

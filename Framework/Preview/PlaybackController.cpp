@@ -9,8 +9,8 @@
 #include <Common/FrameTime.hpp>
 #include <Common/MediaFrame.hpp>
 #include <MultiMedia/Audio/Output/AudioDevice.hpp>
-#include <Producer/Playlist.hpp>
-#include <Producer/ProducerPump.hpp>
+#include <Models/Timeline.hpp>
+#include <Preview/ProducerPump.hpp>
 #include <Utiles/Logger.hpp>
 
 extern "C" {
@@ -37,7 +37,7 @@ struct PlaybackController::Impl {
     RingBuffer<MediaFrame> audioFrameBuffer{64};
     DecodeThread decodeThread{frameBuffer, audioFrameBuffer};
     ProducerPump producerPump{frameBuffer, audioFrameBuffer};
-    std::unique_ptr<Playlist> playlist;
+    std::unique_ptr<Timeline> timeline;
     bool usingProducer = false;
     bool hardwareDecode = true;
 
@@ -369,12 +369,12 @@ void PlaybackController::setHardwareDecode(bool enabled) {
                                : decoder::DecoderBackend::Software;
     config.allowFallback = enabled;
     impl_->decodeThread.setDecoderConfig(config);
-    if (impl_->playlist) impl_->playlist->setHardwareDecode(enabled);
+    if (impl_->timeline) impl_->timeline->setHardwareDecode(enabled);
 }
 
-const std::vector<PlaylistFilter>& PlaybackController::playlistFilters() const {
-    static const std::vector<PlaylistFilter> empty;
-    return impl_->playlist ? impl_->playlist->filters() : empty;
+const std::vector<TimelineFilter>& PlaybackController::timelineFilters() const {
+    static const std::vector<TimelineFilter> empty;
+    return impl_->timeline ? impl_->timeline->filters() : empty;
 }
 
 void PlaybackController::setState(State s) {
@@ -483,12 +483,12 @@ bool PlaybackController::open(const std::string& filePath) {
 bool PlaybackController::openPlaylist(const std::string& jsonPath) {
     close();
     impl_->usingProducer = true;
-    impl_->playlist = std::make_unique<Playlist>();
-    impl_->playlist->setHardwareDecode(impl_->hardwareDecode);
+    impl_->timeline = std::make_unique<Timeline>();
+    impl_->timeline->setHardwareDecode(impl_->hardwareDecode);
     std::string error;
-    if (!impl_->playlist->loadFromJsonFile(jsonPath, &error)) {
+    if (!impl_->timeline->loadFromJsonFile(jsonPath, &error)) {
         LOG_ERROR("PlaybackController: playlist open failed — {}", error);
-        impl_->playlist.reset();
+        impl_->timeline.reset();
         impl_->usingProducer = false;
         setState(Idle);
         if (onOpenFailed) onOpenFailed(error);
@@ -565,7 +565,7 @@ bool PlaybackController::openPlaylist(const std::string& jsonPath) {
         });
     };
 
-    impl_->producerPump.start(impl_->playlist.get());
+    impl_->producerPump.start(impl_->timeline.get());
     setState(Loading);
     return true;
 }
@@ -595,7 +595,7 @@ void PlaybackController::close() {
 
     impl_->decodeThread.stop();
     impl_->producerPump.stop();
-    impl_->playlist.reset();
+    impl_->timeline.reset();
     impl_->usingProducer = false;
 
     // ── Destroy audio ─────────────────────────────────────

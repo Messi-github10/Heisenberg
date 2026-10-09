@@ -57,7 +57,7 @@ add_executable(HeisenbergFrameworkTests
     profile_test.cpp
     producer_test.cpp
     blank_test.cpp
-    playlist_test.cpp
+    timeline_test.cpp
     editor_test.cpp
 )
 add_dependencies(HeisenbergFrameworkTests HeisenbergFrameworkTestMedia)

@@ -1,7 +1,7 @@
 #include <Editor/EditorViewModel.hpp>
-#include <Editor/MediaManifest.hpp>
-#include <Editor/MediaResolver.hpp>
-#include <Producer/Playlist.hpp>
+#include <Models/MediaManifest.hpp>
+#include <Models/MediaResolver.hpp>
+#include <Models/Timeline.hpp>
 
 #include <gtest/gtest.h>
 
@@ -92,14 +92,14 @@ TEST(EditorViewModelTest, ImportPlaceMoveRemoveAndRoundTripProject) {
     ASSERT_FALSE(first.empty()) << error;
     const std::string second = editor.placeClip("media_2", 24, 0, 4, &error);
     ASSERT_FALSE(second.empty()) << error;
-    ASSERT_EQ(editor.playlist().clips().size(), 2u);
-    EXPECT_EQ(editor.playlist().clips()[0].mediaRef, "media_1");
-    EXPECT_EQ(editor.playlist().clips()[1].start, 24);
-    ASSERT_EQ(editor.playlist().length(), 29);
+    ASSERT_EQ(editor.timeline().clips().size(), 2u);
+    EXPECT_EQ(editor.timeline().clips()[0].mediaRef, "media_1");
+    EXPECT_EQ(editor.timeline().clips()[1].start, 24);
+    ASSERT_EQ(editor.timeline().length(), 29);
 
     ASSERT_TRUE(editor.moveClip(second, 10, &error)) << error;
-    EXPECT_EQ(editor.playlist().clipById(second)->start, 10);
-    ASSERT_EQ(editor.playlist().length(), 15);
+    EXPECT_EQ(editor.timeline().clipById(second)->start, 10);
+    ASSERT_EQ(editor.timeline().length(), 15);
 
     const auto temp = std::filesystem::temp_directory_path() / "heisenberg_editor_test";
     std::error_code code;
@@ -112,14 +112,14 @@ TEST(EditorViewModelTest, ImportPlaceMoveRemoveAndRoundTripProject) {
     loaded.setHardwareDecode(false);
     ASSERT_TRUE(loaded.load(utf8FromPath(temp), &error)) << error;
     ASSERT_EQ(loaded.assets().size(), 2u);
-    ASSERT_EQ(loaded.playlist().clips().size(), 2u);
-    EXPECT_EQ(loaded.playlist().clipById(second)->start, 10);
-    EXPECT_EQ(loaded.playlist().clips()[0].mediaRef, "media_1");
+    ASSERT_EQ(loaded.timeline().clips().size(), 2u);
+    EXPECT_EQ(loaded.timeline().clipById(second)->start, 10);
+    EXPECT_EQ(loaded.timeline().clips()[0].mediaRef, "media_1");
     EXPECT_FALSE(loaded.resolver().isMissing("media_1"));
 
     ASSERT_TRUE(loaded.removeClip(second, &error)) << error;
-    ASSERT_EQ(loaded.playlist().clips().size(), 1u);
-    EXPECT_EQ(loaded.playlist().clips()[0].id, first);
+    ASSERT_EQ(loaded.timeline().clips().size(), 1u);
+    EXPECT_EQ(loaded.timeline().clips()[0].id, first);
     std::filesystem::remove_all(temp, code);
 }
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Producer/Playlist.hpp>
+#include <Models/Timeline.hpp>
 
 #include <cstdint>
 #include <functional>
@@ -62,7 +62,7 @@ public:
     double fps() const;
     int64_t frameCount() const;
     void setHardwareDecode(bool enabled);
-    const std::vector<PlaylistFilter>& playlistFilters() const;
+    const std::vector<TimelineFilter>& timelineFilters() const;
 
     std::function<void(State)> onStateChanged;
     std::function<void(FramePtr)> onFrameDecoded;
