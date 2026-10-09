@@ -31,11 +31,20 @@ bool isCanvas(const heisenberg::ProducerFrame& frame) {
            frame.video->format == AV_PIX_FMT_RGBAF16;
 }
 
-bool firstPixelIs(const heisenberg::ProducerFrame& frame, uint16_t value) {
+bool firstPixelIs(const heisenberg::ProducerFrame& frame,
+                  uint16_t red, uint16_t green, uint16_t blue, uint16_t alpha) {
     if (!isCanvas(frame) || !frame.video->data[0]) return false;
     const uint16_t* pixel = reinterpret_cast<const uint16_t*>(frame.video->data[0]);
-    return pixel[0] == value && pixel[1] == value &&
-           pixel[2] == value && pixel[3] == value;
+    return pixel[0] == red && pixel[1] == green &&
+           pixel[2] == blue && pixel[3] == alpha;
+}
+
+bool isBlackCanvas(const heisenberg::ProducerFrame& frame) {
+    return firstPixelIs(frame, 0x0000, 0x0000, 0x0000, 0x3C00);
+}
+
+bool isWhiteCanvas(const heisenberg::ProducerFrame& frame) {
+    return firstPixelIs(frame, 0x3C00, 0x3C00, 0x3C00, 0x3C00);
 }
 
 } // namespace
@@ -146,8 +155,8 @@ TEST(PlaylistTest, GapWithoutClipIsBlackCanvas) {
     EXPECT_TRUE(isCanvas(afterGap));
     EXPECT_EQ(gapStart.position, 5);
     EXPECT_EQ(gapEnd.position, 7);
-    EXPECT_TRUE(firstPixelIs(gapStart, 0x0000));
-    EXPECT_TRUE(firstPixelIs(gapEnd, 0x0000));
+    EXPECT_TRUE(isBlackCanvas(gapStart));
+    EXPECT_TRUE(isBlackCanvas(gapEnd));
     ASSERT_TRUE(gapStart.hasAudio());
     EXPECT_EQ(gapStart.audio->samples(), 2000);
     EXPECT_EQ(gapStart.audio->channelRo(0)[0], 0.0f);
@@ -185,7 +194,7 @@ TEST(PlaylistTest, BlankClipStillProducesWhiteCanvas) {
 
     const heisenberg::ProducerFrame white = playlist.getFrame(5);
     ASSERT_FALSE(white.eof);
-    EXPECT_TRUE(firstPixelIs(white, 0x3C00));
+    EXPECT_TRUE(isWhiteCanvas(white));
 }
 
 TEST(PlaylistTest, LengthIsLastClipEndAndLeadingGapIsBlack) {
@@ -214,8 +223,8 @@ TEST(PlaylistTest, LengthIsLastClipEndAndLeadingGapIsBlack) {
     const heisenberg::ProducerFrame beforeClip = playlist.getFrame(23);
     const heisenberg::ProducerFrame firstClip = playlist.getFrame(24);
     ASSERT_FALSE(leading.eof || beforeClip.eof || firstClip.eof);
-    EXPECT_TRUE(firstPixelIs(leading, 0x0000));
-    EXPECT_TRUE(firstPixelIs(beforeClip, 0x0000));
+    EXPECT_TRUE(isBlackCanvas(leading));
+    EXPECT_TRUE(isBlackCanvas(beforeClip));
     EXPECT_TRUE(isCanvas(firstClip));
 }
 
@@ -280,4 +289,140 @@ TEST(PlaylistTest, FilterInOutUsesTimelineFrames) {
     EXPECT_TRUE(playlist.filters()[0].covers(5));
     EXPECT_TRUE(playlist.filters()[0].covers(12));
     EXPECT_FALSE(playlist.filters()[0].covers(4));
+}
+
+TEST(PlaylistTest, AddMoveRemoveClipsOnSingleTrack) {
+    const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
+    const std::string clipB = HEISENBERG_PLAYLIST_CLIP_B;
+    ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
+    ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipB)));
+
+    heisenberg::Playlist playlist;
+    playlist.setHardwareDecode(false);
+    std::string error;
+
+    heisenberg::PlaylistClip first;
+    first.id = "a";
+    first.resource = clipA;
+    first.start = 0;
+    first.in = 0;
+    first.out = 9;
+    ASSERT_TRUE(playlist.addClip(first, &error)) << error;
+    ASSERT_EQ(playlist.clips().size(), 1u);
+    ASSERT_EQ(playlist.length(), 10);
+
+    heisenberg::PlaylistClip second;
+    second.id = "b";
+    second.resource = clipB;
+    second.start = 24;
+    second.in = 0;
+    second.out = 4;
+    ASSERT_TRUE(playlist.addClip(second, &error)) << error;
+    ASSERT_EQ(playlist.clips().size(), 2u);
+    ASSERT_EQ(playlist.length(), 29);
+    EXPECT_EQ(playlist.clips()[0].id, "a");
+    EXPECT_EQ(playlist.clips()[1].id, "b");
+    EXPECT_EQ(playlist.clipById("b")->start, 24);
+
+    const heisenberg::ProducerFrame gap = playlist.getFrame(10);
+    ASSERT_FALSE(gap.eof);
+    EXPECT_TRUE(isBlackCanvas(gap));
+
+    ASSERT_TRUE(playlist.moveClip("b", 10, &error)) << error;
+    EXPECT_EQ(playlist.clipById("b")->start, 10);
+    ASSERT_EQ(playlist.length(), 15);
+    EXPECT_EQ(playlist.clips()[0].id, "a");
+    EXPECT_EQ(playlist.clips()[1].id, "b");
+
+    ASSERT_TRUE(playlist.moveClip("a", 20, &error)) << error;
+    EXPECT_EQ(playlist.clips()[0].id, "b");
+    EXPECT_EQ(playlist.clips()[0].start, 10);
+    EXPECT_EQ(playlist.clips()[1].id, "a");
+    EXPECT_EQ(playlist.clips()[1].start, 20);
+    ASSERT_EQ(playlist.length(), 30);
+
+    const heisenberg::ProducerFrame afterMove = playlist.getFrame(0);
+    ASSERT_FALSE(afterMove.eof);
+    EXPECT_TRUE(isBlackCanvas(afterMove));
+
+    ASSERT_TRUE(playlist.removeClip("b", &error)) << error;
+    ASSERT_EQ(playlist.clips().size(), 1u);
+    EXPECT_EQ(playlist.clips()[0].id, "a");
+    ASSERT_EQ(playlist.length(), 30);
+    EXPECT_EQ(playlist.clipById("b"), nullptr);
+
+    ASSERT_TRUE(playlist.removeClip("a", &error)) << error;
+    EXPECT_TRUE(playlist.clips().empty());
+    EXPECT_EQ(playlist.length(), 0);
+    EXPECT_TRUE(playlist.getFrame(0).eof);
+}
+
+TEST(PlaylistTest, AddAndMoveRejectOverlapWithoutChangingState) {
+    const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
+    ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
+
+    heisenberg::Playlist playlist;
+    playlist.setHardwareDecode(false);
+    std::string error;
+
+    heisenberg::PlaylistClip first;
+    first.id = "a";
+    first.resource = clipA;
+    first.start = 0;
+    first.in = 0;
+    first.out = 9;
+    ASSERT_TRUE(playlist.addClip(first, &error)) << error;
+
+    heisenberg::PlaylistClip overlapping;
+    overlapping.id = "b";
+    overlapping.resource = clipA;
+    overlapping.start = 5;
+    overlapping.in = 0;
+    overlapping.out = 4;
+    EXPECT_FALSE(playlist.addClip(overlapping, &error));
+    EXPECT_NE(error.find("overlaps"), std::string::npos);
+    ASSERT_EQ(playlist.clips().size(), 1u);
+    EXPECT_EQ(playlist.length(), 10);
+
+    heisenberg::PlaylistClip second;
+    second.id = "b";
+    second.resource = clipA;
+    second.start = 20;
+    second.in = 0;
+    second.out = 4;
+    ASSERT_TRUE(playlist.addClip(second, &error)) << error;
+    ASSERT_EQ(playlist.length(), 25);
+
+    error.clear();
+    EXPECT_FALSE(playlist.moveClip("b", 5, &error));
+    EXPECT_NE(error.find("overlaps"), std::string::npos);
+    EXPECT_EQ(playlist.clipById("b")->start, 20);
+    EXPECT_EQ(playlist.length(), 25);
+}
+
+TEST(PlaylistTest, AddClipRejectsDuplicateIdAndMissingRemove) {
+    const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
+    ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
+
+    heisenberg::Playlist playlist;
+    playlist.setHardwareDecode(false);
+    std::string error;
+
+    heisenberg::PlaylistClip first;
+    first.id = "a";
+    first.resource = clipA;
+    first.in = 0;
+    first.out = 4;
+    ASSERT_TRUE(playlist.addClip(first, &error)) << error;
+
+    heisenberg::PlaylistClip duplicate = first;
+    duplicate.start = 10;
+    EXPECT_FALSE(playlist.addClip(duplicate, &error));
+    EXPECT_NE(error.find("already exists"), std::string::npos);
+    EXPECT_EQ(playlist.clips().size(), 1u);
+
+    error.clear();
+    EXPECT_FALSE(playlist.removeClip("missing", &error));
+    EXPECT_NE(error.find("was not found"), std::string::npos);
+    EXPECT_FALSE(playlist.moveClip("missing", 0, &error));
 }

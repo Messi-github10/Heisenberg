@@ -58,6 +58,7 @@ add_executable(HeisenbergFrameworkTests
     producer_test.cpp
     blank_test.cpp
     playlist_test.cpp
+    editor_test.cpp
 )
 add_dependencies(HeisenbergFrameworkTests HeisenbergFrameworkTestMedia)
 target_link_libraries(HeisenbergFrameworkTests PRIVATE

@@ -16,6 +16,7 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace heisenberg {
@@ -175,6 +176,69 @@ bool clipsOverlap(const PlaylistClip& a, const PlaylistClip& b) {
     return a.start < b.end() && b.start < a.end();
 }
 
+bool validateClipFields(const PlaylistClip& clip,
+                        const char* context,
+                        std::string* error) {
+    if (clip.start < 0) {
+        setError(error, std::string(context) + " start must be >= 0");
+        return false;
+    }
+    if (clip.in < 0) {
+        setError(error, std::string(context) + " in must be >= 0");
+        return false;
+    }
+    if (clip.out < clip.in) {
+        setError(error, std::string(context) + " out must be >= in");
+        return false;
+    }
+    if (clip.resource.empty()) {
+        setError(error, std::string(context) + " resource must not be empty");
+        return false;
+    }
+    return true;
+}
+
+bool openClipProducer(PlaylistClip& clip,
+                      const Profile& profile,
+                      bool hardwareDecode,
+                      std::unordered_map<std::string, std::unique_ptr<Producer>>& producers,
+                      std::unique_ptr<BlankProducer>& blank,
+                      std::string* error) {
+    if (isBlankResource(clip.resource)) {
+        clip.resource = kBlankResource;
+        if (!blank) {
+            blank = std::make_unique<BlankProducer>(profile);
+            blank->setHardwareDecode(hardwareDecode);
+        }
+        blank->ensureLength(clip.out + 1);
+        return true;
+    }
+
+    Producer* producer = nullptr;
+    const auto found = producers.find(clip.resource);
+    if (found == producers.end()) {
+        auto created = std::make_unique<Producer>(profile);
+        created->setHardwareDecode(hardwareDecode);
+        std::string openError;
+        if (!created->open(clip.resource, &openError)) {
+            setError(error, "Failed to open clip resource '" + clip.resource +
+                                "': " + openError);
+            return false;
+        }
+        producer = created.get();
+        producers.emplace(clip.resource, std::move(created));
+    } else {
+        producer = found->second.get();
+    }
+
+    if (clip.out >= producer->length()) {
+        setError(error, "clip out " + std::to_string(clip.out) +
+                            " is past the end of '" + clip.resource + "'");
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 struct Playlist::Impl {
@@ -213,12 +277,97 @@ struct Playlist::Impl {
         }
         return nullptr;
     }
+
+    PlaylistClip* findClip(const std::string& id) {
+        if (id.empty()) return nullptr;
+        for (PlaylistClip& clip : clips) {
+            if (clip.id == id) return &clip;
+        }
+        return nullptr;
+    }
+
+    const PlaylistClip* findClip(const std::string& id) const {
+        if (id.empty()) return nullptr;
+        for (const PlaylistClip& clip : clips) {
+            if (clip.id == id) return &clip;
+        }
+        return nullptr;
+    }
+
+    std::string makeClipId() const {
+        for (int64_t index = 1;; ++index) {
+            const std::string id = "clip_" + std::to_string(index);
+            if (!findClip(id)) return id;
+        }
+    }
+
+    bool overlapsOthers(const PlaylistClip& candidate,
+                        const std::string& excludeId,
+                        std::string* error) const {
+        for (size_t index = 0; index < clips.size(); ++index) {
+            if (!excludeId.empty() && clips[index].id == excludeId) continue;
+            if (clipsOverlap(clips[index], candidate)) {
+                setError(error, "clip overlaps clips[" + std::to_string(index) + "]");
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void sortClips() {
+        std::sort(clips.begin(), clips.end(),
+                  [](const PlaylistClip& a, const PlaylistClip& b) {
+                      if (a.start != b.start) return a.start < b.start;
+                      return a.id < b.id;
+                  });
+    }
+
+    void pruneProducers() {
+        std::unordered_set<std::string> used;
+        bool needsBlank = false;
+        int64_t blankLength = 0;
+        for (const PlaylistClip& clip : clips) {
+            if (isBlankResource(clip.resource)) {
+                needsBlank = true;
+                blankLength = std::max(blankLength, clip.out + 1);
+            } else {
+                used.insert(clip.resource);
+            }
+        }
+        for (auto it = producers.begin(); it != producers.end();) {
+            if (used.count(it->first) == 0) it = producers.erase(it);
+            else ++it;
+        }
+        if (needsBlank) {
+            if (!blank) {
+                blank = std::make_unique<BlankProducer>(profile);
+                blank->setHardwareDecode(hardwareDecode);
+            }
+            blank->ensureLength(blankLength);
+        } else {
+            blank.reset();
+        }
+    }
+
+    void commitGeometry() {
+        length = 0;
+        for (const PlaylistClip& clip : clips) {
+            length = std::max(length, clip.end());
+        }
+        if (length <= 0) position = 0;
+        else position = std::clamp(position, int64_t{0}, length - 1);
+        sortClips();
+        pruneProducers();
+    }
 };
 
 Playlist::Playlist()
     : impl_(std::make_unique<Impl>()) {}
 
 Playlist::~Playlist() = default;
+
+Playlist::Playlist(Playlist&&) noexcept = default;
+Playlist& Playlist::operator=(Playlist&&) noexcept = default;
 
 void Playlist::setHardwareDecode(bool enabled) {
     impl_->hardwareDecode = enabled;
@@ -227,6 +376,11 @@ void Playlist::setHardwareDecode(bool enabled) {
     for (auto& [path, producer] : impl_->producers) {
         if (producer) producer->setHardwareDecode(enabled);
     }
+}
+
+void Playlist::setProfile(Profile profile) {
+    impl_->profile = std::move(profile);
+    impl_->canvas.setProfile(impl_->profile);
 }
 
 bool Playlist::loadFromJsonFile(const std::string& path, std::string* error) {
@@ -243,7 +397,8 @@ bool Playlist::loadFromJsonFile(const std::string& path, std::string* error) {
 
 bool Playlist::loadFromJson(const std::string& text,
                             std::string* error,
-                            const std::string& baseDir) {
+                            const std::string& baseDir,
+                            const std::unordered_map<std::string, std::string>& mediaPaths) {
     json root;
     try {
         root = json::parse(text);
@@ -286,19 +441,15 @@ bool Playlist::loadFromJson(const std::string& text,
 
     const json& clipsValue = jsonField(root, "clips");
     if (!expectArray(clipsValue, "clips", error)) return false;
-    if (clipsValue.empty()) {
-        setError(error, "playlist.clips must not be empty");
-        return false;
-    }
 
     std::vector<PlaylistClip> clips;
     clips.reserve(clipsValue.size());
-    int64_t timeline = 0;
+    std::unordered_set<std::string> clipIds;
     for (size_t index = 0; index < clipsValue.size(); ++index) {
         const json& clipValue = clipsValue[index];
         const std::string context = "clips[" + std::to_string(index) + "]";
         if (!expectObject(clipValue, context.c_str(), error) ||
-            !expectKeys(clipValue, {"id", "resource", "start", "in", "out"},
+            !expectKeys(clipValue, {"id", "mediaRef", "resource", "start", "in", "out"},
                         context.c_str(), error)) {
             return false;
         }
@@ -308,7 +459,9 @@ bool Playlist::loadFromJson(const std::string& text,
         std::string resource;
         if (!readString(clipValue, "id", id, context.c_str(), error, false) ||
             !parseClipId(id, clip.id, error) ||
-            !readString(clipValue, "resource", resource, context.c_str(), error, true) ||
+            !readString(clipValue, "mediaRef", clip.mediaRef, context.c_str(),
+                        error, false) ||
+            !readString(clipValue, "resource", resource, context.c_str(), error, false) ||
             !readInt64(clipValue, "start", 0, std::numeric_limits<int64_t>::max(),
                        clip.start, context.c_str(), error) ||
             !readInt64(clipValue, "in", 0, std::numeric_limits<int64_t>::max(),
@@ -317,18 +470,24 @@ bool Playlist::loadFromJson(const std::string& text,
                        clip.out, context.c_str(), error)) {
             return false;
         }
-        if (resource.empty()) {
-            setError(error, context + " resource must not be empty");
-            return false;
+        if (resource.empty() && !clip.mediaRef.empty()) {
+            const auto found = mediaPaths.find(clip.mediaRef);
+            if (found != mediaPaths.end()) resource = found->second;
         }
-        if (clip.out < clip.in) {
-            setError(error, context + " out must be >= in");
-            return false;
-        }
-        if (isBlankResource(resource)) {
+        if (isBlankResource(clip.mediaRef) || isBlankResource(resource)) {
+            clip.mediaRef = kBlankResource;
             clip.resource = kBlankResource;
-        } else {
+        } else if (!resource.empty()) {
             clip.resource = resolveResource(resource, baseDir);
+        } else if (!clip.mediaRef.empty()) {
+            setError(error, context + " mediaRef '" + clip.mediaRef +
+                                "' could not be resolved");
+            return false;
+        }
+        if (!validateClipFields(clip, context.c_str(), error)) return false;
+        if (!clip.id.empty() && !clipIds.insert(clip.id).second) {
+            setError(error, context + " id '" + clip.id + "' is duplicated");
+            return false;
         }
         for (size_t previous = 0; previous < clips.size(); ++previous) {
             if (clipsOverlap(clips[previous], clip)) {
@@ -337,8 +496,17 @@ bool Playlist::loadFromJson(const std::string& text,
                 return false;
             }
         }
-        timeline = std::max(timeline, clip.end());
         clips.push_back(std::move(clip));
+    }
+    for (PlaylistClip& clip : clips) {
+        if (!clip.id.empty()) continue;
+        for (int64_t index = 1;; ++index) {
+            const std::string generated = "clip_" + std::to_string(index);
+            if (clipIds.insert(generated).second) {
+                clip.id = generated;
+                break;
+            }
+        }
     }
 
     std::vector<PlaylistFilter> filters;
@@ -384,38 +552,15 @@ bool Playlist::loadFromJson(const std::string& text,
     }
 
     std::unordered_map<std::string, std::unique_ptr<Producer>> producers;
-    auto blank = std::make_unique<BlankProducer>(profile);
-    blank->setHardwareDecode(impl_->hardwareDecode);
+    std::unique_ptr<BlankProducer> blank;
     for (PlaylistClip& clip : clips) {
-        if (isBlankResource(clip.resource)) {
-            blank->ensureLength(clip.out + 1);
-            continue;
-        }
-
-        Producer* producer = nullptr;
-        const auto found = producers.find(clip.resource);
-        if (found == producers.end()) {
-            auto created = std::make_unique<Producer>(profile);
-            created->setHardwareDecode(impl_->hardwareDecode);
-            std::string openError;
-            if (!created->open(clip.resource, &openError)) {
-                setError(error, "Failed to open clip resource '" + clip.resource +
-                                    "': " + openError);
-                return false;
-            }
-            producer = created.get();
-            producers.emplace(clip.resource, std::move(created));
-        } else {
-            producer = found->second.get();
-        }
-
-        if (clip.out >= producer->length()) {
-            setError(error, "clip out " + std::to_string(clip.out) +
-                                " is past the end of '" + clip.resource + "'");
+        if (!openClipProducer(clip, profile, impl_->hardwareDecode,
+                              producers, blank, error)) {
             return false;
         }
     }
 
+    impl_->reset();
     impl_->profile = std::move(profile);
     impl_->clips = std::move(clips);
     impl_->filters = std::move(filters);
@@ -423,8 +568,7 @@ bool Playlist::loadFromJson(const std::string& text,
     impl_->blank = std::move(blank);
     impl_->canvas.setProfile(impl_->profile);
     impl_->canvas.setHardwareDecode(impl_->hardwareDecode);
-    impl_->length = timeline;
-    impl_->position = 0;
+    impl_->commitGeometry();
     impl_->resource = "<playlist>";
     LOG_INFO("Playlist: loaded {} clips, {} filters, {} frames",
              impl_->clips.size(), impl_->filters.size(), impl_->length);
@@ -436,7 +580,11 @@ std::string Playlist::toJson() const {
     for (const PlaylistClip& clip : impl_->clips) {
         json object;
         if (!clip.id.empty()) object["id"] = clip.id;
-        object["resource"] = clip.resource;
+        if (!clip.mediaRef.empty()) {
+            object["mediaRef"] = clip.mediaRef;
+        } else {
+            object["resource"] = clip.resource;
+        }
         object["start"] = clip.start;
         object["in"] = clip.in;
         object["out"] = clip.out;
@@ -463,12 +611,76 @@ std::string Playlist::toJson() const {
     return root.dump(2);
 }
 
+bool Playlist::addClip(PlaylistClip& clip, std::string* error) {
+    if (clip.id.empty()) clip.id = impl_->makeClipId();
+    if (!parseClipId(clip.id, clip.id, error)) return false;
+    if (impl_->findClip(clip.id)) {
+        setError(error, "clip id '" + clip.id + "' already exists");
+        return false;
+    }
+    if (!validateClipFields(clip, "clip", error)) return false;
+    if (isBlankResource(clip.resource)) {
+        clip.resource = kBlankResource;
+    }
+    if (impl_->overlapsOthers(clip, {}, error)) return false;
+    if (!openClipProducer(clip, impl_->profile, impl_->hardwareDecode,
+                          impl_->producers, impl_->blank, error)) {
+        impl_->pruneProducers();
+        return false;
+    }
+
+    impl_->clips.push_back(clip);
+    impl_->commitGeometry();
+    return true;
+}
+
+bool Playlist::removeClip(const std::string& id, std::string* error) {
+    if (id.empty()) {
+        setError(error, "clip id must not be empty");
+        return false;
+    }
+    const auto found = std::find_if(
+        impl_->clips.begin(), impl_->clips.end(),
+        [&](const PlaylistClip& clip) { return clip.id == id; });
+    if (found == impl_->clips.end()) {
+        setError(error, "clip id '" + id + "' was not found");
+        return false;
+    }
+    impl_->clips.erase(found);
+    impl_->commitGeometry();
+    return true;
+}
+
+bool Playlist::moveClip(const std::string& id, int64_t start, std::string* error) {
+    if (start < 0) {
+        setError(error, "clip start must be >= 0");
+        return false;
+    }
+    PlaylistClip* clip = impl_->findClip(id);
+    if (!clip) {
+        setError(error, "clip id '" + id + "' was not found");
+        return false;
+    }
+    if (clip->start == start) return true;
+
+    PlaylistClip moved = *clip;
+    moved.start = start;
+    if (impl_->overlapsOthers(moved, id, error)) return false;
+    clip->start = start;
+    impl_->commitGeometry();
+    return true;
+}
+
 const std::vector<PlaylistClip>& Playlist::clips() const {
     return impl_->clips;
 }
 
 const std::vector<PlaylistFilter>& Playlist::filters() const {
     return impl_->filters;
+}
+
+const PlaylistClip* Playlist::clipById(const std::string& id) const {
+    return impl_->findClip(id);
 }
 
 bool Playlist::isBlankAt(int64_t position) const {
