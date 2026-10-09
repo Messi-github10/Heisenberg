@@ -2,6 +2,7 @@
 
 #include "BlankProducer.hpp"
 #include "Producer.hpp"
+#include "ProfileCanvas.hpp"
 
 #include <nlohmann/json.hpp>
 #include <Utiles/Logger.hpp>
@@ -170,6 +171,10 @@ std::string resolveResource(const std::string& resource, const std::string& base
     return utf8FromPath(std::filesystem::u8path(baseDir) / path);
 }
 
+bool clipsOverlap(const PlaylistClip& a, const PlaylistClip& b) {
+    return a.start < b.end() && b.start < a.end();
+}
+
 } // namespace
 
 struct Playlist::Impl {
@@ -180,6 +185,7 @@ struct Playlist::Impl {
     std::vector<PlaylistFilter> filters;
     std::unordered_map<std::string, std::unique_ptr<Producer>> producers;
     std::unique_ptr<BlankProducer> blank;
+    ProfileCanvas canvas;
     int64_t length = 0;
     int64_t position = 0;
 
@@ -188,6 +194,7 @@ struct Playlist::Impl {
         filters.clear();
         producers.clear();
         blank.reset();
+        canvas.setProfile(Profile::hd1080p24());
         length = 0;
         position = 0;
         resource = "<playlist>";
@@ -202,10 +209,7 @@ struct Playlist::Impl {
 
     const PlaylistClip* clipAt(int64_t timelinePosition) const {
         for (const PlaylistClip& clip : clips) {
-            if (timelinePosition >= clip.start &&
-                timelinePosition < clip.start + clip.duration()) {
-                return &clip;
-            }
+            if (clip.covers(timelinePosition)) return &clip;
         }
         return nullptr;
     }
@@ -218,6 +222,11 @@ Playlist::~Playlist() = default;
 
 void Playlist::setHardwareDecode(bool enabled) {
     impl_->hardwareDecode = enabled;
+    impl_->canvas.setHardwareDecode(enabled);
+    if (impl_->blank) impl_->blank->setHardwareDecode(enabled);
+    for (auto& [path, producer] : impl_->producers) {
+        if (producer) producer->setHardwareDecode(enabled);
+    }
 }
 
 bool Playlist::loadFromJsonFile(const std::string& path, std::string* error) {
@@ -289,7 +298,7 @@ bool Playlist::loadFromJson(const std::string& text,
         const json& clipValue = clipsValue[index];
         const std::string context = "clips[" + std::to_string(index) + "]";
         if (!expectObject(clipValue, context.c_str(), error) ||
-            !expectKeys(clipValue, {"id", "resource", "in", "out"},
+            !expectKeys(clipValue, {"id", "resource", "start", "in", "out"},
                         context.c_str(), error)) {
             return false;
         }
@@ -300,6 +309,8 @@ bool Playlist::loadFromJson(const std::string& text,
         if (!readString(clipValue, "id", id, context.c_str(), error, false) ||
             !parseClipId(id, clip.id, error) ||
             !readString(clipValue, "resource", resource, context.c_str(), error, true) ||
+            !readInt64(clipValue, "start", 0, std::numeric_limits<int64_t>::max(),
+                       clip.start, context.c_str(), error) ||
             !readInt64(clipValue, "in", 0, std::numeric_limits<int64_t>::max(),
                        clip.in, context.c_str(), error) ||
             !readInt64(clipValue, "out", 0, std::numeric_limits<int64_t>::max(),
@@ -319,8 +330,14 @@ bool Playlist::loadFromJson(const std::string& text,
         } else {
             clip.resource = resolveResource(resource, baseDir);
         }
-        clip.start = timeline;
-        timeline += clip.duration();
+        for (size_t previous = 0; previous < clips.size(); ++previous) {
+            if (clipsOverlap(clips[previous], clip)) {
+                setError(error, context + " overlaps clips[" +
+                                    std::to_string(previous) + "]");
+                return false;
+            }
+        }
+        timeline = std::max(timeline, clip.end());
         clips.push_back(std::move(clip));
     }
 
@@ -404,6 +421,8 @@ bool Playlist::loadFromJson(const std::string& text,
     impl_->filters = std::move(filters);
     impl_->producers = std::move(producers);
     impl_->blank = std::move(blank);
+    impl_->canvas.setProfile(impl_->profile);
+    impl_->canvas.setHardwareDecode(impl_->hardwareDecode);
     impl_->length = timeline;
     impl_->position = 0;
     impl_->resource = "<playlist>";
@@ -418,6 +437,7 @@ std::string Playlist::toJson() const {
         json object;
         if (!clip.id.empty()) object["id"] = clip.id;
         object["resource"] = clip.resource;
+        object["start"] = clip.start;
         object["in"] = clip.in;
         object["out"] = clip.out;
         clips.push_back(std::move(object));
@@ -516,8 +536,14 @@ ProducerFrame Playlist::getFrame(int64_t position) {
     }
 
     const PlaylistClip* clip = impl_->clipAt(position);
-    IProducer* producer = clip ? impl_->producerFor(*clip) : nullptr;
-    if (!clip || !producer) {
+    if (!clip) {
+        frame = impl_->canvas.frame(position, CanvasColor::Black);
+        impl_->position = position;
+        return frame;
+    }
+
+    IProducer* producer = impl_->producerFor(*clip);
+    if (!producer) {
         frame.eof = true;
         frame.position = position;
         impl_->position = position;

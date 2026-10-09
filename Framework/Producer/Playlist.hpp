@@ -11,11 +11,15 @@ namespace heisenberg {
 struct PlaylistClip {
     std::string id;
     std::string resource;
+    int64_t start = 0;
     int64_t in = 0;
     int64_t out = 0;
-    int64_t start = 0;
 
     int64_t duration() const { return out >= in ? out - in + 1 : 0; }
+    int64_t end() const { return start + duration(); }
+    bool covers(int64_t position) const {
+        return position >= start && position < end();
+    }
 };
 
 struct PlaylistFilter {

@@ -31,6 +31,13 @@ bool isCanvas(const heisenberg::ProducerFrame& frame) {
            frame.video->format == AV_PIX_FMT_RGBAF16;
 }
 
+bool firstPixelIs(const heisenberg::ProducerFrame& frame, uint16_t value) {
+    if (!isCanvas(frame) || !frame.video->data[0]) return false;
+    const uint16_t* pixel = reinterpret_cast<const uint16_t*>(frame.video->data[0]);
+    return pixel[0] == value && pixel[1] == value &&
+           pixel[2] == value && pixel[3] == value;
+}
+
 } // namespace
 
 TEST(PlaylistTest, SequentialGetFrameCrossesCutsOnProfileCanvas) {
@@ -45,11 +52,11 @@ TEST(PlaylistTest, SequentialGetFrameCrossesCutsOnProfileCanvas) {
         "  \"profile\": { \"id\": \"hd_1080p_24\" },\n" +
         "  \"clips\": [\n" +
         "    { \"id\": \"a1\", \"resource\": \"" + jsonEscape(clipA) +
-        "\", \"in\": 0, \"out\": 9 },\n" +
+        "\", \"start\": 0, \"in\": 0, \"out\": 9 },\n" +
         "    { \"id\": \"b1\", \"resource\": \"" + jsonEscape(clipB) +
-        "\", \"in\": 0, \"out\": 4 },\n" +
+        "\", \"start\": 10, \"in\": 0, \"out\": 4 },\n" +
         "    { \"id\": \"a2\", \"resource\": \"" + jsonEscape(clipA) +
-        "\", \"in\": 12, \"out\": 14 }\n" +
+        "\", \"start\": 15, \"in\": 12, \"out\": 14 }\n" +
         "  ]\n" +
         "}\n";
 
@@ -59,6 +66,9 @@ TEST(PlaylistTest, SequentialGetFrameCrossesCutsOnProfileCanvas) {
     ASSERT_TRUE(playlist.loadFromJson(json, &error)) << error;
     ASSERT_EQ(playlist.clips().size(), 3u);
     ASSERT_EQ(playlist.length(), 18);
+    EXPECT_EQ(playlist.clips()[0].start, 0);
+    EXPECT_EQ(playlist.clips()[1].start, 10);
+    EXPECT_EQ(playlist.clips()[2].start, 15);
     EXPECT_EQ(playlist.in(), 0);
     EXPECT_EQ(playlist.out(), 17);
 
@@ -94,7 +104,7 @@ TEST(PlaylistTest, SequentialGetFrameCrossesCutsOnProfileCanvas) {
     EXPECT_TRUE(pastEnd.eof);
 }
 
-TEST(PlaylistTest, BlankClipFillsGapWithWhiteCanvas) {
+TEST(PlaylistTest, GapWithoutClipIsBlackCanvas) {
     const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
     const std::string clipB = HEISENBERG_PLAYLIST_CLIP_B;
     ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
@@ -106,10 +116,9 @@ TEST(PlaylistTest, BlankClipFillsGapWithWhiteCanvas) {
         "  \"profile\": { \"id\": \"hd_1080p_24\" },\n" +
         "  \"clips\": [\n" +
         "    { \"id\": \"a\", \"resource\": \"" + jsonEscape(clipA) +
-        "\", \"in\": 0, \"out\": 4 },\n" +
-        "    { \"id\": \"gap\", \"resource\": \"blank\", \"in\": 0, \"out\": 2 },\n" +
+        "\", \"start\": 0, \"in\": 0, \"out\": 4 },\n" +
         "    { \"id\": \"b\", \"resource\": \"" + jsonEscape(clipB) +
-        "\", \"in\": 0, \"out\": 4 }\n" +
+        "\", \"start\": 8, \"in\": 0, \"out\": 4 }\n" +
         "  ]\n" +
         "}\n";
 
@@ -117,13 +126,13 @@ TEST(PlaylistTest, BlankClipFillsGapWithWhiteCanvas) {
     playlist.setHardwareDecode(false);
     std::string error;
     ASSERT_TRUE(playlist.loadFromJson(json, &error)) << error;
-    ASSERT_EQ(playlist.clips().size(), 3u);
+    ASSERT_EQ(playlist.clips().size(), 2u);
     ASSERT_EQ(playlist.length(), 13);
-    EXPECT_EQ(playlist.clips()[1].resource, heisenberg::kBlankResource);
-    EXPECT_EQ(playlist.clips()[1].start, 5);
+    EXPECT_EQ(playlist.clips()[0].start, 0);
+    EXPECT_EQ(playlist.clips()[1].start, 8);
     EXPECT_FALSE(playlist.isBlankAt(4));
-    EXPECT_TRUE(playlist.isBlankAt(5));
-    EXPECT_TRUE(playlist.isBlankAt(7));
+    EXPECT_FALSE(playlist.isBlankAt(5));
+    EXPECT_FALSE(playlist.isBlankAt(7));
     EXPECT_FALSE(playlist.isBlankAt(8));
 
     const heisenberg::ProducerFrame beforeGap = playlist.getFrame(4);
@@ -137,19 +146,99 @@ TEST(PlaylistTest, BlankClipFillsGapWithWhiteCanvas) {
     EXPECT_TRUE(isCanvas(afterGap));
     EXPECT_EQ(gapStart.position, 5);
     EXPECT_EQ(gapEnd.position, 7);
-
-    const uint16_t white = 0x3C00;
-    const uint16_t* pixel = reinterpret_cast<const uint16_t*>(gapStart.video->data[0]);
-    EXPECT_EQ(pixel[0], white);
-    EXPECT_EQ(pixel[1], white);
-    EXPECT_EQ(pixel[2], white);
-    EXPECT_EQ(pixel[3], white);
+    EXPECT_TRUE(firstPixelIs(gapStart, 0x0000));
+    EXPECT_TRUE(firstPixelIs(gapEnd, 0x0000));
     ASSERT_TRUE(gapStart.hasAudio());
     EXPECT_EQ(gapStart.audio->samples(), 2000);
     EXPECT_EQ(gapStart.audio->channelRo(0)[0], 0.0f);
 
     const heisenberg::ProducerFrame pastEnd = playlist.getFrame(playlist.length());
     EXPECT_TRUE(pastEnd.eof);
+}
+
+TEST(PlaylistTest, BlankClipStillProducesWhiteCanvas) {
+    const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
+    ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
+
+    const std::string json =
+        std::string("{\n") +
+        "  \"version\": 1,\n" +
+        "  \"profile\": { \"id\": \"hd_1080p_24\" },\n" +
+        "  \"clips\": [\n" +
+        "    { \"id\": \"a\", \"resource\": \"" + jsonEscape(clipA) +
+        "\", \"start\": 0, \"in\": 0, \"out\": 4 },\n" +
+        "    { \"id\": \"gap\", \"resource\": \"blank\", \"start\": 5, \"in\": 0, \"out\": 2 }\n" +
+        "  ]\n" +
+        "}\n";
+
+    heisenberg::Playlist playlist;
+    playlist.setHardwareDecode(false);
+    std::string error;
+    ASSERT_TRUE(playlist.loadFromJson(json, &error)) << error;
+    ASSERT_EQ(playlist.clips().size(), 2u);
+    ASSERT_EQ(playlist.length(), 8);
+    EXPECT_EQ(playlist.clips()[1].resource, heisenberg::kBlankResource);
+    EXPECT_EQ(playlist.clips()[1].start, 5);
+    EXPECT_FALSE(playlist.isBlankAt(4));
+    EXPECT_TRUE(playlist.isBlankAt(5));
+    EXPECT_TRUE(playlist.isBlankAt(7));
+
+    const heisenberg::ProducerFrame white = playlist.getFrame(5);
+    ASSERT_FALSE(white.eof);
+    EXPECT_TRUE(firstPixelIs(white, 0x3C00));
+}
+
+TEST(PlaylistTest, LengthIsLastClipEndAndLeadingGapIsBlack) {
+    const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
+    ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
+
+    const std::string json =
+        std::string("{\n") +
+        "  \"version\": 1,\n" +
+        "  \"profile\": { \"id\": \"hd_1080p_24\" },\n" +
+        "  \"clips\": [\n" +
+        "    { \"id\": \"a\", \"resource\": \"" + jsonEscape(clipA) +
+        "\", \"start\": 24, \"in\": 0, \"out\": 4 }\n" +
+        "  ]\n" +
+        "}\n";
+
+    heisenberg::Playlist playlist;
+    playlist.setHardwareDecode(false);
+    std::string error;
+    ASSERT_TRUE(playlist.loadFromJson(json, &error)) << error;
+    ASSERT_EQ(playlist.clips().size(), 1u);
+    ASSERT_EQ(playlist.length(), 29);
+    EXPECT_EQ(playlist.clips()[0].start, 24);
+
+    const heisenberg::ProducerFrame leading = playlist.getFrame(0);
+    const heisenberg::ProducerFrame beforeClip = playlist.getFrame(23);
+    const heisenberg::ProducerFrame firstClip = playlist.getFrame(24);
+    ASSERT_FALSE(leading.eof || beforeClip.eof || firstClip.eof);
+    EXPECT_TRUE(firstPixelIs(leading, 0x0000));
+    EXPECT_TRUE(firstPixelIs(beforeClip, 0x0000));
+    EXPECT_TRUE(isCanvas(firstClip));
+}
+
+TEST(PlaylistTest, OverlappingClipsAreRejected) {
+    const std::string clipA = HEISENBERG_PLAYLIST_CLIP_A;
+    ASSERT_TRUE(std::filesystem::exists(std::filesystem::u8path(clipA)));
+
+    const std::string json =
+        std::string("{\n") +
+        "  \"version\": 1,\n" +
+        "  \"profile\": { \"id\": \"hd_1080p_24\" },\n" +
+        "  \"clips\": [\n" +
+        "    { \"id\": \"a\", \"resource\": \"" + jsonEscape(clipA) +
+        "\", \"start\": 0, \"in\": 0, \"out\": 9 },\n" +
+        "    { \"id\": \"b\", \"resource\": \"" + jsonEscape(clipA) +
+        "\", \"start\": 5, \"in\": 0, \"out\": 4 }\n" +
+        "  ]\n" +
+        "}\n";
+
+    heisenberg::Playlist playlist;
+    std::string error;
+    EXPECT_FALSE(playlist.loadFromJson(json, &error));
+    EXPECT_NE(error.find("overlaps"), std::string::npos);
 }
 
 TEST(PlaylistTest, FilterInOutUsesTimelineFrames) {
@@ -162,8 +251,9 @@ TEST(PlaylistTest, FilterInOutUsesTimelineFrames) {
         "  \"profile\": { \"id\": \"hd_1080p_24\" },\n" +
         "  \"clips\": [\n" +
         "    { \"id\": \"a\", \"resource\": \"" + jsonEscape(clipA) +
-        "\", \"in\": 0, \"out\": 9 },\n" +
-        "    { \"id\": \"gap\", \"resource\": \"blank\", \"in\": 0, \"out\": 4 }\n" +
+        "\", \"start\": 0, \"in\": 0, \"out\": 9 },\n" +
+        "    { \"id\": \"b\", \"resource\": \"" + jsonEscape(clipA) +
+        "\", \"start\": 15, \"in\": 0, \"out\": 4 }\n" +
         "  ],\n" +
         "  \"filters\": [\n" +
         "    { \"id\": \"grade\", \"graph\": \"brightness.json\", \"in\": 5, \"out\": 12 }\n" +
@@ -174,6 +264,7 @@ TEST(PlaylistTest, FilterInOutUsesTimelineFrames) {
     playlist.setHardwareDecode(false);
     std::string error;
     ASSERT_TRUE(playlist.loadFromJson(json, &error, ".")) << error;
+    ASSERT_EQ(playlist.length(), 20);
     ASSERT_EQ(playlist.filters().size(), 1u);
     EXPECT_EQ(playlist.filters()[0].id, "grade");
     EXPECT_EQ(playlist.filters()[0].in, 5);
