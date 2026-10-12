@@ -45,6 +45,29 @@ explicitly unsupported. Media import itself is not part of timeline undo history
   project or consume redo history. Undo/redo cancels a pending draft first.
 - The ruler/empty space still moves the playhead. Zoom and horizontal scrolling
   preserve timeline frame mapping. Multi-track documents remain selectable/viewable
-  but moving their clips is explicitly rejected.
+  but moving, trimming, and splitting their clips is explicitly rejected.
 
-Clip edge trimming, multi-selection, and ripple editing are not part of this step.
+## Edge trimming and splitting
+
+- Hover near a clip's left/right edge: the horizontal resize cursor and grips
+  indicate trimming. Drag the left edge to change the in-point; drag the right edge
+  to change the out-point. The opposite edge stays fixed. The ghost shows the
+  proposed range; the project only changes when released inside the video lane.
+- Each clip keeps at least one frame. Extending is limited to previously trimmed
+  source frames (and never before timeline frame zero). **[Limit]** indicates a
+  clamped boundary. Fractional speeds use the same rounded source-frame mapping
+  as the editor. The edited edge uses **Snap**/**Shift** exactly like clip moves.
+- Extending over another clip uses overwrite, not ripple: neighboring content is
+  trimmed/removed as needed, without pushing the rest of the timeline. The entire
+  extension is one undo step. **Esc** or releasing outside the lane cancels it.
+- Select a clip, scrub the ruler to a frame strictly inside that clip, then click
+  **Split at Playhead** in the toolbar/Edit menu, or press **S** with timeline focus.
+  S does not intercept typing in media search. The cut makes two adjacent clips;
+  the left keeps its ID/selection and the right gets a stable new UUID. Boundary
+  cuts, missing selection, and cuts outside the selected clip change nothing.
+- Trims/splits maintain source trims, speed, fades, and clip-relative timing
+  payloads. **Ctrl+Z** / **Ctrl+Shift+Z** restores/reapplies each complete edit,
+  including generated IDs. Playback updates before saving; save/reopen retains
+  the edit. These are non-destructive edits: original media files are unchanged.
+
+Multi-selection, ripple editing, and a separate razor-tool mode are not included.

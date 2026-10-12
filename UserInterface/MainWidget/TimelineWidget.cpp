@@ -31,6 +31,7 @@ constexpr double kRulerHeight = 30.0;
 constexpr double kDefaultTrackHeight = 44.0;
 constexpr double kMinZoom = 0.05;
 constexpr double kMaxZoom = 40.0;
+constexpr double kTrimHandleWidth = 6.0;
 
 const QColor kBase(24, 25, 28);
 const QColor kSurface(30, 31, 35);
@@ -47,6 +48,19 @@ const QColor kPlayhead(255, 82, 77);
 double boundedTrackHeight(double height) {
     if (!std::isfinite(height)) return kDefaultTrackHeight;
     return std::clamp(height, 32.0, 200.0);
+}
+
+qint64 availableTrimFrames(qint64 sourceBudget, double speed, qint64 maximum) {
+    // Match the model's round(delta * speed), including fractional-speed restoration.
+    qint64 low = 0, high = std::max<qint64>(0, maximum);
+    while (low < high) {
+        const qint64 middle = low + (high - low + 1) / 2;
+        const double consumed = std::round(static_cast<double>(middle) * speed);
+        if (std::isfinite(consumed) && consumed < static_cast<double>(std::numeric_limits<qint64>::max()) &&
+            static_cast<qint64>(consumed) <= sourceBudget) low = middle;
+        else high = middle - 1;
+    }
+    return low;
 }
 }
 
@@ -132,6 +146,16 @@ void TimelineWidget::setSnappingEnabled(bool enabled) {
     snappingEnabled_ = enabled;
     if (clipMove_ && clipMove_->dragging)
         updateClipMove(clipMove_->lastPosition, clipMove_->modifiers);
+}
+
+void TimelineWidget::splitSelectedClip() {
+    cancelInteraction();
+    if (!session_ || selectedClipId_.empty()) {
+        emit editFailed(tr("Select a video clip and place the playhead inside it before splitting."));
+        return;
+    }
+    const auto result = session_->splitClip(QString::fromStdString(selectedClipId_), currentFrame_);
+    if (!result.changed() && !result.message.empty()) emit editFailed(QString::fromUtf8(result.message.c_str()));
 }
 
 void TimelineWidget::setPlaying(bool playing) {
@@ -356,6 +380,15 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
                                     selected ? 1.5 : 1.0));
                 painter.drawPath(path);
 
+                if (selected || hovered) {
+                    painter.setPen(QPen(QColor(255, 255, 255, selected ? 230 : 140), 2));
+                    const double inset = std::min(3.0, clipRect.width() / 4.0);
+                    painter.drawLine(QPointF(clipRect.left() + inset, clipRect.top() + 5),
+                                     QPointF(clipRect.left() + inset, clipRect.bottom() - 5));
+                    painter.drawLine(QPointF(clipRect.right() - inset, clipRect.top() + 5),
+                                     QPointF(clipRect.right() - inset, clipRect.bottom() - 5));
+                }
+
                 if (clipRect.width() >= 34) {
                     QFont labelFont = font();
                     labelFont.setPixelSize(10);
@@ -455,10 +488,22 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
         }
         painter.setPen(accent);
         const double labelX = std::clamp(ghost.left() + 6, kHeaderWidth + 6, std::max(kHeaderWidth + 6, width() - 230.0));
-        painter.drawText(QPointF(labelX, kRulerHeight + trackHeight + 18),
-            move.validDrop ? tr("Move / overwrite at %1%2").arg(formatTimecode(move.targetFrame))
-                                .arg(move.snapFrame ? tr("  [Snap]") : QString())
-                           : tr("Release outside the video lane to cancel"));
+        QString label = tr("Release outside the video lane to cancel");
+        if (move.validDrop) {
+            label = move.trimEdge
+                ? tr("%1  %2  /  %3 frames").arg(*move.trimEdge == heisenberg::TrimEdge::Left ? tr("Trim In") : tr("Trim Out"))
+                      .arg(formatTimecode(move.targetEdgeFrame)).arg(move.durationFrames)
+                : tr("Move / overwrite at %1").arg(formatTimecode(move.targetFrame));
+            if (move.snapFrame) label += tr("  [Snap]");
+            if (move.sourceLimited) label += tr("  [Limit]");
+        }
+        if (move.trimEdge) {
+            painter.setPen(QPen(accent, 3));
+            painter.drawLine(QPointF(xForFrame(move.targetEdgeFrame), ghost.top()),
+                             QPointF(xForFrame(move.targetEdgeFrame), ghost.bottom()));
+        }
+        painter.setPen(accent);
+        painter.drawText(QPointF(labelX, kRulerHeight + trackHeight + 18), label);
         painter.restore();
     }
 
@@ -504,6 +549,15 @@ void TimelineWidget::updateScrub(double x, bool finished) {
     update();
 }
 
+std::optional<heisenberg::TrimEdge> TimelineWidget::trimEdgeAt(const heisenberg::Clip& clip, double x) const {
+    const double left = xForFrame(clip.startFrame), right = xForFrame(clip.endFrame());
+    // Keep a usable move region even for narrow clips. Clipped-off edges are not handles.
+    const double handleWidth = std::min(kTrimHandleWidth, (right - left) / 4.0);
+    if (left >= kHeaderWidth && x - left <= handleWidth) return heisenberg::TrimEdge::Left;
+    if (right <= width() && right - x <= handleWidth) return heisenberg::TrimEdge::Right;
+    return std::nullopt;
+}
+
 void TimelineWidget::mousePressEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton || event->position().x() < kHeaderWidth) {
         QWidget::mousePressEvent(event);
@@ -518,10 +572,27 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
         ClipMove move;
         move.clipId = hit;
         move.pressPosition = move.lastPosition = event->position();
-        move.grabOffsetFrames = (event->position().x() - xForFrame(clip->startFrame)) / pixelsPerFrame_;
+        move.trimEdge = trimEdgeAt(*clip, event->position().x());
+        move.originalStartFrame = clip->startFrame;
+        move.originalEndFrame = clip->endFrame();
+        const bool leftTrim = move.trimEdge == heisenberg::TrimEdge::Left;
+        const qint64 grabFrame = move.trimEdge && !leftTrim ? move.originalEndFrame : move.originalStartFrame;
+        move.grabOffsetFrames = (event->position().x() - xForFrame(grabFrame)) / pixelsPerFrame_;
+        move.targetEdgeFrame = grabFrame;
         move.targetFrame = clip->startFrame;
         move.durationFrames = clip->durationFrames;
         move.playheadFrame = currentFrame_;
+        if (move.trimEdge) {
+            const qint64 maximumFrame = std::numeric_limits<qint64>::max() / 4;
+            if (leftTrim) {
+                move.minEdgeFrame = clip->startFrame - availableTrimFrames(clip->trimStartFrame, clip->speed, clip->startFrame);
+                move.maxEdgeFrame = clip->endFrame() - 1;
+            } else {
+                move.minEdgeFrame = clip->startFrame + 1;
+                move.maxEdgeFrame = clip->endFrame() + availableTrimFrames(clip->trimEndFrame, clip->speed,
+                    std::max<qint64>(0, maximumFrame - clip->endFrame()));
+            }
+        }
         clipMove_ = move;
         update();
         event->accept();
@@ -540,7 +611,7 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                 >= QApplication::startDragDistance()) {
             if (session_->editor().compatibility().level == heisenberg::CompatibilityLevel::Unsupported) {
                 cancelInteraction();
-                emit editFailed(tr("Moving clips currently requires a single video track."));
+                emit editFailed(tr("Editing clips currently requires a single video track."));
                 event->accept();
                 return;
             }
@@ -560,7 +631,8 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
         hoveredClipId_ = hovered;
         update();
     }
-    setCursor(!hovered.empty() ? Qt::OpenHandCursor :
+    const auto* hoveredClip = timeline() ? timeline()->clipById(hovered) : nullptr;
+    setCursor(hoveredClip ? (trimEdgeAt(*hoveredClip, event->position().x()) ? Qt::SizeHorCursor : Qt::OpenHandCursor) :
         event->position().x() >= kHeaderWidth ? Qt::PointingHandCursor : Qt::ArrowCursor);
 }
 
@@ -570,7 +642,10 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
         const auto move = *clipMove_;
         cancelInteraction();
         if (move.dragging && move.validDrop) {
-            const auto result = session_->moveClip(QString::fromStdString(move.clipId), move.targetFrame);
+            const auto result = move.trimEdge
+                ? session_->trimClip(QString::fromStdString(move.clipId), *move.trimEdge,
+                    move.targetEdgeFrame - (*move.trimEdge == heisenberg::TrimEdge::Left ? move.originalStartFrame : move.originalEndFrame))
+                : session_->moveClip(QString::fromStdString(move.clipId), move.targetFrame);
             if (result.status == heisenberg::EditStatus::Invalid || result.status == heisenberg::EditStatus::Unsupported)
                 emit editFailed(QString::fromUtf8(result.message.c_str()));
         }
@@ -610,6 +685,11 @@ void TimelineWidget::leaveEvent(QEvent* event) {
 }
 
 void TimelineWidget::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_S && !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+        if (!event->isAutoRepeat()) splitSelectedClip();
+        event->accept();
+        return;
+    }
     if (event->key() == Qt::Key_Escape && cancelInteraction()) { event->accept(); return; }
     if (event->key() == Qt::Key_Shift && clipMove_ && clipMove_->dragging) {
         updateClipMove(clipMove_->lastPosition, event->modifiers() | Qt::ShiftModifier);
@@ -642,20 +722,30 @@ void TimelineWidget::updateClipMove(const QPointF& point, Qt::KeyboardModifiers 
     move.validDrop = canDropAt(point);
     const double raw = std::clamp((point.x() - kHeaderWidth + scrollOffset_) / pixelsPerFrame_ - move.grabOffsetFrames,
         0.0, static_cast<double>(std::numeric_limits<qint64>::max() / 4));
-    move.targetFrame = static_cast<qint64>(std::round(raw));
+    const qint64 rounded = static_cast<qint64>(std::round(raw));
+    move.sourceLimited = false;
+    if (move.trimEdge) {
+        move.targetEdgeFrame = std::clamp(rounded, move.minEdgeFrame, move.maxEdgeFrame);
+        move.sourceLimited = move.targetEdgeFrame != rounded;
+    } else move.targetFrame = rounded;
     move.snapFrame.reset();
     if (move.validDrop && snappingEnabled_ && !modifiers.testFlag(Qt::ShiftModifier)) {
-        // Both edges can snap. Exclude the moving clip's old range (no self-snapping).
+        // Moves snap either edge; trims snap only the edited edge. Never snap to self.
         double bestPixels = 8.0 + 0.001;
         auto consider = [&](qint64 anchor) {
-            for (const qint64 edge : {qint64(0), move.durationFrames}) {
+            const int edgeCount = move.trimEdge ? 1 : 2;
+            for (int index = 0; index < edgeCount; ++index) {
+                const qint64 edge = index == 0 ? 0 : move.durationFrames;
                 if (anchor < edge) continue;
                 const qint64 candidate = anchor - edge;
+                if (move.trimEdge && (candidate < move.minEdgeFrame || candidate > move.maxEdgeFrame)) continue;
                 const double distance = std::abs(static_cast<double>(candidate) - raw) * pixelsPerFrame_;
                 if (distance < bestPixels) {
                     bestPixels = distance;
-                    move.targetFrame = candidate;
+                    if (move.trimEdge) move.targetEdgeFrame = candidate;
+                    else move.targetFrame = candidate;
                     move.snapFrame = anchor;
+                    move.sourceLimited = false;
                 }
             }
         };
@@ -667,7 +757,11 @@ void TimelineWidget::updateClipMove(const QPointF& point, Qt::KeyboardModifiers 
                 consider(clip.endFrame());
             }
     }
-    setCursor(move.validDrop ? Qt::ClosedHandCursor : Qt::ForbiddenCursor);
+    if (move.trimEdge) {
+        move.targetFrame = *move.trimEdge == heisenberg::TrimEdge::Left ? move.targetEdgeFrame : move.originalStartFrame;
+        move.durationFrames = (*move.trimEdge == heisenberg::TrimEdge::Left ? move.originalEndFrame : move.targetEdgeFrame) - move.targetFrame;
+    }
+    setCursor(move.validDrop ? (move.trimEdge ? Qt::SizeHorCursor : Qt::ClosedHandCursor) : Qt::ForbiddenCursor);
     update();
 }
 

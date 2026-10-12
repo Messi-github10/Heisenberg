@@ -89,6 +89,9 @@ void MainWindow::setupUi() {
     undoAction->setShortcut(QKeySequence::Undo);
     auto* redoAction = editMenu->addAction(tr("Redo"));
     redoAction->setShortcuts({QKeySequence::Redo, QKeySequence("Ctrl+Shift+Z")});
+    auto* splitAction = editMenu->addAction(tr("Split at Playhead"));
+    splitAction->setObjectName("splitAtPlayhead");
+    splitAction->setToolTip(tr("Select a clip, place the playhead inside it, then split (S when the timeline has focus)."));
 
     auto* playbackMenu = menuBar()->addMenu(tr("Playback"));
     playPauseAction_ = playbackMenu->addAction(
@@ -119,6 +122,7 @@ void MainWindow::setupUi() {
     toolbar->addAction(openProjectAction);
     toolbar->addAction(openVideoAction);
     toolbar->addAction(saveAction);
+    toolbar->addAction(splitAction);
     toolbar->addSeparator();
     toolbar->addAction(playPauseAction_);
     auto* returnAction = toolbar->addAction(tr("Timeline Preview"));
@@ -221,6 +225,7 @@ void MainWindow::setupUi() {
         session_->redo();
     });
     connect(snapAction, &QAction::toggled, timelineWidget_, &TimelineWidget::setSnappingEnabled);
+    connect(splitAction, &QAction::triggered, timelineWidget_, &TimelineWidget::splitSelectedClip);
     connect(timelinePreviewAction, &QAction::triggered, this, [this]() {
         if (!timelineWidget_->cancelInteraction()) emit timelinePreviewRequested();
     });

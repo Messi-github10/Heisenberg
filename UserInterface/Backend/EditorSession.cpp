@@ -91,6 +91,29 @@ EditResult EditorSession::moveClip(const QString& clipId, qint64 frame) {
     return result;
 }
 
+EditResult EditorSession::trimClip(const QString& clipId, TrimEdge edge, qint64 deltaFrames) {
+    if (editor_.compatibility().level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline is not a single video track"};
+    auto result = editor_.trimClip(clipId.toUtf8().toStdString(), edge, deltaFrames);
+    if (result.changed()) {
+        setDirty(true);
+        const auto* clip = editor_.activeTimeline()->clipById(clipId.toUtf8().toStdString());
+        emit timelineChanged(edge == TrimEdge::Left ? clip->startFrame : clip->endFrame() - 1);
+    }
+    return result;
+}
+
+EditResult EditorSession::splitClip(const QString& clipId, qint64 frame) {
+    if (editor_.compatibility().level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline is not a single video track"};
+    auto result = editor_.splitClip(clipId.toUtf8().toStdString(), frame);
+    if (result.changed()) {
+        setDirty(true);
+        emit timelineChanged(frame);
+    }
+    return result;
+}
+
 void EditorSession::undo() {
     if (editor_.undo()) { setDirty(true); emit timelineChanged(-1); }
 }

@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <limits>
 #include <string>
 
 namespace {
@@ -242,6 +243,81 @@ TEST(EditorViewModelTest, SplitTrimAndUndoPreserveTimingPayloads) {
     EXPECT_EQ(heisenberg::ProjectCodec::encode(editor->project()), beforeFailure);
     ASSERT_TRUE(editor->undo());
     EXPECT_EQ(nlohmann::ordered_json::parse(heisenberg::ProjectCodec::encode(editor->project())), before);
+    std::error_code code;
+    std::filesystem::remove_all(root, code);
+}
+
+TEST(EditorViewModelTest, SplitBoundaryPayloadBelongsToRightAndRightTrimCropsTiming) {
+    auto clip = initialClip(30, 10);
+    clip.speed = 2.0;
+    clip.trimStartFrame = 2;
+    clip.trimEndFrame = 4;
+    clip.fadeInFrames = 3;
+    clip.fadeOutFrames = 4;
+    clip.opacityTrack = heisenberg::KeyframeTrackPayload{nlohmann::ordered_json::parse(
+        R"json({"keyframes":[{"frame":2,"value":0.2},{"frame":4,"value":0.4},{"frame":6,"value":0.8}]})json")};
+    clip.effects = nlohmann::ordered_json::parse(
+        R"json([{"id":"blur","type":"video.blur","enabled":true,"params":{"radius":{"value":2.0,"track":{"keyframes":[{"frame":4,"value":3.0},{"frame":6,"value":5.0}]}}}}])json");
+    clip.wordTimings = std::vector<heisenberg::WordTiming>{{"cross", 2, 6}, {"last", 7, 9}};
+    const auto root = tempPackage("split-boundary");
+    auto editor = loadEditor(root, testProject(clip), testManifest());
+    const auto before = heisenberg::ProjectCodec::encode(editor->project());
+    const auto split = editor->splitClip(clip.id, 34);
+    ASSERT_TRUE(split.changed());
+    const auto* left = editor->activeTrack()->clipById(clip.id);
+    const auto* right = editor->activeTrack()->clipById(split.affectedIds[1]);
+    ASSERT_NE(left, nullptr);
+    ASSERT_NE(right, nullptr);
+    EXPECT_EQ(left->trimStartFrame, 2);
+    EXPECT_EQ(left->trimEndFrame, 16);
+    EXPECT_EQ(left->fadeInFrames, 3);
+    EXPECT_EQ(left->fadeOutFrames, 0);
+    EXPECT_EQ(right->trimStartFrame, 10);
+    EXPECT_EQ(right->trimEndFrame, 4);
+    EXPECT_EQ(right->fadeInFrames, 0);
+    EXPECT_EQ(right->fadeOutFrames, 4);
+    ASSERT_TRUE(left->opacityTrack);
+    EXPECT_EQ(left->opacityTrack->value["keyframes"].size(), 1u);
+    ASSERT_TRUE(right->opacityTrack);
+    EXPECT_EQ(right->opacityTrack->value["keyframes"][0]["frame"], 0);
+    EXPECT_EQ(right->opacityTrack->value["keyframes"][1]["frame"], 2);
+    EXPECT_TRUE((*left->effects)[0]["params"]["radius"]["track"]["keyframes"].empty());
+    EXPECT_EQ((*right->effects)[0]["params"]["radius"]["track"]["keyframes"][0]["frame"], 0);
+    ASSERT_TRUE(left->wordTimings);
+    ASSERT_TRUE(right->wordTimings);
+    EXPECT_EQ(*left->wordTimings, (std::vector<heisenberg::WordTiming>{{"cross", 2, 4}}));
+    EXPECT_EQ(*right->wordTimings, (std::vector<heisenberg::WordTiming>{{"cross", 0, 2}, {"last", 3, 5}}));
+    ASSERT_TRUE(editor->undo());
+    EXPECT_EQ(heisenberg::ProjectCodec::encode(editor->project()), before);
+
+    ASSERT_TRUE(editor->trimClip(clip.id, heisenberg::TrimEdge::Right, -5).changed());
+    const auto* trimmed = editor->activeTrack()->clipById(clip.id);
+    EXPECT_EQ(trimmed->durationFrames, 5);
+    EXPECT_EQ(trimmed->trimEndFrame, 14);
+    EXPECT_EQ(trimmed->fadeInFrames, 3);
+    EXPECT_EQ(trimmed->fadeOutFrames, 2);
+    EXPECT_EQ(trimmed->opacityTrack->value["keyframes"].size(), 2u);
+    EXPECT_EQ((*trimmed->effects)[0]["params"]["radius"]["track"]["keyframes"].size(), 1u);
+    EXPECT_EQ(*trimmed->wordTimings, (std::vector<heisenberg::WordTiming>{{"cross", 2, 5}}));
+    ASSERT_TRUE(editor->undo());
+    EXPECT_EQ(heisenberg::ProjectCodec::encode(editor->project()), before);
+    std::error_code code;
+    std::filesystem::remove_all(root, code);
+}
+
+TEST(EditorViewModelTest, ExtremeTrimDeltasAreRejectedWithoutHistory) {
+    const auto root = tempPackage("trim-overflow");
+    auto editor = loadEditor(root, testProject(initialClip()), testManifest());
+    const auto before = heisenberg::ProjectCodec::encode(editor->project());
+    for (const auto edge : {heisenberg::TrimEdge::Left, heisenberg::TrimEdge::Right}) {
+        for (const auto delta : {std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max()}) {
+            EXPECT_EQ(editor->trimClip("clip-old", edge, delta).status, heisenberg::EditStatus::Invalid);
+            EXPECT_EQ(heisenberg::ProjectCodec::encode(editor->project()), before);
+            EXPECT_FALSE(editor->undo());
+        }
+    }
+    EXPECT_EQ(editor->splitClip("clip-old", std::numeric_limits<int64_t>::max()).status, heisenberg::EditStatus::NoOp);
+    EXPECT_FALSE(editor->undo());
     std::error_code code;
     std::filesystem::remove_all(root, code);
 }

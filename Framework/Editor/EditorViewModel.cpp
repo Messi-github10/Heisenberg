@@ -82,7 +82,7 @@ splitTrackPayload(const std::optional<KeyframeTrackPayload>& source, int64_t off
     for (JsonValue keyframe : source->value["keyframes"]) {
         if (!keyframe.is_object() || !keyframe.contains("frame")) continue;
         const int64_t frame = keyframe["frame"].get<int64_t>();
-        if (frame <= offset) left["keyframes"].push_back(keyframe);
+        if (frame < offset) left["keyframes"].push_back(keyframe);
         if (frame >= offset) {
             keyframe["frame"] = frame - offset;
             right["keyframes"].push_back(std::move(keyframe));
@@ -423,6 +423,8 @@ EditResult EditorViewModel::trimClip(const std::string& clipId, TrimEdge edge, i
     const Clip* original = track->clipById(clipId);
     if (!original) return {EditStatus::Invalid, {}, "clip was not found"};
     if (deltaFrames == 0) return {EditStatus::NoOp, {clipId}, {}};
+    if (deltaFrames == std::numeric_limits<int64_t>::min())
+        return {EditStatus::Invalid, {}, "trim frame arithmetic overflows"};
 
     Timeline candidate = *timeline;
     Track& candidateTrack = candidate.tracks.front();
@@ -432,8 +434,8 @@ EditResult EditorViewModel::trimClip(const std::string& clipId, TrimEdge edge, i
         newDuration <= 0) return {EditStatus::Invalid, {}, "trim would make clip duration non-positive"};
     const double sourceDeltaValue = std::round(static_cast<double>(deltaFrames) * snapshot.speed);
     if (!std::isfinite(sourceDeltaValue) ||
-        sourceDeltaValue < static_cast<double>(std::numeric_limits<int64_t>::min()) ||
-        sourceDeltaValue > static_cast<double>(std::numeric_limits<int64_t>::max()))
+        sourceDeltaValue <= static_cast<double>(std::numeric_limits<int64_t>::min()) ||
+        sourceDeltaValue >= static_cast<double>(std::numeric_limits<int64_t>::max()))
         return {EditStatus::Invalid, {}, "trim source-frame arithmetic overflows"};
     const int64_t sourceDelta = static_cast<int64_t>(sourceDeltaValue);
     int64_t newStart = snapshot.startFrame;

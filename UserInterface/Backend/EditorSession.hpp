@@ -19,6 +19,8 @@ public:
     QStringList importFiles(const QStringList& paths);
     EditResult placeMedia(const QString& mediaRef, qint64 frame);
     EditResult moveClip(const QString& clipId, qint64 frame);
+    EditResult trimClip(const QString& clipId, TrimEdge edge, qint64 deltaFrames);
+    EditResult splitClip(const QString& clipId, qint64 frame);
     void undo();
     void redo();
 
