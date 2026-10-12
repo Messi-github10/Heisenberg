@@ -17,6 +17,8 @@
 #include <QMimeData>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QApplication>
+#include <QKeyEvent>
 
 #include <algorithm>
 #include <array>
@@ -58,8 +60,13 @@ TimelineWidget::TimelineWidget(QWidget* parent)
 }
 
 void TimelineWidget::setSession(heisenberg::ui::EditorSession* session) {
+    if (session_) disconnect(session_, nullptr, this, nullptr);
+    cancelInteraction();
+    selectedClipId_.clear();
     session_ = session;
+    if (!session_) { refreshProject(); return; }
     connect(session_, &heisenberg::ui::EditorSession::projectChanged, this, [this]() {
+        cancelInteraction();
         selectedClipId_.clear();
         hoveredClipId_.clear();
         currentFrame_ = 0;
@@ -77,6 +84,7 @@ void TimelineWidget::setSession(heisenberg::ui::EditorSession* session) {
     });
     connect(session_, &heisenberg::ui::EditorSession::mediaChanged, this, &TimelineWidget::refreshProject);
     connect(session_, &heisenberg::ui::EditorSession::timelineChanged, this, [this](qint64 frame) {
+        cancelInteraction();
         refreshProject();
         if (frame >= 0) setCurrentFrame(frame);
     });
@@ -93,6 +101,7 @@ void TimelineWidget::refreshProject() {
         }
     }
     playbackFrameCount_ = timeline() ? timeline()->totalFrames() : 0;
+    if (!timeline() || !timeline()->clipById(selectedClipId_)) selectedClipId_.clear();
     currentFrame_ = std::clamp<qint64>(currentFrame_, 0, std::max<qint64>(0, contentFrameCount() - 1));
     clampView();
     update();
@@ -106,9 +115,23 @@ void TimelineWidget::setFrameCount(qint64 frameCount) {
 }
 
 void TimelineWidget::setCurrentFrame(qint64 frame) {
-    if (scrubbing_) return;
+    if (scrubbing_ || (clipMove_ && clipMove_->dragging)) return;
     currentFrame_ = std::clamp<qint64>(frame, 0, std::max<qint64>(0, contentFrameCount() - 1));
     update();
+}
+
+bool TimelineWidget::cancelInteraction() {
+    const bool active = clipMove_.has_value();
+    clipMove_.reset();
+    unsetCursor();
+    update();
+    return active;
+}
+
+void TimelineWidget::setSnappingEnabled(bool enabled) {
+    snappingEnabled_ = enabled;
+    if (clipMove_ && clipMove_->dragging)
+        updateClipMove(clipMove_->lastPosition, clipMove_->modifiers);
 }
 
 void TimelineWidget::setPlaying(bool playing) {
@@ -315,6 +338,7 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
             painter.save();
             painter.setClipRect(laneRect);
             for (const auto& clip : track.clips) {
+                painter.setOpacity(clipMove_ && clipMove_->dragging && clipMove_->clipId == clip.id ? 0.35 : 1.0);
                 const double clipX = xForFrame(clip.startFrame);
                 const double clipWidth = std::max(1.0, clip.durationFrames * pixelsPerFrame_);
                 QRectF clipRect(clipX, y + 3, clipWidth, trackHeight - 6);
@@ -358,6 +382,7 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
                     }
                 }
             }
+            painter.setOpacity(1.0);
             painter.restore();
             y += trackHeight;
         }
@@ -412,6 +437,31 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
         }
     }
 
+    if (clipMove_ && clipMove_->dragging && active && !active->tracks.empty()) {
+        const auto& move = *clipMove_;
+        const double trackHeight = boundedTrackHeight(active->tracks.front().displayHeight);
+        painter.save();
+        painter.setClipRect(QRectF(kHeaderWidth, 0, width() - kHeaderWidth, height()));
+        const QColor accent = move.validDrop ? QColor(112, 199, 238) : QColor(229, 122, 122);
+        painter.setPen(QPen(accent, 1.5, Qt::DashLine));
+        painter.setBrush(QColor(accent.red(), accent.green(), accent.blue(), 95));
+        const QRectF ghost(xForFrame(move.targetFrame), kRulerHeight + 3,
+                           std::max(2.0, move.durationFrames * pixelsPerFrame_), trackHeight - 6);
+        painter.drawRoundedRect(ghost, 4, 4);
+        if (move.snapFrame && move.validDrop) {
+            const double snapX = xForFrame(*move.snapFrame);
+            painter.setPen(QPen(QColor(245, 199, 98), 1.5));
+            painter.drawLine(QPointF(snapX, 0), QPointF(snapX, height()));
+        }
+        painter.setPen(accent);
+        const double labelX = std::clamp(ghost.left() + 6, kHeaderWidth + 6, std::max(kHeaderWidth + 6, width() - 230.0));
+        painter.drawText(QPointF(labelX, kRulerHeight + trackHeight + 18),
+            move.validDrop ? tr("Move / overwrite at %1%2").arg(formatTimecode(move.targetFrame))
+                                .arg(move.snapFrame ? tr("  [Snap]") : QString())
+                           : tr("Release outside the video lane to cancel"));
+        painter.restore();
+    }
+
     const double playheadX = xForFrame(currentFrame_);
     if (playheadX >= kHeaderWidth && playheadX <= width()) {
         painter.save();
@@ -436,7 +486,8 @@ std::string TimelineWidget::clipAt(const QPointF& point) const {
     for (const auto& track : active->tracks) {
         const double height = boundedTrackHeight(track.displayHeight);
         if (point.y() >= y && point.y() < y + height) {
-            const qint64 frame = frameAtX(point.x());
+            // Hit testing must not clamp empty space after the last clip to its final frame.
+            const qint64 frame = dropFrameAtX(point.x());
             for (const auto& clip : track.clips)
                 if (clip.contains(frame)) return clip.id;
             return {};
@@ -458,7 +509,25 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
         QWidget::mousePressEvent(event);
         return;
     }
-    selectedClipId_ = clipAt(event->position());
+    setFocus(Qt::MouseFocusReason);
+    cancelInteraction();
+    const auto hit = clipAt(event->position());
+    if (!hit.empty()) {
+        selectedClipId_ = hit;
+        const auto* clip = timeline()->clipById(hit);
+        ClipMove move;
+        move.clipId = hit;
+        move.pressPosition = move.lastPosition = event->position();
+        move.grabOffsetFrames = (event->position().x() - xForFrame(clip->startFrame)) / pixelsPerFrame_;
+        move.targetFrame = clip->startFrame;
+        move.durationFrames = clip->durationFrames;
+        move.playheadFrame = currentFrame_;
+        clipMove_ = move;
+        update();
+        event->accept();
+        return;
+    }
+    if (event->position().y() >= kRulerHeight) selectedClipId_.clear();
     scrubbing_ = true;
     emit scrubStarted();
     updateScrub(event->position().x(), false);
@@ -466,6 +535,21 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
 }
 
 void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
+    if (clipMove_ && event->buttons().testFlag(Qt::LeftButton)) {
+        if (!clipMove_->dragging && (event->position() - clipMove_->pressPosition).manhattanLength()
+                >= QApplication::startDragDistance()) {
+            if (session_->editor().compatibility().level == heisenberg::CompatibilityLevel::Unsupported) {
+                cancelInteraction();
+                emit editFailed(tr("Moving clips currently requires a single video track."));
+                event->accept();
+                return;
+            }
+            clipMove_->dragging = true;
+        }
+        if (clipMove_->dragging) updateClipMove(event->position(), event->modifiers());
+        event->accept();
+        return;
+    }
     if (scrubbing_) {
         updateScrub(event->position().x(), false);
         event->accept();
@@ -476,10 +560,23 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
         hoveredClipId_ = hovered;
         update();
     }
-    setCursor(event->position().x() >= kHeaderWidth ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    setCursor(!hovered.empty() ? Qt::OpenHandCursor :
+        event->position().x() >= kHeaderWidth ? Qt::PointingHandCursor : Qt::ArrowCursor);
 }
 
 void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
+    if (clipMove_ && event->button() == Qt::LeftButton) {
+        if (clipMove_->dragging) updateClipMove(event->position(), event->modifiers());
+        const auto move = *clipMove_;
+        cancelInteraction();
+        if (move.dragging && move.validDrop) {
+            const auto result = session_->moveClip(QString::fromStdString(move.clipId), move.targetFrame);
+            if (result.status == heisenberg::EditStatus::Invalid || result.status == heisenberg::EditStatus::Unsupported)
+                emit editFailed(QString::fromUtf8(result.message.c_str()));
+        }
+        event->accept();
+        return;
+    }
     if (scrubbing_ && event->button() == Qt::LeftButton) {
         scrubbing_ = false;
         updateScrub(event->position().x(), true);
@@ -500,14 +597,78 @@ void TimelineWidget::wheelEvent(QWheelEvent* event) {
         clampView();
         update();
     }
+    if (clipMove_ && clipMove_->dragging)
+        updateClipMove(clipMove_->lastPosition, clipMove_->modifiers);
     event->accept();
 }
 
 void TimelineWidget::leaveEvent(QEvent* event) {
     hoveredClipId_.clear();
-    unsetCursor();
+    if (!clipMove_) unsetCursor();
     update();
     QWidget::leaveEvent(event);
+}
+
+void TimelineWidget::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Escape && cancelInteraction()) { event->accept(); return; }
+    if (event->key() == Qt::Key_Shift && clipMove_ && clipMove_->dragging) {
+        updateClipMove(clipMove_->lastPosition, event->modifiers() | Qt::ShiftModifier);
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
+}
+
+void TimelineWidget::keyReleaseEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Shift && clipMove_ && clipMove_->dragging) {
+        updateClipMove(clipMove_->lastPosition, event->modifiers() & ~Qt::ShiftModifier);
+        event->accept();
+        return;
+    }
+    QWidget::keyReleaseEvent(event);
+}
+
+bool TimelineWidget::event(QEvent* event) {
+    if (event->type() == QEvent::WindowDeactivate || event->type() == QEvent::Hide)
+        cancelInteraction();
+    return QWidget::event(event);
+}
+
+void TimelineWidget::updateClipMove(const QPointF& point, Qt::KeyboardModifiers modifiers) {
+    if (!clipMove_) return;
+    auto& move = *clipMove_;
+    move.lastPosition = point;
+    move.modifiers = modifiers;
+    move.validDrop = canDropAt(point);
+    const double raw = std::clamp((point.x() - kHeaderWidth + scrollOffset_) / pixelsPerFrame_ - move.grabOffsetFrames,
+        0.0, static_cast<double>(std::numeric_limits<qint64>::max() / 4));
+    move.targetFrame = static_cast<qint64>(std::round(raw));
+    move.snapFrame.reset();
+    if (move.validDrop && snappingEnabled_ && !modifiers.testFlag(Qt::ShiftModifier)) {
+        // Both edges can snap. Exclude the moving clip's old range (no self-snapping).
+        double bestPixels = 8.0 + 0.001;
+        auto consider = [&](qint64 anchor) {
+            for (const qint64 edge : {qint64(0), move.durationFrames}) {
+                if (anchor < edge) continue;
+                const qint64 candidate = anchor - edge;
+                const double distance = std::abs(static_cast<double>(candidate) - raw) * pixelsPerFrame_;
+                if (distance < bestPixels) {
+                    bestPixels = distance;
+                    move.targetFrame = candidate;
+                    move.snapFrame = anchor;
+                }
+            }
+        };
+        consider(0);
+        consider(move.playheadFrame);
+        if (const auto* active = timeline()) for (const auto& track : active->tracks)
+            for (const auto& clip : track.clips) if (clip.id != move.clipId) {
+                consider(clip.startFrame);
+                consider(clip.endFrame());
+            }
+    }
+    setCursor(move.validDrop ? Qt::ClosedHandCursor : Qt::ForbiddenCursor);
+    update();
 }
 
 QString TimelineWidget::mediaFromMime(const QMimeData* mime) const {
@@ -530,7 +691,8 @@ qint64 TimelineWidget::dropFrameAtX(double x) const {
 
 bool TimelineWidget::canDropAt(const QPointF& point) const {
     const auto* active = timeline();
-    if (!active || point.x() < kHeaderWidth || point.y() < kRulerHeight) return false;
+    if (!active || point.x() < kHeaderWidth || point.x() >= width() ||
+        point.y() < kRulerHeight || point.y() >= height()) return false;
     if (session_->editor().compatibility().level == heisenberg::CompatibilityLevel::Unsupported)
         return false;
     const double laneHeight = active->tracks.empty()

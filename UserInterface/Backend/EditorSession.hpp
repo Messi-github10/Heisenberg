@@ -18,6 +18,7 @@ public:
     bool savePackage(const QString& path, QString* error = nullptr);
     QStringList importFiles(const QStringList& paths);
     EditResult placeMedia(const QString& mediaRef, qint64 frame);
+    EditResult moveClip(const QString& clipId, qint64 frame);
     void undo();
     void redo();
 

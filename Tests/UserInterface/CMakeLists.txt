@@ -3,6 +3,7 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 
 add_executable(HeisenbergEditorUiTests
     media_pool_test.cpp
+    timeline_interaction_test.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/EditorSession.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/EditorSession.hpp
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/PlayerController.cpp
@@ -11,6 +12,8 @@ add_executable(HeisenbergEditorUiTests
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/MediaPoolWidget.hpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/TimelineWidget.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/TimelineWidget.hpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/MainWindow.cpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/MainWindow.hpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/VideoWidget.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/VideoWidget.hpp
 )

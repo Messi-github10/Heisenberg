@@ -13,7 +13,7 @@ must be allowed to launch FFmpeg and create temporary project packages.
 3. Check thumbnails, names, duration/resolution, and search. Importing the same
    canonical path twice must not create another asset.
 4. Double-click a tile to preview the source; use **Esc** or **Timeline Preview**
-   to return to the edit. Clicking the timeline also switches back.
+   to return to the edit. Scrubbing the timeline ruler or empty space also switches back.
 5. Drag a tile onto the video lane. The ghost shows the overwrite position; an
    empty timeline creates its first video track. The edit can extend beyond the
    previous duration and plays immediately without saving.
@@ -28,3 +28,23 @@ This first version imports/previews/places video only. Imported files are extern
 references, not copied into the package. Offline assets remain visible but cannot
 be dragged or added; multi-track active timelines are retained but editing is
 explicitly unsupported. Media import itself is not part of timeline undo history.
+
+## Single-track clip interaction
+
+- Click a clip body to select it without seeking. Drag its body to move the whole
+  clip; the faded original and dashed ghost preview the overwrite position.
+- The mouse grab offset is retained. Both clip edges snap within 8 logical pixels
+  of the timeline origin, the playhead, or another clip's start/end. A yellow guide
+  marks the snapped boundary. Toggle **Snap** in the toolbar/menu, or hold **Shift**
+  to temporarily bypass snapping. The moving clip does not snap to its old edges.
+- Release inside the video lane to commit one overwrite move and one undo step.
+  **Ctrl+Z** undoes it; **Ctrl+Shift+Z** redoes it. The preview reloads the current
+  in-memory timeline, so saving is not required before playback.
+- **Esc**, releasing outside the lane, or deactivating the window cancels the draft.
+  A click, cancelled move, or move back to the original start does not dirty the
+  project or consume redo history. Undo/redo cancels a pending draft first.
+- The ruler/empty space still moves the playhead. Zoom and horizontal scrolling
+  preserve timeline frame mapping. Multi-track documents remain selectable/viewable
+  but moving their clips is explicitly rejected.
+
+Clip edge trimming, multi-selection, and ripple editing are not part of this step.

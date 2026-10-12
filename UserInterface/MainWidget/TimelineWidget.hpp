@@ -6,6 +6,7 @@
 #include <QWidget>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -17,6 +18,7 @@ class QPaintEvent;
 class QWheelEvent;
 class QColor;
 class QMimeData;
+class QKeyEvent;
 
 class TimelineWidget final : public QWidget {
     Q_OBJECT
@@ -27,6 +29,10 @@ public:
     void setSession(heisenberg::ui::EditorSession* session);
     void refreshProject();
     qint64 currentFrame() const { return currentFrame_; }
+    QString selectedClipId() const { return QString::fromStdString(selectedClipId_); }
+    bool cancelInteraction();
+    void setSnappingEnabled(bool enabled);
+    bool snappingEnabled() const { return snappingEnabled_; }
     void setFrameCount(qint64 frameCount);
     void setCurrentFrame(qint64 frame);
     void setPlaying(bool playing);
@@ -50,6 +56,9 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
+    bool event(QEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dragMoveEvent(QDragMoveEvent* event) override;
     void dragLeaveEvent(QDragLeaveEvent* event) override;
@@ -73,6 +82,23 @@ private:
     QString mediaFromMime(const QMimeData* mime) const;
     qint64 dropFrameAtX(double x) const;
     bool canDropAt(const QPointF& point) const;
+    void updateClipMove(const QPointF& point, Qt::KeyboardModifiers modifiers);
+
+    struct ClipMove {
+        std::string clipId;
+        QPointF pressPosition;
+        QPointF lastPosition;
+        double grabOffsetFrames = 0.0;
+        qint64 durationFrames = 0;
+        qint64 targetFrame = 0;
+        qint64 playheadFrame = 0;
+        std::optional<qint64> snapFrame;
+        Qt::KeyboardModifiers modifiers = Qt::NoModifier;
+        bool dragging = false;
+        bool validDrop = false;
+    };
+    std::optional<ClipMove> clipMove_;
+    bool snappingEnabled_ = true;
 
     heisenberg::ui::EditorSession* session_ = nullptr;
     std::unordered_map<std::string, std::string> mediaNames_;

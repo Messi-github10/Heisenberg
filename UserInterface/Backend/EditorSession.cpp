@@ -80,6 +80,17 @@ EditResult EditorSession::placeMedia(const QString& mediaRef, qint64 frame) {
     return result;
 }
 
+EditResult EditorSession::moveClip(const QString& clipId, qint64 frame) {
+    if (editor_.compatibility().level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline is not a single video track"};
+    auto result = editor_.moveClip(clipId.toUtf8().toStdString(), frame);
+    if (result.changed()) {
+        setDirty(true);
+        emit timelineChanged(frame);
+    }
+    return result;
+}
+
 void EditorSession::undo() {
     if (editor_.undo()) { setDirty(true); emit timelineChanged(-1); }
 }

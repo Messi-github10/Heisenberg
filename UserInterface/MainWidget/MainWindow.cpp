@@ -107,6 +107,10 @@ void MainWindow::setupUi() {
     zoomInAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Plus));
     auto* fitAction = timelineMenu->addAction(tr("Fit Timeline"));
     fitAction->setShortcut(QKeySequence(Qt::Key_F));
+    auto* snapAction = timelineMenu->addAction(tr("Snap"));
+    snapAction->setCheckable(true);
+    snapAction->setChecked(true);
+    snapAction->setToolTip(tr("Snap clip edges to clips, playhead and timeline start. Hold Shift to bypass."));
 
     auto* toolbar = addToolBar(tr("Editor"));
     toolbar->setMovable(false);
@@ -144,6 +148,7 @@ void MainWindow::setupUi() {
     toolbarFit->setToolTip(tr("Fit Timeline"));
     auto* toolbarZoomIn = toolbar->addAction("+");
     toolbarZoomIn->setToolTip(tr("Zoom In"));
+    toolbar->addAction(snapAction);
 
     auto* splitter = new QSplitter(Qt::Vertical, this);
     splitter->setChildrenCollapsible(false);
@@ -207,9 +212,18 @@ void MainWindow::setupUi() {
     connect(importAction, &QAction::triggered, mediaPool_, &MediaPoolWidget::chooseFiles);
     connect(saveAction, &QAction::triggered, this, [this]() { saveProjectPackage(); });
     connect(saveAsAction, &QAction::triggered, this, [this]() { saveProjectPackage(true); });
-    connect(undoAction, &QAction::triggered, session_, &heisenberg::ui::EditorSession::undo);
-    connect(redoAction, &QAction::triggered, session_, &heisenberg::ui::EditorSession::redo);
-    connect(timelinePreviewAction, &QAction::triggered, this, &MainWindow::timelinePreviewRequested);
+    connect(undoAction, &QAction::triggered, this, [this]() {
+        timelineWidget_->cancelInteraction();
+        session_->undo();
+    });
+    connect(redoAction, &QAction::triggered, this, [this]() {
+        timelineWidget_->cancelInteraction();
+        session_->redo();
+    });
+    connect(snapAction, &QAction::toggled, timelineWidget_, &TimelineWidget::setSnappingEnabled);
+    connect(timelinePreviewAction, &QAction::triggered, this, [this]() {
+        if (!timelineWidget_->cancelInteraction()) emit timelinePreviewRequested();
+    });
     connect(returnAction, &QAction::triggered, this, &MainWindow::timelinePreviewRequested);
 }
 
