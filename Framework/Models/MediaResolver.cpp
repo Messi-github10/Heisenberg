@@ -63,7 +63,7 @@ MediaAsset MediaResolver::asset(const std::string& assetId) const {
     result.name = found->name;
     result.type = found->type;
     result.path = expectedPath(assetId);
-    result.durationFrames = found->durationFrames;
+    result.duration = found->duration;
     result.missing = !fileExists(result.path);
     return result;
 }

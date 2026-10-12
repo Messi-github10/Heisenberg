@@ -1,23 +1,13 @@
 #include "Timeline.hpp"
 
-#include <Compositing/BlankProducer.hpp>
-#include <Preview/Producer.hpp>
-#include <Compositing/ProfileCanvas.hpp>
-
-#include <nlohmann/json.hpp>
-#include <Utiles/Logger.hpp>
-
 #include <algorithm>
-#include <cstdint>
-#include <filesystem>
-#include <fstream>
-#include <initializer_list>
-#include <iterator>
+#include <cmath>
+#include <iomanip>
 #include <limits>
-#include <string>
-#include <unordered_map>
+#include <random>
+#include <sstream>
+#include <stdexcept>
 #include <unordered_set>
-#include <utility>
 
 namespace heisenberg {
 namespace {
@@ -28,745 +18,598 @@ void setError(std::string* error, const std::string& message) {
     if (error) *error = message;
 }
 
-std::string utf8FromPath(const std::filesystem::path& path) {
-    const auto utf8 = path.u8string();
-    return std::string(reinterpret_cast<const char*>(utf8.c_str()), utf8.size());
+template <typename T>
+T valueOr(const json& object, const char* key, T fallback) {
+    const auto found = object.find(key);
+    if (found == object.end() || found->is_null()) return fallback;
+    return found->get<T>();
 }
 
-const json& jsonField(const json& object, const char* key) {
-    static const json missing;
-    const auto it = object.find(key);
-    return it == object.end() ? missing : *it;
+template <typename T>
+void putOptional(json& object, const char* key, const std::optional<T>& value) {
+    if (value) object[key] = *value;
 }
 
-bool expectObject(const json& value, const char* name, std::string* error) {
-    if (value.is_object()) return true;
-    setError(error, std::string("JSON field '") + name + "' must be an object");
-    return false;
-}
-
-bool expectArray(const json& value, const char* name, std::string* error) {
-    if (value.is_array()) return true;
-    setError(error, std::string("JSON field '") + name + "' must be an array");
-    return false;
-}
-
-bool expectKeys(const json& object,
-                std::initializer_list<const char*> allowed,
-                const char* context,
-                std::string* error) {
-    for (auto it = object.begin(); it != object.end(); ++it) {
-        bool found = false;
-        for (const char* key : allowed) {
-            if (it.key() == key) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            setError(error, std::string(context) + " contains unknown field '" +
-                                it.key() + "'");
-            return false;
-        }
-    }
-    return true;
-}
-
-bool readInt64(const json& object,
-               const char* key,
-               int64_t min,
-               int64_t max,
-               int64_t& result,
-               const char* context,
-               std::string* error) {
-    const json& value = jsonField(object, key);
-    if (value.is_null() && !object.contains(key)) {
-        setError(error, std::string(context) + " is missing '" + key + "'");
-        return false;
-    }
-    if (!value.is_number_integer()) {
-        setError(error, std::string(context) + " field '" + key +
-                            "' must be an integer");
-        return false;
-    }
-
-    int64_t number = 0;
-    if (value.is_number_unsigned()) {
-        const auto unsignedNumber = value.get<uint64_t>();
-        if (unsignedNumber > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-            setError(error, std::string(context) + " field '" + key +
-                                "' is out of range");
-            return false;
-        }
-        number = static_cast<int64_t>(unsignedNumber);
-    } else {
-        number = value.get<int64_t>();
-    }
-
-    if (number < min || number > max) {
-        setError(error, std::string(context) + " field '" + key +
-                            "' is out of range");
-        return false;
-    }
-    result = number;
-    return true;
-}
-
-bool readOptionalInt64(const json& object,
-                       const char* key,
-                       int64_t min,
-                       int64_t max,
-                       int64_t& result,
-                       const char* context,
-                       std::string* error) {
-    const json& value = jsonField(object, key);
-    if (value.is_null() && !object.contains(key)) return true;
-    return readInt64(object, key, min, max, result, context, error);
-}
-
-bool readString(const json& object,
-                const char* key,
-                std::string& result,
-                const char* context,
-                std::string* error,
-                bool required) {
-    const json& value = jsonField(object, key);
-    if (value.is_null() && !object.contains(key)) {
-        if (!required) {
-            result.clear();
-            return true;
-        }
-        setError(error, std::string(context) + " is missing '" + key + "'");
-        return false;
-    }
-    if (!value.is_string()) {
-        setError(error, std::string(context) + " field '" + key +
-                            "' must be a string");
-        return false;
-    }
-    result = value.get<std::string>();
-    return true;
-}
-
-bool parseClipId(const std::string& value, std::string& result, std::string* error) {
-    if (value.empty()) {
-        result.clear();
-        return true;
-    }
-    for (const char ch : value) {
-        const bool ok = (ch >= 'a' && ch <= 'z') ||
-                        (ch >= '0' && ch <= '9') ||
-                        ch == '_';
-        if (!ok) {
-            setError(error, "clip.id must match [a-z0-9_]+");
-            return false;
-        }
-    }
-    result = value;
-    return true;
-}
-
-std::string resolveResource(const std::string& resource, const std::string& baseDir) {
-    const auto path = std::filesystem::u8path(resource);
-    if (path.is_absolute() || baseDir.empty()) return utf8FromPath(path);
-    return utf8FromPath(std::filesystem::u8path(baseDir) / path);
-}
-
-bool clipsOverlap(const Clip& a, const Clip& b) {
-    return a.start < b.end() && b.start < a.end();
-}
-
-bool validateClipFields(const Clip& clip,
-                        const char* context,
-                        std::string* error) {
-    if (clip.start < 0) {
-        setError(error, std::string(context) + " start must be >= 0");
-        return false;
-    }
-    if (clip.in < 0) {
-        setError(error, std::string(context) + " in must be >= 0");
-        return false;
-    }
-    if (clip.out < clip.in) {
-        setError(error, std::string(context) + " out must be >= in");
-        return false;
-    }
-    if (clip.resource.empty()) {
-        setError(error, std::string(context) + " resource must not be empty");
-        return false;
-    }
-    return true;
-}
-
-bool openClipProducer(Clip& clip,
-                      const Profile& profile,
-                      bool hardwareDecode,
-                      std::unordered_map<std::string, std::unique_ptr<Producer>>& producers,
-                      std::unique_ptr<BlankProducer>& blank,
-                      std::string* error) {
-    if (isBlankResource(clip.resource)) {
-        clip.resource = kBlankResource;
-        if (!blank) {
-            blank = std::make_unique<BlankProducer>(profile);
-            blank->setHardwareDecode(hardwareDecode);
-        }
-        blank->ensureLength(clip.out + 1);
-        return true;
-    }
-
-    Producer* producer = nullptr;
-    const auto found = producers.find(clip.resource);
-    if (found == producers.end()) {
-        auto created = std::make_unique<Producer>(profile);
-        created->setHardwareDecode(hardwareDecode);
-        std::string openError;
-        if (!created->open(clip.resource, &openError)) {
-            setError(error, "Failed to open clip resource '" + clip.resource +
-                                "': " + openError);
-            return false;
-        }
-        producer = created.get();
-        producers.emplace(clip.resource, std::move(created));
-    } else {
-        producer = found->second.get();
-    }
-
-    if (clip.out >= producer->length()) {
-        setError(error, "clip out " + std::to_string(clip.out) +
-                            " is past the end of '" + clip.resource + "'");
-        return false;
-    }
-    return true;
-}
+bool finite(double value) { return std::isfinite(value); }
 
 } // namespace
 
-struct Timeline::Impl {
-    Profile profile = Profile::hd1080p24();
-    std::string resource = "<timeline>";
-    bool hardwareDecode = false;
-    std::vector<Clip> clips;
-    std::vector<TimelineFilter> filters;
-    std::unordered_map<std::string, std::unique_ptr<Producer>> producers;
-    std::unique_ptr<BlankProducer> blank;
-    ProfileCanvas canvas;
-    int64_t length = 0;
-    int64_t position = 0;
-
-    void reset() {
-        clips.clear();
-        filters.clear();
-        producers.clear();
-        blank.reset();
-        canvas.setProfile(Profile::hd1080p24());
-        length = 0;
-        position = 0;
-        resource = "<timeline>";
-        profile = Profile::hd1080p24();
+const char* toString(ClipType type) {
+    switch (type) {
+        case ClipType::Video: return "video";
+        case ClipType::Audio: return "audio";
+        case ClipType::Image: return "image";
+        case ClipType::Text: return "text";
+        case ClipType::Lottie: return "lottie";
+        case ClipType::Sequence: return "sequence";
+        case ClipType::Subtitle: return "subtitle";
     }
-
-    IProducer* producerFor(const Clip& clip) const {
-        if (isBlankResource(clip.resource)) return blank.get();
-        const auto found = producers.find(clip.resource);
-        return found == producers.end() ? nullptr : found->second.get();
-    }
-
-    const Clip* clipAt(int64_t timelinePosition) const {
-        for (const Clip& clip : clips) {
-            if (clip.covers(timelinePosition)) return &clip;
-        }
-        return nullptr;
-    }
-
-    Clip* findClip(const std::string& id) {
-        if (id.empty()) return nullptr;
-        for (Clip& clip : clips) {
-            if (clip.id == id) return &clip;
-        }
-        return nullptr;
-    }
-
-    const Clip* findClip(const std::string& id) const {
-        if (id.empty()) return nullptr;
-        for (const Clip& clip : clips) {
-            if (clip.id == id) return &clip;
-        }
-        return nullptr;
-    }
-
-    std::string makeClipId() const {
-        for (int64_t index = 1;; ++index) {
-            const std::string id = "clip_" + std::to_string(index);
-            if (!findClip(id)) return id;
-        }
-    }
-
-    bool overlapsOthers(const Clip& candidate,
-                        const std::string& excludeId,
-                        std::string* error) const {
-        for (size_t index = 0; index < clips.size(); ++index) {
-            if (!excludeId.empty() && clips[index].id == excludeId) continue;
-            if (clipsOverlap(clips[index], candidate)) {
-                setError(error, "clip overlaps clips[" + std::to_string(index) + "]");
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void sortClips() {
-        std::sort(clips.begin(), clips.end(),
-                  [](const Clip& a, const Clip& b) {
-                      if (a.start != b.start) return a.start < b.start;
-                      return a.id < b.id;
-                  });
-    }
-
-    void pruneProducers() {
-        std::unordered_set<std::string> used;
-        bool needsBlank = false;
-        int64_t blankLength = 0;
-        for (const Clip& clip : clips) {
-            if (isBlankResource(clip.resource)) {
-                needsBlank = true;
-                blankLength = std::max(blankLength, clip.out + 1);
-            } else {
-                used.insert(clip.resource);
-            }
-        }
-        for (auto it = producers.begin(); it != producers.end();) {
-            if (used.count(it->first) == 0) it = producers.erase(it);
-            else ++it;
-        }
-        if (needsBlank) {
-            if (!blank) {
-                blank = std::make_unique<BlankProducer>(profile);
-                blank->setHardwareDecode(hardwareDecode);
-            }
-            blank->ensureLength(blankLength);
-        } else {
-            blank.reset();
-        }
-    }
-
-    void commitGeometry() {
-        length = 0;
-        for (const Clip& clip : clips) {
-            length = std::max(length, clip.end());
-        }
-        if (length <= 0) position = 0;
-        else position = std::clamp(position, int64_t{0}, length - 1);
-        sortClips();
-        pruneProducers();
-    }
-};
-
-Timeline::Timeline()
-    : impl_(std::make_unique<Impl>()) {}
-
-Timeline::~Timeline() = default;
-
-Timeline::Timeline(Timeline&&) noexcept = default;
-Timeline& Timeline::operator=(Timeline&&) noexcept = default;
-
-void Timeline::setHardwareDecode(bool enabled) {
-    impl_->hardwareDecode = enabled;
-    impl_->canvas.setHardwareDecode(enabled);
-    if (impl_->blank) impl_->blank->setHardwareDecode(enabled);
-    for (auto& [path, producer] : impl_->producers) {
-        if (producer) producer->setHardwareDecode(enabled);
-    }
+    return "video";
 }
 
-void Timeline::setProfile(Profile profile) {
-    impl_->profile = std::move(profile);
-    impl_->canvas.setProfile(impl_->profile);
+bool clipTypeFromString(const std::string& value, ClipType& type) {
+    static const std::pair<const char*, ClipType> values[] = {
+        {"video", ClipType::Video}, {"audio", ClipType::Audio},
+        {"image", ClipType::Image}, {"text", ClipType::Text},
+        {"lottie", ClipType::Lottie}, {"sequence", ClipType::Sequence},
+        {"subtitle", ClipType::Subtitle},
+    };
+    for (const auto& [name, candidate] : values) {
+        if (value == name) { type = candidate; return true; }
+    }
+    return false;
 }
 
-bool Timeline::loadFromJsonFile(const std::string& path, std::string* error) {
-    std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
-    if (!file) {
-        setError(error, "Failed to open Timeline JSON '" + path + "'");
-        return false;
+const char* toString(Interpolation value) {
+    switch (value) {
+        case Interpolation::Linear: return "linear";
+        case Interpolation::Hold: return "hold";
+        case Interpolation::Smooth: return "smooth";
     }
-    std::string text((std::istreambuf_iterator<char>(file)),
-                     std::istreambuf_iterator<char>());
-    const auto parent = std::filesystem::u8path(path).parent_path();
-    return loadFromJson(text, error, utf8FromPath(parent));
+    return "linear";
 }
 
-bool Timeline::loadFromJson(const std::string& text,
-                            std::string* error,
-                            const std::string& baseDir,
-                            const std::unordered_map<std::string, std::string>& mediaPaths) {
-    json root;
-    try {
-        root = json::parse(text);
-    } catch (const json::parse_error& parseError) {
-        setError(error, std::string("Invalid Timeline JSON: ") + parseError.what());
-        return false;
-    }
-    if (!root.is_object()) {
-        setError(error, "Timeline JSON root must be an object");
-        return false;
-    }
-    if (!expectKeys(root, {"version", "profile", "clips", "filters"},
-                    "timeline", error)) {
-        return false;
-    }
-
-    int64_t version = 0;
-    if (!readInt64(root, "version", 1, 1, version, "timeline", error)) {
-        return false;
-    }
-
-    const json& profileValue = jsonField(root, "profile");
-    if (!expectObject(profileValue, "profile", error)) return false;
-    Profile profile;
-    if (profileValue.contains("id") && !profileValue.contains("video")) {
-        if (!expectKeys(profileValue, {"id"}, "profile", error)) return false;
-        std::string profileId;
-        if (!readString(profileValue, "id", profileId, "profile", error, true)) {
-            return false;
-        }
-        const Profile* preset = Profile::findPreset(profileId);
-        if (!preset) {
-            setError(error, "Unknown profile id '" + profileId + "'");
-            return false;
-        }
-        profile = *preset;
-    } else if (!profile.loadFromJson(profileValue.dump(), error)) {
-        return false;
-    }
-
-    const json& clipsValue = jsonField(root, "clips");
-    if (!expectArray(clipsValue, "clips", error)) return false;
-
-    std::vector<Clip> clips;
-    clips.reserve(clipsValue.size());
-    std::unordered_set<std::string> clipIds;
-    for (size_t index = 0; index < clipsValue.size(); ++index) {
-        const json& clipValue = clipsValue[index];
-        const std::string context = "clips[" + std::to_string(index) + "]";
-        if (!expectObject(clipValue, context.c_str(), error) ||
-            !expectKeys(clipValue, {"id", "mediaRef", "resource", "start", "in", "out"},
-                        context.c_str(), error)) {
-            return false;
-        }
-
-        Clip clip;
-        std::string id;
-        std::string resource;
-        if (!readString(clipValue, "id", id, context.c_str(), error, false) ||
-            !parseClipId(id, clip.id, error) ||
-            !readString(clipValue, "mediaRef", clip.mediaRef, context.c_str(),
-                        error, false) ||
-            !readString(clipValue, "resource", resource, context.c_str(), error, false) ||
-            !readInt64(clipValue, "start", 0, std::numeric_limits<int64_t>::max(),
-                       clip.start, context.c_str(), error) ||
-            !readInt64(clipValue, "in", 0, std::numeric_limits<int64_t>::max(),
-                       clip.in, context.c_str(), error) ||
-            !readInt64(clipValue, "out", 0, std::numeric_limits<int64_t>::max(),
-                       clip.out, context.c_str(), error)) {
-            return false;
-        }
-        if (resource.empty() && !clip.mediaRef.empty()) {
-            const auto found = mediaPaths.find(clip.mediaRef);
-            if (found != mediaPaths.end()) resource = found->second;
-        }
-        if (isBlankResource(clip.mediaRef) || isBlankResource(resource)) {
-            clip.mediaRef = kBlankResource;
-            clip.resource = kBlankResource;
-        } else if (!resource.empty()) {
-            clip.resource = resolveResource(resource, baseDir);
-        } else if (!clip.mediaRef.empty()) {
-            setError(error, context + " mediaRef '" + clip.mediaRef +
-                                "' could not be resolved");
-            return false;
-        }
-        if (!validateClipFields(clip, context.c_str(), error)) return false;
-        if (!clip.id.empty() && !clipIds.insert(clip.id).second) {
-            setError(error, context + " id '" + clip.id + "' is duplicated");
-            return false;
-        }
-        for (size_t previous = 0; previous < clips.size(); ++previous) {
-            if (clipsOverlap(clips[previous], clip)) {
-                setError(error, context + " overlaps clips[" +
-                                    std::to_string(previous) + "]");
-                return false;
-            }
-        }
-        clips.push_back(std::move(clip));
-    }
-    for (Clip& clip : clips) {
-        if (!clip.id.empty()) continue;
-        for (int64_t index = 1;; ++index) {
-            const std::string generated = "clip_" + std::to_string(index);
-            if (clipIds.insert(generated).second) {
-                clip.id = generated;
-                break;
-            }
-        }
-    }
-
-    std::vector<TimelineFilter> filters;
-    const json& filtersValue = jsonField(root, "filters");
-    if (root.contains("filters")) {
-        if (!expectArray(filtersValue, "filters", error)) return false;
-        filters.reserve(filtersValue.size());
-        for (size_t index = 0; index < filtersValue.size(); ++index) {
-            const json& filterValue = filtersValue[index];
-            const std::string context = "filters[" + std::to_string(index) + "]";
-            if (!expectObject(filterValue, context.c_str(), error) ||
-                !expectKeys(filterValue, {"id", "graph", "in", "out"},
-                            context.c_str(), error)) {
-                return false;
-            }
-
-            TimelineFilter filter;
-            std::string graph;
-            if (!readString(filterValue, "id", filter.id, context.c_str(),
-                            error, false) ||
-                !parseClipId(filter.id, filter.id, error) ||
-                !readString(filterValue, "graph", graph, context.c_str(),
-                            error, true) ||
-                !readOptionalInt64(filterValue, "in", 0,
-                                   std::numeric_limits<int64_t>::max(),
-                                   filter.in, context.c_str(), error) ||
-                !readOptionalInt64(filterValue, "out", 0,
-                                   std::numeric_limits<int64_t>::max(),
-                                   filter.out, context.c_str(), error)) {
-                return false;
-            }
-            if (graph.empty()) {
-                setError(error, context + " graph must not be empty");
-                return false;
-            }
-            if (filter.out != 0 && filter.out < filter.in) {
-                setError(error, context + " out must be >= in");
-                return false;
-            }
-            filter.graph = resolveResource(graph, baseDir);
-            filters.push_back(std::move(filter));
-        }
-    }
-
-    std::unordered_map<std::string, std::unique_ptr<Producer>> producers;
-    std::unique_ptr<BlankProducer> blank;
-    for (Clip& clip : clips) {
-        if (!openClipProducer(clip, profile, impl_->hardwareDecode,
-                              producers, blank, error)) {
-            return false;
-        }
-    }
-
-    impl_->reset();
-    impl_->profile = std::move(profile);
-    impl_->clips = std::move(clips);
-    impl_->filters = std::move(filters);
-    impl_->producers = std::move(producers);
-    impl_->blank = std::move(blank);
-    impl_->canvas.setProfile(impl_->profile);
-    impl_->canvas.setHardwareDecode(impl_->hardwareDecode);
-    impl_->commitGeometry();
-    impl_->resource = "<timeline>";
-    LOG_INFO("Timeline: loaded {} clips, {} filters, {} frames",
-             impl_->clips.size(), impl_->filters.size(), impl_->length);
+bool interpolationFromString(const std::string& value, Interpolation& result) {
+    if (value == "linear") result = Interpolation::Linear;
+    else if (value == "hold") result = Interpolation::Hold;
+    else if (value == "smooth") result = Interpolation::Smooth;
+    else return false;
     return true;
 }
 
-std::string Timeline::toJson() const {
-    json clips = json::array();
-    for (const Clip& clip : impl_->clips) {
-        json object;
-        if (!clip.id.empty()) object["id"] = clip.id;
-        if (!clip.mediaRef.empty()) {
-            object["mediaRef"] = clip.mediaRef;
-        } else {
-            object["resource"] = clip.resource;
-        }
-        object["start"] = clip.start;
-        object["in"] = clip.in;
-        object["out"] = clip.out;
-        clips.push_back(std::move(object));
-    }
-
-    json filters = json::array();
-    for (const TimelineFilter& filter : impl_->filters) {
-        json object;
-        if (!filter.id.empty()) object["id"] = filter.id;
-        object["graph"] = filter.graph;
-        if (filter.in != 0 || filter.out != 0) {
-            object["in"] = filter.in;
-            object["out"] = filter.out;
-        }
-        filters.push_back(std::move(object));
-    }
-
-    json root;
-    root["version"] = 1;
-    root["profile"] = json::parse(impl_->profile.toJson());
-    root["clips"] = std::move(clips);
-    if (!filters.empty()) root["filters"] = std::move(filters);
-    return root.dump(2);
+int64_t Clip::endFrame() const {
+    if (durationFrames > 0 && startFrame > std::numeric_limits<int64_t>::max() - durationFrames)
+        return std::numeric_limits<int64_t>::max();
+    return startFrame + durationFrames;
 }
 
-bool Timeline::addClip(Clip& clip, std::string* error) {
-    if (clip.id.empty()) clip.id = impl_->makeClipId();
-    if (!parseClipId(clip.id, clip.id, error)) return false;
-    if (impl_->findClip(clip.id)) {
-        setError(error, "clip id '" + clip.id + "' already exists");
-        return false;
-    }
-    if (!validateClipFields(clip, "clip", error)) return false;
-    if (isBlankResource(clip.resource)) {
-        clip.resource = kBlankResource;
-    }
-    if (impl_->overlapsOthers(clip, {}, error)) return false;
-    if (!openClipProducer(clip, impl_->profile, impl_->hardwareDecode,
-                          impl_->producers, impl_->blank, error)) {
-        impl_->pruneProducers();
-        return false;
-    }
-
-    impl_->clips.push_back(clip);
-    impl_->commitGeometry();
-    return true;
+bool Clip::contains(int64_t frame) const {
+    return frame >= startFrame && frame < endFrame();
 }
 
-bool Timeline::removeClip(const std::string& id, std::string* error) {
-    if (id.empty()) {
-        setError(error, "clip id must not be empty");
-        return false;
+int64_t Clip::sourceFramesConsumed() const {
+    const double value = std::round(static_cast<double>(durationFrames) * speed);
+    if (!finite(value) || value > static_cast<double>(std::numeric_limits<int64_t>::max()))
+        return std::numeric_limits<int64_t>::max();
+    return static_cast<int64_t>(value);
+}
+
+void Clip::clampFadesToDuration() {
+    fadeInFrames = std::clamp(fadeInFrames, int64_t{0}, durationFrames);
+    fadeOutFrames = std::clamp(fadeOutFrames, int64_t{0}, durationFrames - fadeInFrames);
+}
+
+namespace {
+void clampTrack(std::optional<KeyframeTrackPayload>& track, int64_t duration) {
+    if (!track || !track->value.is_object()) return;
+    auto found = track->value.find("keyframes");
+    if (found == track->value.end() || !found->is_array()) return;
+    json kept = json::array();
+    for (json frame : *found) {
+        if (!frame.is_object() || !frame.contains("frame") || !frame["frame"].is_number_integer()) continue;
+        const int64_t offset = frame["frame"].get<int64_t>();
+        if (offset < 0 || offset > duration) continue;
+        frame["frame"] = std::min(offset, std::max<int64_t>(0, duration - 1));
+        kept.push_back(std::move(frame));
     }
-    const auto found = std::find_if(
-        impl_->clips.begin(), impl_->clips.end(),
-        [&](const Clip& clip) { return clip.id == id; });
-    if (found == impl_->clips.end()) {
-        setError(error, "clip id '" + id + "' was not found");
-        return false;
+    *found = std::move(kept);
+    if (found->empty()) track.reset();
+}
+}
+
+void Clip::clampTimedPayloadsToDuration() {
+    clampTrack(opacityTrack, durationFrames);
+    clampTrack(positionTrack, durationFrames);
+    clampTrack(scaleTrack, durationFrames);
+    clampTrack(rotationTrack, durationFrames);
+    clampTrack(cropTrack, durationFrames);
+    clampTrack(volumeTrack, durationFrames);
+    clampFadesToDuration();
+}
+
+void Clip::rescaleWordTimings(int64_t oldDuration) {
+    if (!wordTimings || oldDuration <= 0 || durationFrames <= 0) return;
+    const double scale = static_cast<double>(durationFrames) / oldDuration;
+    for (WordTiming& timing : *wordTimings) {
+        timing.startFrame = std::clamp<int64_t>(std::llround(timing.startFrame * scale), 0, durationFrames - 1);
+        timing.endFrame = std::clamp<int64_t>(std::llround(timing.endFrame * scale), timing.startFrame + 1, durationFrames);
     }
-    impl_->clips.erase(found);
-    impl_->commitGeometry();
-    return true;
 }
 
-bool Timeline::moveClip(const std::string& id, int64_t start, std::string* error) {
-    if (start < 0) {
-        setError(error, "clip start must be >= 0");
-        return false;
-    }
-    Clip* clip = impl_->findClip(id);
-    if (!clip) {
-        setError(error, "clip id '" + id + "' was not found");
-        return false;
-    }
-    if (clip->start == start) return true;
+int64_t TimelineMarker::endFrame() const { return startFrame + durationFrames; }
 
-    Clip moved = *clip;
-    moved.start = start;
-    if (impl_->overlapsOthers(moved, id, error)) return false;
-    clip->start = start;
-    impl_->commitGeometry();
-    return true;
+int64_t Track::endFrame() const {
+    int64_t result = 0;
+    for (const Clip& clip : clips) result = std::max(result, clip.endFrame());
+    return result;
 }
 
-const std::vector<Clip>& Timeline::clips() const {
-    return impl_->clips;
-}
-
-const std::vector<TimelineFilter>& Timeline::filters() const {
-    return impl_->filters;
-}
-
-const Clip* Timeline::clipById(const std::string& id) const {
-    return impl_->findClip(id);
-}
-
-bool Timeline::isBlankAt(int64_t position) const {
-    const Clip* clip = impl_->clipAt(position);
-    return clip && isBlankResource(clip->resource);
-}
-
-const TimelineFilter* Timeline::filterAt(int64_t position) const {
-    for (const TimelineFilter& filter : impl_->filters) {
-        if (filter.covers(position)) return &filter;
-    }
+const Clip* Track::clipAt(int64_t frame) const {
+    for (const Clip& clip : clips) if (clip.contains(frame)) return &clip;
     return nullptr;
 }
 
-const Profile& Timeline::profile() const {
-    return impl_->profile;
+const Clip* Track::clipById(const std::string& value) const {
+    for (const Clip& clip : clips) if (clip.id == value) return &clip;
+    return nullptr;
 }
 
-const std::string& Timeline::resource() const {
-    return impl_->resource;
+Clip* Track::clipById(const std::string& value) {
+    for (Clip& clip : clips) if (clip.id == value) return &clip;
+    return nullptr;
 }
 
-int64_t Timeline::in() const {
-    return 0;
+void Track::sortClips() {
+    std::sort(clips.begin(), clips.end(), [](const Clip& a, const Clip& b) {
+        return a.startFrame != b.startFrame ? a.startFrame < b.startFrame : a.id < b.id;
+    });
 }
 
-int64_t Timeline::out() const {
-    return impl_->length > 0 ? impl_->length - 1 : 0;
+int64_t Timeline::totalFrames() const {
+    int64_t result = 0;
+    for (const Track& track : tracks) result = std::max(result, track.endFrame());
+    return result;
 }
 
-int64_t Timeline::length() const {
-    return impl_->length;
+const Clip* Timeline::clipById(const std::string& value) const {
+    for (const Track& track : tracks) if (const Clip* clip = track.clipById(value)) return clip;
+    return nullptr;
 }
 
-int64_t Timeline::position() const {
-    return impl_->position;
+Clip* Timeline::clipById(const std::string& value) {
+    for (Track& track : tracks) if (Clip* clip = track.clipById(value)) return clip;
+    return nullptr;
 }
 
-bool Timeline::seekable() const {
-    if (impl_->length <= 0) return false;
-    for (const auto& [path, producer] : impl_->producers) {
-        if (!producer || !producer->seekable()) return false;
+Track* Timeline::trackById(const std::string& value) {
+    for (Track& track : tracks) if (track.id == value) return &track;
+    return nullptr;
+}
+
+const Track* Timeline::trackById(const std::string& value) const {
+    for (const Track& track : tracks) if (track.id == value) return &track;
+    return nullptr;
+}
+
+Timeline* ProjectFile::activeTimeline() {
+    if (timelines.empty()) return nullptr;
+    if (activeTimelineId) for (Timeline& timeline : timelines) if (timeline.id == *activeTimelineId) return &timeline;
+    return &timelines.front();
+}
+
+const Timeline* ProjectFile::activeTimeline() const {
+    if (timelines.empty()) return nullptr;
+    if (activeTimelineId) for (const Timeline& timeline : timelines) if (timeline.id == *activeTimelineId) return &timeline;
+    return &timelines.front();
+}
+
+std::string makeUuid() {
+    std::random_device device;
+    std::mt19937_64 random(device());
+    uint64_t high = random(), low = random();
+    high = (high & 0xffffffffffff0fffULL) | 0x0000000000004000ULL;
+    low = (low & 0x3fffffffffffffffULL) | 0x8000000000000000ULL;
+    std::ostringstream out;
+    out << std::hex << std::setfill('0')
+        << std::setw(8) << static_cast<uint32_t>(high >> 32) << '-'
+        << std::setw(4) << static_cast<uint16_t>(high >> 16) << '-'
+        << std::setw(4) << static_cast<uint16_t>(high) << '-'
+        << std::setw(4) << static_cast<uint16_t>(low >> 48) << '-'
+        << std::setw(12) << (low & 0x0000ffffffffffffULL);
+    return out.str();
+}
+
+bool validateTimeline(const Timeline& timeline, std::string* error) {
+    if (timeline.id.empty() || timeline.fps <= 0 || timeline.width <= 0 || timeline.height <= 0) {
+        setError(error, "timeline identity and video settings must be valid"); return false;
+    }
+    std::unordered_set<std::string> ids{timeline.id};
+    for (const Track& track : timeline.tracks) {
+        if (track.id.empty() || !ids.insert(track.id).second || !finite(track.displayHeight)) {
+            setError(error, "track ids and display height must be valid"); return false;
+        }
+        int64_t previousEnd = 0;
+        std::vector<const Clip*> sorted;
+        for (const Clip& clip : track.clips) sorted.push_back(&clip);
+        std::sort(sorted.begin(), sorted.end(), [](auto a, auto b) { return a->startFrame < b->startFrame; });
+        for (const Clip* clip : sorted) {
+            if (clip->id.empty() || !ids.insert(clip->id).second || clip->mediaRef.empty()) {
+                setError(error, "clip ids must be unique and mediaRef must not be empty"); return false;
+            }
+            const int64_t consumed = clip->sourceFramesConsumed();
+            const Transform& transform = clip->transform;
+            const Crop& crop = clip->crop;
+            const bool numeric = finite(clip->speed) && finite(clip->volume) && finite(clip->opacity) &&
+                finite(clip->edgeRounding) && finite(clip->edgeSoftness) &&
+                finite(transform.centerX) && finite(transform.centerY) && finite(transform.width) &&
+                finite(transform.height) && finite(transform.rotation) && finite(transform.rotationX) &&
+                finite(transform.rotationY) && finite(crop.left) && finite(crop.top) &&
+                finite(crop.right) && finite(crop.bottom);
+            const bool sourceOverflow = consumed == std::numeric_limits<int64_t>::max() ||
+                clip->trimStartFrame > std::numeric_limits<int64_t>::max() - consumed ||
+                clip->trimEndFrame > std::numeric_limits<int64_t>::max() - consumed - clip->trimStartFrame;
+            if (clip->startFrame < 0 || clip->durationFrames <= 0 || clip->trimStartFrame < 0 || clip->trimEndFrame < 0 ||
+                !numeric || clip->speed <= 0 || clip->endFrame() == std::numeric_limits<int64_t>::max() || sourceOverflow) {
+                setError(error, "clip timing is invalid"); return false;
+            }
+            if (clip->startFrame < previousEnd) { setError(error, "clips on a track must not overlap"); return false; }
+            previousEnd = clip->endFrame();
+        }
+    }
+    for (const TimelineMarker& marker : timeline.markers) {
+        if (marker.id.empty() || !ids.insert(marker.id).second || marker.startFrame < 0 || marker.durationFrames < 0 ||
+            marker.startFrame > std::numeric_limits<int64_t>::max() - marker.durationFrames ||
+            !finite(marker.color.r) || !finite(marker.color.g) || !finite(marker.color.b) || !finite(marker.color.a)) {
+            setError(error, "timeline marker is invalid or has a duplicated id"); return false;
+        }
     }
     return true;
 }
 
-bool Timeline::seek(int64_t position) {
-    if (impl_->length <= 0) return false;
-    impl_->position = std::clamp(position, int64_t{0}, impl_->length - 1);
+bool validateProject(const ProjectFile& project, std::string* error) {
+    if (project.timelines.empty()) { setError(error, "project has no timelines"); return false; }
+    std::unordered_set<std::string> ids;
+    for (const Timeline& timeline : project.timelines) {
+        if (!ids.insert(timeline.id).second) { setError(error, "timeline ids must be unique"); return false; }
+        if (!validateTimeline(timeline, error)) return false;
+    }
+    if (project.activeTimelineId && !ids.count(*project.activeTimelineId)) {
+        setError(error, "activeTimelineId does not name a timeline"); return false;
+    }
+    std::unordered_set<std::string> openIds;
+    if (project.openTimelineIds) for (const std::string& id : *project.openTimelineIds) {
+        if (!ids.count(id) || !openIds.insert(id).second) {
+            setError(error, "openTimelineIds contains an unknown or duplicated timeline"); return false;
+        }
+    }
     return true;
 }
 
-ProducerFrame Timeline::getFrame(int64_t position) {
-    ProducerFrame frame;
-    if (impl_->length <= 0) {
-        frame.eof = true;
-        return frame;
+ProjectCompatibility compatibilityFor(const Timeline& timeline) {
+    ProjectCompatibility result;
+    if (timeline.tracks.empty()) return result;
+    if (timeline.tracks.size() != 1 || timeline.tracks.front().type != ClipType::Video) {
+        result.level = CompatibilityLevel::Unsupported;
+        result.messages.push_back("preview and editing currently require exactly one video track");
+        return result;
     }
-
-    if (position < 0 || position >= impl_->length) {
-        frame.eof = true;
-        frame.position = std::clamp(position, int64_t{0}, impl_->length - 1);
-        impl_->position = frame.position;
-        return frame;
+    for (const Clip& clip : timeline.tracks.front().clips) {
+        if (clip.mediaType != ClipType::Video || clip.sourceClipType != ClipType::Video) {
+            result.level = CompatibilityLevel::Unsupported;
+            result.messages.push_back("preview currently supports video clips only");
+            return result;
+        }
+        if (clip.opacity != 1.0 || clip.volume != 1.0 || clip.fadeInFrames != 0 || clip.fadeOutFrames != 0 ||
+            clip.transform != Transform{} || clip.crop != Crop{} || clip.edgeRounding != 0.0 ||
+            clip.edgeSoftness != 0.0 || clip.opacityTrack || clip.positionTrack || clip.scaleTrack ||
+            clip.rotationTrack || clip.cropTrack || clip.volumeTrack || clip.effects || clip.blendMode) {
+            result.level = CompatibilityLevel::Warning;
+        }
     }
+    if (result.level == CompatibilityLevel::Warning)
+        result.messages.push_back("advanced Palmier clip appearance is preserved but not rendered");
+    return result;
+}
 
-    const Clip* clip = impl_->clipAt(position);
-    if (!clip) {
-        frame = impl_->canvas.frame(position, CanvasColor::Black);
-        impl_->position = position;
-        return frame;
+namespace {
+json transformJson(const Transform& value) {
+    return {{"centerX", value.centerX}, {"centerY", value.centerY},
+            {"width", value.width}, {"height", value.height},
+            {"rotation", value.rotation}, {"rotationX", value.rotationX},
+            {"rotationY", value.rotationY}, {"flipHorizontal", value.flipHorizontal},
+            {"flipVertical", value.flipVertical}};
+}
+
+Transform parseTransform(const json& value) {
+    Transform result;
+    if (!value.is_object()) return result;
+    result.width = valueOr(value, "width", 1.0);
+    result.height = valueOr(value, "height", 1.0);
+    if (value.contains("centerX") && !value["centerX"].is_null())
+        result.centerX = value["centerX"].get<double>();
+    else if (value.contains("x") && !value["x"].is_null())
+        result.centerX = value["x"].get<double>() + result.width - 0.5;
+    if (value.contains("centerY") && !value["centerY"].is_null())
+        result.centerY = value["centerY"].get<double>();
+    else if (value.contains("y") && !value["y"].is_null())
+        result.centerY = value["y"].get<double>() + result.height - 0.5;
+    result.rotation = valueOr(value, "rotation", 0.0);
+    result.rotationX = valueOr(value, "rotationX", 0.0);
+    result.rotationY = valueOr(value, "rotationY", 0.0);
+    result.flipHorizontal = valueOr(value, "flipHorizontal", false);
+    result.flipVertical = valueOr(value, "flipVertical", false);
+    return result;
+}
+
+json cropJson(const Crop& value) {
+    return {{"left", value.left}, {"top", value.top},
+            {"right", value.right}, {"bottom", value.bottom}};
+}
+
+Crop parseCrop(const json& value) {
+    Crop result;
+    if (!value.is_object()) return result;
+    result.left = valueOr(value, "left", 0.0);
+    result.top = valueOr(value, "top", 0.0);
+    result.right = valueOr(value, "right", 0.0);
+    result.bottom = valueOr(value, "bottom", 0.0);
+    return result;
+}
+
+template <typename T>
+std::optional<T> optionalValue(const json& object, const char* key) {
+    const auto found = object.find(key);
+    if (found == object.end() || found->is_null()) return std::nullopt;
+    return found->get<T>();
+}
+
+std::optional<KeyframeTrackPayload> optionalTrack(const json& object, const char* key) {
+    const auto found = object.find(key);
+    if (found == object.end() || found->is_null()) return std::nullopt;
+    return KeyframeTrackPayload{*found};
+}
+
+void putTrack(json& object, const char* key, const std::optional<KeyframeTrackPayload>& track) {
+    if (track) object[key] = track->value;
+}
+
+json clipJson(const Clip& clip) {
+    json object;
+    object["id"] = clip.id;
+    object["mediaRef"] = clip.mediaRef;
+    object["mediaType"] = toString(clip.mediaType);
+    object["sourceClipType"] = toString(clip.sourceClipType);
+    object["startFrame"] = clip.startFrame;
+    object["durationFrames"] = clip.durationFrames;
+    object["trimStartFrame"] = clip.trimStartFrame;
+    object["trimEndFrame"] = clip.trimEndFrame;
+    object["speed"] = clip.speed;
+    object["volume"] = clip.volume;
+    object["fadeInFrames"] = clip.fadeInFrames;
+    object["fadeOutFrames"] = clip.fadeOutFrames;
+    object["fadeInInterpolation"] = toString(clip.fadeInInterpolation);
+    object["fadeOutInterpolation"] = toString(clip.fadeOutInterpolation);
+    object["opacity"] = clip.opacity;
+    object["transform"] = transformJson(clip.transform);
+    object["crop"] = cropJson(clip.crop);
+    object["edgeRounding"] = clip.edgeRounding;
+    object["edgeSoftness"] = clip.edgeSoftness;
+    putOptional(object, "linkGroupId", clip.linkGroupId);
+    putOptional(object, "captionGroupId", clip.captionGroupId);
+    putOptional(object, "multicamGroupId", clip.multicamGroupId);
+    putOptional(object, "textContent", clip.textContent);
+    putOptional(object, "textStyle", clip.textStyle);
+    putOptional(object, "textAnimation", clip.textAnimation);
+    if (clip.wordTimings) {
+        json timings = json::array();
+        for (const WordTiming& timing : *clip.wordTimings)
+            timings.push_back({{"text", timing.text}, {"startFrame", timing.startFrame}, {"endFrame", timing.endFrame}});
+        object["wordTimings"] = std::move(timings);
     }
+    putOptional(object, "textFillMode", clip.textFillMode);
+    putTrack(object, "opacityTrack", clip.opacityTrack);
+    putTrack(object, "positionTrack", clip.positionTrack);
+    putTrack(object, "scaleTrack", clip.scaleTrack);
+    putTrack(object, "rotationTrack", clip.rotationTrack);
+    putTrack(object, "cropTrack", clip.cropTrack);
+    putTrack(object, "volumeTrack", clip.volumeTrack);
+    putOptional(object, "effects", clip.effects);
+    putOptional(object, "blendMode", clip.blendMode);
+    return object;
+}
 
-    IProducer* producer = impl_->producerFor(*clip);
-    if (!producer) {
-        frame.eof = true;
-        frame.position = position;
-        impl_->position = position;
-        return frame;
+Clip parseClip(const json& object) {
+    Clip clip;
+    clip.id = valueOr(object, "id", makeUuid());
+    clip.mediaRef = object.at("mediaRef").get<std::string>();
+    if (!clipTypeFromString(valueOr(object, "mediaType", std::string("video")), clip.mediaType))
+        throw std::runtime_error("unknown clip mediaType");
+    if (!clipTypeFromString(valueOr(object, "sourceClipType", std::string("video")), clip.sourceClipType))
+        throw std::runtime_error("unknown clip sourceClipType");
+    clip.startFrame = object.at("startFrame").get<int64_t>();
+    clip.durationFrames = object.at("durationFrames").get<int64_t>();
+    clip.trimStartFrame = valueOr<int64_t>(object, "trimStartFrame", 0);
+    clip.trimEndFrame = valueOr<int64_t>(object, "trimEndFrame", 0);
+    clip.speed = valueOr(object, "speed", 1.0);
+    clip.volume = valueOr(object, "volume", 1.0);
+    clip.fadeInFrames = valueOr<int64_t>(object, "fadeInFrames", 0);
+    clip.fadeOutFrames = valueOr<int64_t>(object, "fadeOutFrames", 0);
+    if (!interpolationFromString(valueOr(object, "fadeInInterpolation", std::string("linear")), clip.fadeInInterpolation) ||
+        !interpolationFromString(valueOr(object, "fadeOutInterpolation", std::string("linear")), clip.fadeOutInterpolation))
+        throw std::runtime_error("unknown fade interpolation");
+    clip.opacity = valueOr(object, "opacity", 1.0);
+    if (object.contains("transform")) clip.transform = parseTransform(object["transform"]);
+    if (object.contains("crop")) clip.crop = parseCrop(object["crop"]);
+    clip.edgeRounding = valueOr(object, "edgeRounding", 0.0);
+    clip.edgeSoftness = valueOr(object, "edgeSoftness", 0.0);
+    if (clip.edgeRounding < 0.0 || clip.edgeRounding > 1.0) clip.edgeRounding = 0.0;
+    if (clip.edgeSoftness < 0.0 || clip.edgeSoftness > 1.0) clip.edgeSoftness = 0.0;
+    clip.linkGroupId = optionalValue<std::string>(object, "linkGroupId");
+    clip.captionGroupId = optionalValue<std::string>(object, "captionGroupId");
+    clip.multicamGroupId = optionalValue<std::string>(object, "multicamGroupId");
+    clip.textContent = optionalValue<std::string>(object, "textContent");
+    clip.textStyle = optionalValue<JsonValue>(object, "textStyle");
+    clip.textAnimation = optionalValue<JsonValue>(object, "textAnimation");
+    clip.textFillMode = optionalValue<JsonValue>(object, "textFillMode");
+    if (object.contains("wordTimings") && object["wordTimings"].is_array()) {
+        clip.wordTimings.emplace();
+        for (const json& item : object["wordTimings"])
+            clip.wordTimings->push_back({item.at("text").get<std::string>(), item.at("startFrame").get<int64_t>(), item.at("endFrame").get<int64_t>()});
     }
+    clip.opacityTrack = optionalTrack(object, "opacityTrack");
+    clip.positionTrack = optionalTrack(object, "positionTrack");
+    clip.scaleTrack = optionalTrack(object, "scaleTrack");
+    clip.rotationTrack = optionalTrack(object, "rotationTrack");
+    clip.cropTrack = optionalTrack(object, "cropTrack");
+    clip.volumeTrack = optionalTrack(object, "volumeTrack");
+    clip.effects = optionalValue<JsonValue>(object, "effects");
+    clip.blendMode = optionalValue<std::string>(object, "blendMode");
+    return clip;
+}
 
-    const int64_t sourcePosition = clip->in + (position - clip->start);
-    frame = producer->getFrame(sourcePosition);
-    frame.position = position;
-    impl_->position = position;
-    return frame;
+json markerJson(const TimelineMarker& marker) {
+    return {{"id", marker.id}, {"name", marker.name}, {"startFrame", marker.startFrame},
+            {"durationFrames", marker.durationFrames},
+            {"color", {{"r", marker.color.r}, {"g", marker.color.g}, {"b", marker.color.b}, {"a", marker.color.a}}},
+            {"comment", marker.comment}, {"status", marker.status}};
+}
+
+TimelineMarker parseMarker(const json& object) {
+    TimelineMarker marker;
+    marker.id = object.at("id").get<std::string>();
+    marker.name = object.at("name").get<std::string>();
+    marker.startFrame = object.at("startFrame").get<int64_t>();
+    marker.durationFrames = object.at("durationFrames").get<int64_t>();
+    if (object.contains("color")) {
+        const json& c = object["color"];
+        marker.color = {valueOr(c, "r", 0.0), valueOr(c, "g", 0.478), valueOr(c, "b", 1.0), valueOr(c, "a", 1.0)};
+    }
+    marker.comment = valueOr(object, "comment", std::string{});
+    marker.status = valueOr(object, "status", std::string("open"));
+    return marker;
+}
+
+json trackJson(const Track& track) {
+    json clips = json::array();
+    for (const Clip& clip : track.clips) clips.push_back(clipJson(clip));
+    json object = {{"id", track.id}, {"type", toString(track.type)},
+                   {"muted", track.muted}, {"hidden", track.hidden},
+                   {"syncLocked", track.syncLocked}, {"clips", std::move(clips)},
+                   {"displayHeight", track.displayHeight}};
+    putOptional(object, "name", track.name);
+    return object;
+}
+
+Track parseTrack(const json& object) {
+    Track track;
+    track.id = valueOr(object, "id", makeUuid());
+    if (!clipTypeFromString(object.at("type").get<std::string>(), track.type))
+        throw std::runtime_error("unknown track type");
+    track.name = optionalValue<std::string>(object, "name");
+    track.muted = valueOr(object, "muted", false);
+    track.hidden = valueOr(object, "hidden", false);
+    track.syncLocked = valueOr(object, "syncLocked", true);
+    track.displayHeight = std::clamp(valueOr(object, "displayHeight", 44.0), 32.0, 200.0);
+    if (object.contains("clips")) for (const json& clip : object["clips"]) track.clips.push_back(parseClip(clip));
+    return track;
+}
+
+json timelineJson(const Timeline& timeline) {
+    json tracks = json::array();
+    for (const Track& track : timeline.tracks) tracks.push_back(trackJson(track));
+    json markers = json::array();
+    for (const TimelineMarker& marker : timeline.markers) markers.push_back(markerJson(marker));
+    json object = {{"id", timeline.id}, {"name", timeline.name}, {"fps", timeline.fps},
+                   {"width", timeline.width}, {"height", timeline.height},
+                   {"settingsConfigured", timeline.settingsConfigured},
+                   {"tracks", std::move(tracks)}, {"markers", std::move(markers)}};
+    putOptional(object, "folderId", timeline.folderId);
+    return object;
+}
+
+Timeline parseTimeline(const json& object) {
+    Timeline timeline;
+    timeline.id = valueOr(object, "id", makeUuid());
+    timeline.name = valueOr(object, "name", std::string("Timeline 1"));
+    timeline.fps = object.at("fps").get<int>();
+    timeline.width = object.at("width").get<int>();
+    timeline.height = object.at("height").get<int>();
+    timeline.settingsConfigured = valueOr(object, "settingsConfigured", false);
+    timeline.folderId = optionalValue<std::string>(object, "folderId");
+    for (const json& track : object.at("tracks")) timeline.tracks.push_back(parseTrack(track));
+    if (object.contains("markers")) for (const json& marker : object["markers"]) timeline.markers.push_back(parseMarker(marker));
+    return timeline;
+}
+
+json viewStateJson(const TimelineViewState& state) {
+    return {{"playheadFrame", state.playheadFrame}, {"zoomScale", state.zoomScale}, {"scrollOffsetX", state.scrollOffsetX}};
+}
+
+TimelineViewState parseViewState(const json& object) {
+    return {valueOr<int64_t>(object, "playheadFrame", 0), valueOr(object, "zoomScale", 4.0), valueOr(object, "scrollOffsetX", 0.0)};
+}
+} // namespace
+
+std::string ProjectCodec::encode(const ProjectFile& project) {
+    json timelines = json::array();
+    for (const Timeline& timeline : project.timelines) timelines.push_back(timelineJson(timeline));
+    json root;
+    root["timelines"] = std::move(timelines);
+    putOptional(root, "activeTimelineId", project.activeTimelineId);
+    putOptional(root, "openTimelineIds", project.openTimelineIds);
+    if (project.viewStates) {
+        json states = json::object();
+        for (const auto& [id, state] : *project.viewStates) states[id] = viewStateJson(state);
+        root["viewStates"] = std::move(states);
+    }
+    if (project.speakers) {
+        json values = json::array();
+        for (const auto& speaker : *project.speakers)
+            values.push_back({{"id", speaker.id}, {"name", speaker.name}, {"color", speaker.color}, {"centroid", speaker.centroid}});
+        root["speakers"] = std::move(values);
+    }
+    if (project.multicamGroups) {
+        json values = json::array();
+        for (const auto& group : *project.multicamGroups)
+            values.push_back({{"id", group.id}, {"name", group.name}, {"members", group.members}, {"masterMemberId", group.masterMemberId}});
+        root["multicamGroups"] = std::move(values);
+    }
+    return root.dump();
+}
+
+bool ProjectCodec::decode(const std::string& text, ProjectFile& result, std::string* error) {
+    try {
+        const json root = json::parse(text);
+        if (!root.is_object() || !root.contains("timelines") || !root["timelines"].is_array())
+            throw std::runtime_error("project root must contain timelines");
+        ProjectFile parsed;
+        for (const json& value : root["timelines"]) parsed.timelines.push_back(parseTimeline(value));
+        parsed.activeTimelineId = optionalValue<std::string>(root, "activeTimelineId");
+        parsed.openTimelineIds = optionalValue<std::vector<std::string>>(root, "openTimelineIds");
+        if (root.contains("viewStates") && root["viewStates"].is_object()) {
+            parsed.viewStates.emplace();
+            for (auto it = root["viewStates"].begin(); it != root["viewStates"].end(); ++it)
+                parsed.viewStates->emplace(it.key(), parseViewState(it.value()));
+        }
+        if (root.contains("speakers") && root["speakers"].is_array()) {
+            parsed.speakers.emplace();
+            for (const json& value : root["speakers"])
+                parsed.speakers->push_back({value.at("id").get<int>(), value.at("name").get<std::string>(),
+                                            value.at("color").get<std::vector<double>>(), value.at("centroid").get<std::vector<float>>()});
+        }
+        if (root.contains("multicamGroups") && root["multicamGroups"].is_array()) {
+            parsed.multicamGroups.emplace();
+            for (const json& value : root["multicamGroups"])
+                parsed.multicamGroups->push_back({valueOr(value, "id", makeUuid()), valueOr(value, "name", std::string{}),
+                                                  valueOr(value, "members", json::array()), valueOr(value, "masterMemberId", std::string{})});
+        }
+        if (!validateProject(parsed, error)) return false;
+        result = std::move(parsed);
+        return true;
+    } catch (const std::exception& exception) {
+        setError(error, std::string("Invalid Palmier project JSON: ") + exception.what());
+        return false;
+    }
 }
 
 } // namespace heisenberg

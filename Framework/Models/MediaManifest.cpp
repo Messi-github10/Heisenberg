@@ -1,310 +1,157 @@
 #include "MediaManifest.hpp"
 
-#include <nlohmann/json.hpp>
-
-#include <algorithm>
-#include <initializer_list>
-#include <limits>
+#include <cmath>
+#include <unordered_set>
 
 namespace heisenberg {
 namespace {
-
 using json = nlohmann::ordered_json;
 
-void setError(std::string* error, const std::string& message) {
-    if (error) *error = message;
+void setError(std::string* error, const std::string& message) { if (error) *error = message; }
+
+template <typename T>
+std::optional<T> optionalValue(const json& object, const char* key) {
+    const auto found = object.find(key);
+    if (found == object.end() || found->is_null()) return std::nullopt;
+    return found->get<T>();
 }
 
-const json& jsonField(const json& object, const char* key) {
-    static const json missing;
-    const auto it = object.find(key);
-    return it == object.end() ? missing : *it;
+template <typename T>
+void putOptional(json& object, const char* key, const std::optional<T>& value) {
+    if (value) object[key] = *value;
 }
 
-bool expectObject(const json& value, const char* name, std::string* error) {
-    if (value.is_object()) return true;
-    setError(error, std::string("JSON field '") + name + "' must be an object");
-    return false;
+json sourceJson(const MediaSource& source) {
+    if (source.kind == MediaSource::Kind::Project)
+        return {{"project", {{"relativePath", source.path}}}};
+    return {{"external", {{"absolutePath", source.path}}}};
 }
 
-bool expectArray(const json& value, const char* name, std::string* error) {
-    if (value.is_array()) return true;
-    setError(error, std::string("JSON field '") + name + "' must be an array");
-    return false;
+MediaSource parseSource(const json& value) {
+    if (value.contains("external"))
+        return {MediaSource::Kind::External, value.at("external").at("absolutePath").get<std::string>()};
+    if (value.contains("project"))
+        return {MediaSource::Kind::Project, value.at("project").at("relativePath").get<std::string>()};
+    throw std::runtime_error("media source must be external or project");
 }
-
-bool expectKeys(const json& object,
-                std::initializer_list<const char*> allowed,
-                const char* context,
-                std::string* error) {
-    for (auto it = object.begin(); it != object.end(); ++it) {
-        bool found = false;
-        for (const char* key : allowed) {
-            if (it.key() == key) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            setError(error, std::string(context) + " contains unknown field '" +
-                                it.key() + "'");
-            return false;
-        }
-    }
-    return true;
-}
-
-bool readInt64(const json& object,
-               const char* key,
-               int64_t min,
-               int64_t max,
-               int64_t& result,
-               const char* context,
-               std::string* error) {
-    const json& value = jsonField(object, key);
-    if (value.is_null() && !object.contains(key)) {
-        setError(error, std::string(context) + " is missing '" + key + "'");
-        return false;
-    }
-    if (!value.is_number_integer()) {
-        setError(error, std::string(context) + " field '" + key +
-                            "' must be an integer");
-        return false;
-    }
-
-    int64_t number = 0;
-    if (value.is_number_unsigned()) {
-        const auto unsignedNumber = value.get<uint64_t>();
-        if (unsignedNumber > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-            setError(error, std::string(context) + " field '" + key +
-                                "' is out of range");
-            return false;
-        }
-        number = static_cast<int64_t>(unsignedNumber);
-    } else {
-        number = value.get<int64_t>();
-    }
-
-    if (number < min || number > max) {
-        setError(error, std::string(context) + " field '" + key +
-                            "' is out of range");
-        return false;
-    }
-    result = number;
-    return true;
-}
-
-bool readOptionalInt64(const json& object,
-                       const char* key,
-                       int64_t min,
-                       int64_t max,
-                       int64_t& result,
-                       const char* context,
-                       std::string* error) {
-    const json& value = jsonField(object, key);
-    if (value.is_null() && !object.contains(key)) return true;
-    return readInt64(object, key, min, max, result, context, error);
-}
-
-bool readString(const json& object,
-                const char* key,
-                std::string& result,
-                const char* context,
-                std::string* error,
-                bool required) {
-    const json& value = jsonField(object, key);
-    if (value.is_null() && !object.contains(key)) {
-        if (!required) {
-            result.clear();
-            return true;
-        }
-        setError(error, std::string(context) + " is missing '" + key + "'");
-        return false;
-    }
-    if (!value.is_string()) {
-        setError(error, std::string(context) + " field '" + key +
-                            "' must be a string");
-        return false;
-    }
-    result = value.get<std::string>();
-    return true;
-}
-
-bool parseAssetId(const std::string& value, std::string& result, std::string* error) {
-    if (value.empty()) {
-        setError(error, "media id must not be empty");
-        return false;
-    }
-    for (const char ch : value) {
-        const bool ok = (ch >= 'a' && ch <= 'z') ||
-                        (ch >= 'A' && ch <= 'Z') ||
-                        (ch >= '0' && ch <= '9') ||
-                        ch == '_' || ch == '-';
-        if (!ok) {
-            setError(error, "media id must match [A-Za-z0-9_-]+");
-            return false;
-        }
-    }
-    result = value;
-    return true;
-}
-
-} // namespace
-
-const char* toString(MediaType type) {
-    switch (type) {
-        case MediaType::Video: return "video";
-        case MediaType::Audio: return "audio";
-        case MediaType::Image: return "image";
-    }
-    return "video";
-}
-
-bool mediaTypeFromString(const std::string& value, MediaType& type) {
-    if (value == "video") {
-        type = MediaType::Video;
-        return true;
-    }
-    if (value == "audio") {
-        type = MediaType::Audio;
-        return true;
-    }
-    if (value == "image") {
-        type = MediaType::Image;
-        return true;
-    }
-    return false;
 }
 
 bool MediaManifest::loadFromJson(const std::string& text, std::string* error) {
-    json root;
     try {
-        root = json::parse(text);
-    } catch (const json::parse_error& parseError) {
-        setError(error, std::string("Invalid media manifest JSON: ") + parseError.what());
+        const json root = json::parse(text);
+        if (!root.is_object()) throw std::runtime_error("media root must be an object");
+        const int version = root.value("version", 1);
+        if (version != 2) throw std::runtime_error("media manifest version must be 2");
+        std::vector<MediaManifestEntry> entries;
+        std::unordered_set<std::string> ids;
+        for (const json& value : root.value("entries", json::array())) {
+            MediaManifestEntry entry;
+            entry.id = value.at("id").get<std::string>();
+            entry.name = value.at("name").get<std::string>();
+            if (!clipTypeFromString(value.at("type").get<std::string>(), entry.type))
+                throw std::runtime_error("unknown media type");
+            entry.source = parseSource(value.at("source"));
+            entry.duration = value.at("duration").get<double>();
+            if (entry.id.empty() || !ids.insert(entry.id).second || entry.source.path.empty() ||
+                !std::isfinite(entry.duration) || entry.duration < 0)
+                throw std::runtime_error("invalid or duplicated media entry");
+            entry.generationInput = optionalValue<JsonValue>(value, "generationInput");
+            entry.sourceWidth = optionalValue<int>(value, "sourceWidth");
+            entry.sourceHeight = optionalValue<int>(value, "sourceHeight");
+            entry.sourceFPS = optionalValue<double>(value, "sourceFPS");
+            entry.hasAudio = optionalValue<bool>(value, "hasAudio");
+            entry.folderId = optionalValue<std::string>(value, "folderId");
+            entry.cachedRemoteURL = optionalValue<std::string>(value, "cachedRemoteURL");
+            entry.cachedRemoteURLExpiresAt = optionalValue<double>(value, "cachedRemoteURLExpiresAt");
+            entry.generationStatus = optionalValue<std::string>(value, "generationStatus");
+            entry.importInput = optionalValue<JsonValue>(value, "importInput");
+            entries.push_back(std::move(entry));
+        }
+        std::vector<MediaFolder> folders;
+        std::unordered_set<std::string> folderIds;
+        for (const json& value : root.value("folders", json::array())) {
+            MediaFolder folder;
+            folder.id = value.at("id").get<std::string>();
+            folder.name = value.at("name").get<std::string>();
+            folder.parentFolderId = optionalValue<std::string>(value, "parentFolderId");
+            if (folder.id.empty() || !folderIds.insert(folder.id).second)
+                throw std::runtime_error("invalid or duplicated media folder");
+            folders.push_back(std::move(folder));
+        }
+        MediaManifest parsed;
+        parsed.version_ = version;
+        parsed.entries_ = std::move(entries);
+        parsed.folders_ = std::move(folders);
+        std::string validationError;
+        if (!parsed.validate(&validationError)) throw std::runtime_error(validationError);
+        *this = std::move(parsed);
+        return true;
+    } catch (const std::exception& exception) {
+        setError(error, std::string("Invalid Palmier media JSON: ") + exception.what());
         return false;
     }
-    if (!root.is_object()) {
-        setError(error, "media manifest JSON root must be an object");
-        return false;
-    }
-    if (!expectKeys(root, {"version", "entries"}, "media", error)) return false;
-
-    int64_t version = 1;
-    if (!readInt64(root, "version", 1, 1, version, "media", error)) return false;
-
-    const json& entriesValue = jsonField(root, "entries");
-    if (!expectArray(entriesValue, "entries", error)) return false;
-
-    std::vector<MediaManifestEntry> loaded;
-    loaded.reserve(entriesValue.size());
-    for (size_t index = 0; index < entriesValue.size(); ++index) {
-        const json& entryValue = entriesValue[index];
-        const std::string context = "entries[" + std::to_string(index) + "]";
-        if (!expectObject(entryValue, context.c_str(), error) ||
-            !expectKeys(entryValue,
-                        {"id", "name", "type", "source", "durationFrames"},
-                        context.c_str(), error)) {
-            return false;
-        }
-
-        MediaManifestEntry entry;
-        std::string id;
-        std::string type;
-        if (!readString(entryValue, "id", id, context.c_str(), error, true) ||
-            !parseAssetId(id, entry.id, error) ||
-            !readString(entryValue, "name", entry.name, context.c_str(), error, true) ||
-            !readString(entryValue, "type", type, context.c_str(), error, true) ||
-            !readOptionalInt64(entryValue, "durationFrames", 0,
-                               std::numeric_limits<int64_t>::max(),
-                               entry.durationFrames, context.c_str(), error)) {
-            return false;
-        }
-        if (!mediaTypeFromString(type, entry.type)) {
-            setError(error, context + " type '" + type + "' is unknown");
-            return false;
-        }
-        if (std::find_if(loaded.begin(), loaded.end(),
-                         [&](const MediaManifestEntry& existing) {
-                             return existing.id == entry.id;
-                         }) != loaded.end()) {
-            setError(error, context + " id '" + entry.id + "' is duplicated");
-            return false;
-        }
-
-        const json& sourceValue = jsonField(entryValue, "source");
-        if (!expectObject(sourceValue, (context + ".source").c_str(), error) ||
-            !expectKeys(sourceValue, {"kind", "path"},
-                        (context + ".source").c_str(), error)) {
-            return false;
-        }
-        std::string kind;
-        if (!readString(sourceValue, "kind", kind, (context + ".source").c_str(),
-                        error, true) ||
-            !readString(sourceValue, "path", entry.source.path,
-                        (context + ".source").c_str(), error, true)) {
-            return false;
-        }
-        if (kind == "external") {
-            entry.source.kind = MediaSource::Kind::External;
-        } else if (kind == "project") {
-            entry.source.kind = MediaSource::Kind::Project;
-        } else {
-            setError(error, context + ".source kind '" + kind + "' is unknown");
-            return false;
-        }
-        if (entry.source.path.empty()) {
-            setError(error, context + ".source path must not be empty");
-            return false;
-        }
-        loaded.push_back(std::move(entry));
-    }
-
-    entries_ = std::move(loaded);
-    return true;
 }
 
 std::string MediaManifest::toJson() const {
     json entries = json::array();
     for (const MediaManifestEntry& entry : entries_) {
-        json source;
-        source["kind"] = entry.source.kind == MediaSource::Kind::Project
-            ? "project" : "external";
-        source["path"] = entry.source.path;
-
-        json object;
-        object["id"] = entry.id;
-        object["name"] = entry.name;
-        object["type"] = toString(entry.type);
-        object["source"] = std::move(source);
-        object["durationFrames"] = entry.durationFrames;
+        json object = {{"id", entry.id}, {"name", entry.name}, {"type", toString(entry.type)},
+                       {"source", sourceJson(entry.source)}, {"duration", entry.duration}};
+        putOptional(object, "generationInput", entry.generationInput);
+        putOptional(object, "sourceWidth", entry.sourceWidth);
+        putOptional(object, "sourceHeight", entry.sourceHeight);
+        putOptional(object, "sourceFPS", entry.sourceFPS);
+        putOptional(object, "hasAudio", entry.hasAudio);
+        putOptional(object, "folderId", entry.folderId);
+        putOptional(object, "cachedRemoteURL", entry.cachedRemoteURL);
+        putOptional(object, "cachedRemoteURLExpiresAt", entry.cachedRemoteURLExpiresAt);
+        putOptional(object, "generationStatus", entry.generationStatus);
+        putOptional(object, "importInput", entry.importInput);
         entries.push_back(std::move(object));
     }
+    json folders = json::array();
+    for (const MediaFolder& folder : folders_) {
+        json object = {{"id", folder.id}, {"name", folder.name}};
+        putOptional(object, "parentFolderId", folder.parentFolderId);
+        folders.push_back(std::move(object));
+    }
+    return json{{"version", 2}, {"entries", std::move(entries)}, {"folders", std::move(folders)}}.dump();
+}
 
-    json root;
-    root["version"] = 1;
-    root["entries"] = std::move(entries);
-    return root.dump(2);
+bool MediaManifest::validate(std::string* error) const {
+    if (version_ != 2) { setError(error, "media manifest version must be 2"); return false; }
+    std::unordered_set<std::string> ids;
+    for (const MediaManifestEntry& entry : entries_) {
+        if (entry.id.empty() || !ids.insert(entry.id).second || entry.source.path.empty() ||
+            !std::isfinite(entry.duration) || entry.duration < 0 ||
+            (entry.sourceFPS && (!std::isfinite(*entry.sourceFPS) || *entry.sourceFPS <= 0)) ||
+            (entry.cachedRemoteURLExpiresAt && !std::isfinite(*entry.cachedRemoteURLExpiresAt)) ||
+            (entry.sourceWidth && *entry.sourceWidth <= 0) || (entry.sourceHeight && *entry.sourceHeight <= 0)) {
+            setError(error, "media manifest contains an invalid or duplicated entry"); return false;
+        }
+    }
+    std::unordered_set<std::string> folderIds;
+    for (const MediaFolder& folder : folders_) {
+        if (folder.id.empty() || !folderIds.insert(folder.id).second) {
+            setError(error, "media manifest contains an invalid or duplicated folder"); return false;
+        }
+    }
+    return true;
 }
 
 bool MediaManifest::add(MediaManifestEntry entry, std::string* error) {
-    if (!parseAssetId(entry.id, entry.id, error)) return false;
-    if (find(entry.id)) {
-        setError(error, "media id '" + entry.id + "' already exists");
-        return false;
-    }
-    if (entry.source.path.empty()) {
-        setError(error, "media source path must not be empty");
-        return false;
+    if (entry.id.empty() || find(entry.id)) { setError(error, "media id is empty or already exists"); return false; }
+    if (entry.source.path.empty() || !std::isfinite(entry.duration) || entry.duration < 0 ||
+        (entry.sourceFPS && (!std::isfinite(*entry.sourceFPS) || *entry.sourceFPS <= 0)) ||
+        (entry.cachedRemoteURLExpiresAt && !std::isfinite(*entry.cachedRemoteURLExpiresAt))) {
+        setError(error, "media source and duration must be valid"); return false;
     }
     entries_.push_back(std::move(entry));
     return true;
 }
 
 const MediaManifestEntry* MediaManifest::find(const std::string& id) const {
-    for (const MediaManifestEntry& entry : entries_) {
-        if (entry.id == id) return &entry;
-    }
+    for (const MediaManifestEntry& entry : entries_) if (entry.id == id) return &entry;
     return nullptr;
 }
 

@@ -331,6 +331,16 @@ Profile Profile::hd1080p24() {
     return Profile();
 }
 
+Profile Profile::fromTimelineSettings(int width, int height, int fps) {
+    Profile profile;
+    profile.id_.clear();
+    profile.description_ = "Palmier timeline";
+    profile.width_ = width;
+    profile.height_ = height;
+    profile.frameRate_ = {fps, 1};
+    return profile;
+}
+
 std::vector<Profile> Profile::presets() {
     return {
         makePreset("hd_1080p_24", "HD 1080p 24 fps", 1920, 1080, 24, 1),

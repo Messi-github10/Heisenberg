@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QFileInfo>
 #include <QString>
 
 #include <MainWidget/MainWindow.hpp>
@@ -48,22 +49,9 @@ int main(int argc, char* argv[])
     QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::filterGraphPathChanged,
                      &mainWindow, [&]() {
                          mainWindow.setFilterGraphPath(playerCtrl.filterGraphPath());
-                         float exposure = 0.0f;
-                         if (playerCtrl.getFilterParameter("exposure", "exposure",
-                                                           exposure)) {
-                             mainWindow.setExposureEnabled(true);
-                             mainWindow.setExposure(exposure);
-                         } else {
-                             mainWindow.setExposureEnabled(false);
-                         }
                      });
     QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::filterGraphLoadFailed,
                      &mainWindow, &MainWindow::setFilterGraphError);
-    QObject::connect(&mainWindow, &MainWindow::exposureChanged,
-                     &playerCtrl, [&](double value) {
-                         playerCtrl.setFilterParameter(
-                             "exposure", "exposure", static_cast<float>(value));
-                     });
 
     QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::isPlayingChanged,
                      &mainWindow, [&]() { mainWindow.setPlayingState(playerCtrl.isPlaying()); });
@@ -77,7 +65,13 @@ int main(int argc, char* argv[])
     mainWindow.show();
 
     if (argc >= 2) {
-        playerCtrl.openFile(QString::fromStdString(argv[1]));
+        const QString path = QString::fromLocal8Bit(argv[1]);
+        const QFileInfo info(path);
+        if (info.isDir() && QFileInfo(info.filePath() + "/project.json").exists()) {
+            if (mainWindow.loadProjectPackage(path, false)) playerCtrl.openPlaylist(path);
+        } else {
+            playerCtrl.openFile(path);
+        }
     }
 
     LOG_INFO("Heisenberg started");

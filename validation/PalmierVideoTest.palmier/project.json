@@ -1,0 +1,139 @@
+{
+  "timelines": [
+    {
+      "id": "A3000000-0000-4000-8000-000000000001",
+      "name": "Heisenberg Palmier Validation",
+      "fps": 24,
+      "width": 1920,
+      "height": 1080,
+      "settingsConfigured": true,
+      "tracks": [
+        {
+          "id": "A3000000-0000-4000-8000-000000000002",
+          "type": "video",
+          "name": "V1 - Validation",
+          "muted": false,
+          "hidden": false,
+          "syncLocked": true,
+          "clips": [
+            {
+              "id": "A3000000-0000-4000-8000-000000000101",
+              "mediaRef": "B4000000-0000-4000-8000-000000000001",
+              "mediaType": "video",
+              "sourceClipType": "video",
+              "startFrame": 0,
+              "durationFrames": 144,
+              "trimStartFrame": 24,
+              "trimEndFrame": 423,
+              "speed": 1.0,
+              "volume": 1.0,
+              "fadeInFrames": 0,
+              "fadeOutFrames": 0,
+              "fadeInInterpolation": "linear",
+              "fadeOutInterpolation": "linear",
+              "opacity": 1.0,
+              "transform": {"centerX": 0.5, "centerY": 0.5, "width": 1.0, "height": 1.0, "rotation": 0.0, "rotationX": 0.0, "rotationY": 0.0, "flipHorizontal": false, "flipVertical": false},
+              "crop": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0},
+              "edgeRounding": 0.0,
+              "edgeSoftness": 0.0
+            },
+            {
+              "id": "A3000000-0000-4000-8000-000000000102",
+              "mediaRef": "B4000000-0000-4000-8000-000000000002",
+              "mediaType": "video",
+              "sourceClipType": "video",
+              "startFrame": 168,
+              "durationFrames": 120,
+              "trimStartFrame": 0,
+              "trimEndFrame": 53,
+              "speed": 1.0,
+              "volume": 1.0,
+              "fadeInFrames": 0,
+              "fadeOutFrames": 0,
+              "fadeInInterpolation": "linear",
+              "fadeOutInterpolation": "linear",
+              "opacity": 1.0,
+              "transform": {"centerX": 0.5, "centerY": 0.5, "width": 1.0, "height": 1.0, "rotation": 0.0, "rotationX": 0.0, "rotationY": 0.0, "flipHorizontal": false, "flipVertical": false},
+              "crop": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0},
+              "edgeRounding": 0.0,
+              "edgeSoftness": 0.0
+            },
+            {
+              "id": "A3000000-0000-4000-8000-000000000103",
+              "mediaRef": "B4000000-0000-4000-8000-000000000003",
+              "mediaType": "video",
+              "sourceClipType": "video",
+              "startFrame": 288,
+              "durationFrames": 96,
+              "trimStartFrame": 24,
+              "trimEndFrame": 72,
+              "speed": 1.5,
+              "volume": 1.0,
+              "fadeInFrames": 0,
+              "fadeOutFrames": 0,
+              "fadeInInterpolation": "linear",
+              "fadeOutInterpolation": "linear",
+              "opacity": 1.0,
+              "transform": {"centerX": 0.5, "centerY": 0.5, "width": 1.0, "height": 1.0, "rotation": 0.0, "rotationX": 0.0, "rotationY": 0.0, "flipHorizontal": false, "flipVertical": false},
+              "crop": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0},
+              "edgeRounding": 0.0,
+              "edgeSoftness": 0.0
+            },
+            {
+              "id": "A3000000-0000-4000-8000-000000000104",
+              "mediaRef": "B4000000-0000-4000-8000-000000000006",
+              "mediaType": "video",
+              "sourceClipType": "video",
+              "startFrame": 408,
+              "durationFrames": 120,
+              "trimStartFrame": 0,
+              "trimEndFrame": 123,
+              "speed": 1.0,
+              "volume": 1.0,
+              "fadeInFrames": 0,
+              "fadeOutFrames": 0,
+              "fadeInInterpolation": "linear",
+              "fadeOutInterpolation": "linear",
+              "opacity": 1.0,
+              "transform": {"centerX": 0.5, "centerY": 0.5, "width": 1.0, "height": 1.0, "rotation": 0.0, "rotationX": 0.0, "rotationY": 0.0, "flipHorizontal": false, "flipVertical": false},
+              "crop": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0},
+              "edgeRounding": 0.0,
+              "edgeSoftness": 0.0
+            },
+            {
+              "id": "A3000000-0000-4000-8000-000000000105",
+              "mediaRef": "B4000000-0000-4000-8000-000000000099",
+              "mediaType": "video",
+              "sourceClipType": "video",
+              "startFrame": 552,
+              "durationFrames": 48,
+              "trimStartFrame": 0,
+              "trimEndFrame": 0,
+              "speed": 1.0,
+              "volume": 1.0,
+              "fadeInFrames": 0,
+              "fadeOutFrames": 0,
+              "fadeInInterpolation": "linear",
+              "fadeOutInterpolation": "linear",
+              "opacity": 1.0,
+              "transform": {"centerX": 0.5, "centerY": 0.5, "width": 1.0, "height": 1.0, "rotation": 0.0, "rotationX": 0.0, "rotationY": 0.0, "flipHorizontal": false, "flipVertical": false},
+              "crop": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0},
+              "edgeRounding": 0.0,
+              "edgeSoftness": 0.0
+            }
+          ],
+          "displayHeight": 44.0
+        }
+      ],
+      "markers": [
+        {"id": "C5000000-0000-4000-8000-000000000001", "name": "Expected black gap", "startFrame": 144, "durationFrames": 24, "color": {"r": 1.0, "g": 0.6, "b": 0.0, "a": 1.0}, "comment": "One second gap from 00:06 to 00:07", "status": "open"},
+        {"id": "C5000000-0000-4000-8000-000000000002", "name": "Expected offline black", "startFrame": 552, "durationFrames": 48, "color": {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0}, "comment": "Missing media should warn and render black", "status": "review"}
+      ]
+    }
+  ],
+  "activeTimelineId": "A3000000-0000-4000-8000-000000000001",
+  "openTimelineIds": ["A3000000-0000-4000-8000-000000000001"],
+  "viewStates": {
+    "A3000000-0000-4000-8000-000000000001": {"playheadFrame": 0, "zoomScale": 4.0, "scrollOffsetX": 0.0}
+  }
+}

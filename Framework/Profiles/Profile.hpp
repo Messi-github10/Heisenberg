@@ -48,6 +48,7 @@ public:
     Profile() = default;
 
     static Profile hd1080p24();
+    static Profile fromTimelineSettings(int width, int height, int fps);
     static std::vector<Profile> presets();
     static const Profile* findPreset(std::string_view id);
 

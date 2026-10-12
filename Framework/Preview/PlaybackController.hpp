@@ -1,7 +1,5 @@
 #pragma once
 
-#include <Models/Timeline.hpp>
-
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -13,6 +11,15 @@ struct AVFrame;
 }
 
 namespace heisenberg {
+
+struct TimelineFilter {
+    std::string id;
+    std::string graph;
+    int64_t in = 0;
+    int64_t out = 0;
+    bool covers(int64_t frame) const { return frame >= in && frame <= out; }
+};
+
 namespace ctrl {
 
 class PlaybackController {

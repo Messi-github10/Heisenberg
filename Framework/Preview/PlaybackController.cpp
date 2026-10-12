@@ -9,8 +9,8 @@
 #include <Common/FrameTime.hpp>
 #include <Common/MediaFrame.hpp>
 #include <MultiMedia/Audio/Output/AudioDevice.hpp>
-#include <Models/Timeline.hpp>
 #include <Preview/ProducerPump.hpp>
+#include <Preview/TimelineProducer.hpp>
 #include <Utiles/Logger.hpp>
 
 extern "C" {
@@ -23,6 +23,9 @@ extern "C" {
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -37,7 +40,7 @@ struct PlaybackController::Impl {
     RingBuffer<MediaFrame> audioFrameBuffer{64};
     DecodeThread decodeThread{frameBuffer, audioFrameBuffer};
     ProducerPump producerPump{frameBuffer, audioFrameBuffer};
-    std::unique_ptr<Timeline> timeline;
+    std::unique_ptr<TimelineProducer> timeline;
     bool usingProducer = false;
     bool hardwareDecode = true;
 
@@ -374,7 +377,7 @@ void PlaybackController::setHardwareDecode(bool enabled) {
 
 const std::vector<TimelineFilter>& PlaybackController::timelineFilters() const {
     static const std::vector<TimelineFilter> empty;
-    return impl_->timeline ? impl_->timeline->filters() : empty;
+    return empty;
 }
 
 void PlaybackController::setState(State s) {
@@ -483,10 +486,16 @@ bool PlaybackController::open(const std::string& filePath) {
 bool PlaybackController::openPlaylist(const std::string& jsonPath) {
     close();
     impl_->usingProducer = true;
-    impl_->timeline = std::make_unique<Timeline>();
-    impl_->timeline->setHardwareDecode(impl_->hardwareDecode);
     std::string error;
-    if (!impl_->timeline->loadFromJsonFile(jsonPath, &error)) {
+    const auto requested = std::filesystem::u8path(jsonPath);
+    const auto packageDir = std::filesystem::is_directory(requested) ? requested : requested.parent_path();
+    const auto projectPath = std::filesystem::is_directory(requested) ? requested / "project.json" : requested;
+    std::ifstream projectStream(projectPath, std::ios::binary);
+    std::string projectText((std::istreambuf_iterator<char>(projectStream)), std::istreambuf_iterator<char>());
+    ProjectFile project;
+    MediaManifest manifest;
+    if (!projectStream) error = "Palmier package is missing project.json";
+    if (!projectStream || !ProjectCodec::decode(projectText, project, &error)) {
         LOG_ERROR("PlaybackController: playlist open failed — {}", error);
         impl_->timeline.reset();
         impl_->usingProducer = false;
@@ -494,6 +503,36 @@ bool PlaybackController::openPlaylist(const std::string& jsonPath) {
         if (onOpenFailed) onOpenFailed(error);
         return false;
     }
+
+    std::ifstream mediaStream(packageDir / "media.json", std::ios::binary);
+    if (!mediaStream) error = "Palmier package is missing media.json";
+    const std::string mediaText((std::istreambuf_iterator<char>(mediaStream)), std::istreambuf_iterator<char>());
+    if (!mediaStream || !manifest.loadFromJson(mediaText, &error)) {
+        impl_->usingProducer = false;
+        setState(Idle);
+        if (onOpenFailed) onOpenFailed(error);
+        return false;
+    }
+    const Timeline* active = project.activeTimeline();
+    if (!active) {
+        impl_->usingProducer = false;
+        setState(Idle);
+        if (onOpenFailed) onOpenFailed("project has no active timeline");
+        return false;
+    }
+    const auto packageUtf8 = packageDir.u8string();
+    impl_->timeline = std::make_unique<TimelineProducer>(
+        *active, manifest, std::string(reinterpret_cast<const char*>(packageUtf8.c_str()), packageUtf8.size()));
+    impl_->timeline->setHardwareDecode(impl_->hardwareDecode);
+    if (!impl_->timeline->open(&error)) {
+        impl_->timeline.reset();
+        impl_->usingProducer = false;
+        setState(Idle);
+        if (onOpenFailed) onOpenFailed(error);
+        return false;
+    }
+    for (const std::string& warning : impl_->timeline->warnings())
+        LOG_WARN("Timeline compatibility: {}", warning);
 
     auto alive = impl_->alive;
     impl_->producerPump.onOpened = [this, alive](

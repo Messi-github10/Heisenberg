@@ -1,0 +1,76 @@
+{
+  "version": 2,
+  "entries": [
+    {
+      "id": "B4000000-0000-4000-8000-000000000001",
+      "name": "Road Through The Hills",
+      "type": "video",
+      "source": {"external": {"absolutePath": "C:\\Users\\A\\Videos\\素材\\coverr-a-road-through-the-hills-6377-1080p.mp4"}},
+      "duration": 24.607943,
+      "sourceWidth": 1920,
+      "sourceHeight": 1080,
+      "sourceFPS": 23.976
+    },
+    {
+      "id": "B4000000-0000-4000-8000-000000000002",
+      "name": "Tel Aviv From Above",
+      "type": "video",
+      "source": {"external": {"absolutePath": "C:\\Users\\A\\Videos\\素材\\coverr-tel-aviv-from-above-3095-1080p.mp4"}},
+      "duration": 7.21556,
+      "sourceWidth": 1920,
+      "sourceHeight": 1080,
+      "sourceFPS": 23.976
+    },
+    {
+      "id": "B4000000-0000-4000-8000-000000000003",
+      "name": "iStock 1397265636",
+      "type": "video",
+      "source": {"external": {"absolutePath": "C:\\Users\\A\\Videos\\素材\\istockphoto-1397265636-640_adpp_is.mp4"}},
+      "duration": 10.01,
+      "sourceWidth": 768,
+      "sourceHeight": 432,
+      "sourceFPS": 29.97002997
+    },
+    {
+      "id": "B4000000-0000-4000-8000-000000000004",
+      "name": "iStock 1474111143 (Library Only)",
+      "type": "video",
+      "source": {"external": {"absolutePath": "C:\\Users\\A\\Videos\\素材\\istockphoto-1474111143-640_adpp_is.mp4"}},
+      "duration": 16.44,
+      "sourceWidth": 768,
+      "sourceHeight": 432,
+      "sourceFPS": 25.0
+    },
+    {
+      "id": "B4000000-0000-4000-8000-000000000005",
+      "name": "iStock 699620004 (Library Only)",
+      "type": "video",
+      "source": {"external": {"absolutePath": "C:\\Users\\A\\Videos\\素材\\istockphoto-699620004-640_adpp_is.mp4"}},
+      "duration": 16.016,
+      "sourceWidth": 768,
+      "sourceHeight": 432,
+      "sourceFPS": 29.97002997
+    },
+    {
+      "id": "B4000000-0000-4000-8000-000000000006",
+      "name": "光厂 VID 006 Portrait",
+      "type": "video",
+      "source": {"external": {"absolutePath": "C:\\Users\\A\\Videos\\素材\\光厂_44300782_VID_006.mp4"}},
+      "duration": 10.125,
+      "sourceWidth": 720,
+      "sourceHeight": 1076,
+      "sourceFPS": 24.0
+    },
+    {
+      "id": "B4000000-0000-4000-8000-000000000099",
+      "name": "INTENTIONALLY OFFLINE",
+      "type": "video",
+      "source": {"external": {"absolutePath": "C:\\Users\\A\\Videos\\素材\\this-file-does-not-exist.mp4"}},
+      "duration": 2.0,
+      "sourceWidth": 1920,
+      "sourceHeight": 1080,
+      "sourceFPS": 24.0
+    }
+  ],
+  "folders": []
+}
