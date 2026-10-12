@@ -4,6 +4,7 @@
 
 #include <MainWidget/MainWindow.hpp>
 #include <Backend/PlayerController.hpp>
+#include <Backend/EditorSession.hpp>
 
 #include <Preview/IPreviewer.hpp>
 #include <Utiles/Logger.hpp>
@@ -17,10 +18,11 @@ int main(int argc, char* argv[])
 
     heisenberg::Logger::Init();
 
-    heisenberg::ui::PlayerController playerCtrl;
+    heisenberg::ui::EditorSession editorSession;
+    heisenberg::ui::PlayerController playerCtrl(&editorSession);
     playerCtrl.setHardwareDecode(true);
 
-    MainWindow mainWindow;
+    MainWindow mainWindow(&editorSession);
 
     // Stop playback and release GPU resources while the native video window
     // is still alive (MainWindow emits this before the base close handling).
@@ -40,8 +42,14 @@ int main(int argc, char* argv[])
                      &playerCtrl, &heisenberg::ui::PlayerController::endScrub);
     QObject::connect(&mainWindow, &MainWindow::openFileRequested,
                      &playerCtrl, &heisenberg::ui::PlayerController::openFile);
-    QObject::connect(&mainWindow, &MainWindow::openPlaylistRequested,
-                     &playerCtrl, &heisenberg::ui::PlayerController::openPlaylist);
+    QObject::connect(&mainWindow, &MainWindow::previewMediaRequested,
+                     &playerCtrl, &heisenberg::ui::PlayerController::previewAsset);
+    QObject::connect(&mainWindow, &MainWindow::timelinePreviewRequested,
+                     &playerCtrl, [&]() { playerCtrl.showTimeline(); });
+    QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::previewModeChanged,
+                     &mainWindow, &MainWindow::setSourcePreview);
+    QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::playbackFailed,
+                     &mainWindow, &MainWindow::showError);
     QObject::connect(&mainWindow, &MainWindow::openFilterGraphRequested,
                      &playerCtrl, &heisenberg::ui::PlayerController::openFilterGraph);
     QObject::connect(&mainWindow, &MainWindow::hardwareDecodeToggled,
@@ -68,7 +76,7 @@ int main(int argc, char* argv[])
         const QString path = QString::fromLocal8Bit(argv[1]);
         const QFileInfo info(path);
         if (info.isDir() && QFileInfo(info.filePath() + "/project.json").exists()) {
-            if (mainWindow.loadProjectPackage(path, false)) playerCtrl.openPlaylist(path);
+            mainWindow.loadProjectPackage(path, false);
         } else {
             playerCtrl.openFile(path);
         }

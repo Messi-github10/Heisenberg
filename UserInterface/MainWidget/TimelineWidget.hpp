@@ -10,10 +10,13 @@
 #include <unordered_map>
 #include <unordered_set>
 
+namespace heisenberg::ui { class EditorSession; }
+
 class QMouseEvent;
 class QPaintEvent;
 class QWheelEvent;
 class QColor;
+class QMimeData;
 
 class TimelineWidget final : public QWidget {
     Q_OBJECT
@@ -21,8 +24,9 @@ class TimelineWidget final : public QWidget {
 public:
     explicit TimelineWidget(QWidget* parent = nullptr);
 
-    bool loadPackage(const QString& packageDirectory, QString* error = nullptr);
-    void clearProject();
+    void setSession(heisenberg::ui::EditorSession* session);
+    void refreshProject();
+    qint64 currentFrame() const { return currentFrame_; }
     void setFrameCount(qint64 frameCount);
     void setCurrentFrame(qint64 frame);
     void setPlaying(bool playing);
@@ -37,6 +41,7 @@ signals:
     void scrubStarted();
     void scrubFrameRequested(qint64 frameIndex);
     void scrubFinished(qint64 frameIndex);
+    void editFailed(const QString& reason);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -45,6 +50,10 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dragMoveEvent(QDragMoveEvent* event) override;
+    void dragLeaveEvent(QDragLeaveEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
 
@@ -61,12 +70,15 @@ private:
     QString clipName(const heisenberg::Clip& clip) const;
     QColor clipColor(heisenberg::ClipType type, bool missing) const;
     QString formatTimecode(qint64 frame) const;
+    QString mediaFromMime(const QMimeData* mime) const;
+    qint64 dropFrameAtX(double x) const;
+    bool canDropAt(const QPointF& point) const;
 
-    heisenberg::ProjectFile project_;
-    heisenberg::MediaManifest manifest_;
+    heisenberg::ui::EditorSession* session_ = nullptr;
     std::unordered_map<std::string, std::string> mediaNames_;
     std::unordered_set<std::string> missingMedia_;
-    QString packageDirectory_;
+    QString draggedMedia_;
+    qint64 dropFrame_ = 0;
     qint64 playbackFrameCount_ = 0;
     qint64 currentFrame_ = 0;
     double pixelsPerFrame_ = 4.0;

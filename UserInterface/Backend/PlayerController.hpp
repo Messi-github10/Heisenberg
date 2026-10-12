@@ -13,6 +13,8 @@ class VideoWidget;
 namespace heisenberg {
 namespace ui {
 
+class EditorSession;
+
 class PlayerController : public QObject, public heisenberg::IPreviewer::Listener {
     Q_OBJECT
 
@@ -26,7 +28,7 @@ class PlayerController : public QObject, public heisenberg::IPreviewer::Listener
                NOTIFY filterGraphPathChanged)
 
 public:
-    explicit PlayerController(QObject* parent = nullptr);
+    explicit PlayerController(EditorSession* session, QObject* parent = nullptr);
     ~PlayerController() override;
 
     bool    isPlaying()   const { return isPlaying_; }
@@ -36,6 +38,9 @@ public:
     bool    isSeekable()  const { return isSeekable_; }
     QString currentFile() const { return currentFile_; }
     QString filterGraphPath() const { return filterGraphPath_; }
+    bool previewingSource() const { return previewingSource_; }
+    void showTimeline(qint64 focusFrame = -1);
+    void previewAsset(const QString& mediaRef);
 
 public slots:
     void play();
@@ -74,6 +79,8 @@ signals:
     void currentFileChanged();
     void filterGraphPathChanged();
     void filterGraphLoadFailed(const QString& message);
+    void previewModeChanged(bool source, const QString& name);
+    void playbackFailed(const QString& message);
 
 private:
     void onStateChanged(heisenberg::IPreviewer::State state) override;
@@ -96,6 +103,12 @@ private:
     std::shared_ptr<std::atomic<bool>> previewerAlive_;
     VideoWidget* videoOutput_ = nullptr;
     bool shutdownDone_ = false;
+    EditorSession* session_;
+    bool previewingSource_ = false;
+    double timelineTime_ = 0.0;
+    double pendingPosition_ = -1.0;
+    bool scrubRequested_ = false;
+    qint64 pendingScrubFrame_ = -1;
 };
 
 } // namespace ui

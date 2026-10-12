@@ -142,6 +142,13 @@ public:
         }
     }
 
+    void openTimeline(const Timeline& timeline, const MediaManifest& manifest,
+                      const std::string& projectDir) override {
+        clearTimelineGraph();
+        lastFrame_.reset();
+        if (playback_) playback_->openTimeline(timeline, manifest, projectDir);
+    }
+
     void close() override {
         if (playback_) playback_->close();
         clearTimelineGraph();

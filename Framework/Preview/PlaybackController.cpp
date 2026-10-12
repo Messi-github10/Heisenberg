@@ -521,8 +521,17 @@ bool PlaybackController::openPlaylist(const std::string& jsonPath) {
         return false;
     }
     const auto packageUtf8 = packageDir.u8string();
+    return openTimeline(*active, manifest,
+        std::string(reinterpret_cast<const char*>(packageUtf8.c_str()), packageUtf8.size()));
+}
+
+bool PlaybackController::openTimeline(const Timeline& timeline, const MediaManifest& manifest,
+                                      const std::string& projectDir) {
+    close();
+    impl_->usingProducer = true;
+    std::string error;
     impl_->timeline = std::make_unique<TimelineProducer>(
-        *active, manifest, std::string(reinterpret_cast<const char*>(packageUtf8.c_str()), packageUtf8.size()));
+        timeline, manifest, projectDir);
     impl_->timeline->setHardwareDecode(impl_->hardwareDecode);
     if (!impl_->timeline->open(&error)) {
         impl_->timeline.reset();
@@ -756,7 +765,7 @@ void PlaybackController::seek(double seconds) {
     }
 
     auto alive = impl_->alive;
-    impl_->decodeThread.onOpened = [this, alive, wasPlaying](double dur, double fps,
+    auto completeSeek = [this, alive, wasPlaying](double dur, double fps,
                                                               bool /*seekable*/,
                                                               FramePtr keyFrame,
                                                               uint64_t generation,
@@ -801,6 +810,9 @@ void PlaybackController::seek(double seconds) {
             }
         });
     };
+
+    if (impl_->usingProducer) impl_->producerPump.onOpened = std::move(completeSeek);
+    else impl_->decodeThread.onOpened = std::move(completeSeek);
 
     setState(Loading);
     if (impl_->usingProducer) {

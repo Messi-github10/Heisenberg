@@ -7,6 +7,9 @@
 
 namespace heisenberg {
 
+struct Timeline;
+class MediaManifest;
+
 class IPreviewer {
 public:
     enum class State {
@@ -46,6 +49,8 @@ public:
     virtual void resize(int w, int h) = 0;
     virtual void open(const std::string& path) = 0;
     virtual void openPlaylist(const std::string& path) = 0;
+    virtual void openTimeline(const Timeline& timeline, const MediaManifest& manifest,
+                              const std::string& projectDir) = 0;
     virtual void close() = 0;
     virtual void play() = 0;
     virtual void pause() = 0;

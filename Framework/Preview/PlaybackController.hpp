@@ -12,6 +12,9 @@ struct AVFrame;
 
 namespace heisenberg {
 
+struct Timeline;
+class MediaManifest;
+
 struct TimelineFilter {
     std::string id;
     std::string graph;
@@ -47,6 +50,8 @@ public:
 
     bool open(const std::string& filePath);
     bool openPlaylist(const std::string& jsonPath);
+    bool openTimeline(const Timeline& timeline, const MediaManifest& manifest,
+                      const std::string& projectDir);
     void close();
 
     void play();

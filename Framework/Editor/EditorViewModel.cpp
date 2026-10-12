@@ -1,6 +1,7 @@
 #include "EditorViewModel.hpp"
 
-#include <Preview/Producer.hpp>
+#include <Common/Stream.hpp>
+#include <MultiMedia/Demuxer/DemuxerFactory.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -266,17 +267,29 @@ bool EditorViewModel::importMedia(const std::string& path, std::string* error) {
     if (!std::filesystem::exists(std::filesystem::u8path(path), code)) {
         setError(error, "media file was not found"); return false;
     }
-    Profile profile = Profile::fromTimelineSettings(timeline->width, timeline->height, timeline->fps);
-    Producer producer(profile);
-    producer.setHardwareDecode(impl_->hardwareDecode);
-    if (!producer.open(path, error)) return false;
+    auto demux = demuxer::createDemuxer();
+    if (demux->open(path) < 0) { setError(error, "Cannot read media file"); return false; }
+    const Stream* video = nullptr;
+    bool hasAudio = false;
+    for (const auto& stream : demux->streams()) {
+        if (stream.isVideo() && !video) video = &stream;
+        if (stream.isAudio()) hasAudio = true;
+    }
+    if (!video) { setError(error, "Only video files are supported for import"); return false; }
+    const double duration = demux->duration();
+    if (!std::isfinite(duration) || duration <= 0.0) {
+        setError(error, "Media duration is unavailable"); return false;
+    }
     MediaManifestEntry entry;
     entry.id = makeUuid();
     entry.name = utf8(std::filesystem::u8path(path).stem());
     entry.type = ClipType::Video;
     entry.source = {MediaSource::Kind::External, path};
-    entry.duration = static_cast<double>(producer.length()) / timeline->fps;
-    entry.sourceFPS = static_cast<double>(timeline->fps);
+    entry.duration = duration;
+    entry.sourceWidth = video->codec.width;
+    entry.sourceHeight = video->codec.height;
+    if (video->codec.fps() > 0.0) entry.sourceFPS = video->codec.fps();
+    entry.hasAudio = hasAudio;
     return impl_->manifest.add(std::move(entry), error);
 }
 

@@ -1,4 +1,5 @@
 #include "MainWidget/TimelineWidget.hpp"
+#include "Backend/EditorSession.hpp"
 
 #include <QDir>
 #include <QFile>
@@ -9,6 +10,13 @@
 #include <QPainterPath>
 #include <QStringList>
 #include <QWheelEvent>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDragLeaveEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include <algorithm>
 #include <array>
@@ -46,86 +54,47 @@ TimelineWidget::TimelineWidget(QWidget* parent)
     setFocusPolicy(Qt::StrongFocus);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     setAttribute(Qt::WA_OpaquePaintEvent);
+    setAcceptDrops(true);
 }
 
-bool TimelineWidget::loadPackage(const QString& packageDirectory, QString* error) {
-    const QDir directory(packageDirectory);
-    QFile projectFile(directory.filePath("project.json"));
-    if (!projectFile.open(QIODevice::ReadOnly)) {
-        if (error) *error = tr("Cannot open %1").arg(projectFile.fileName());
-        return false;
-    }
+void TimelineWidget::setSession(heisenberg::ui::EditorSession* session) {
+    session_ = session;
+    connect(session_, &heisenberg::ui::EditorSession::projectChanged, this, [this]() {
+        selectedClipId_.clear();
+        hoveredClipId_.clear();
+        currentFrame_ = 0;
+        scrollOffset_ = 0.0;
+        pixelsPerFrame_ = 4.0;
+        const auto& project = session_->editor().project();
+        if (const auto* active = timeline(); active && project.viewStates) {
+            const auto state = project.viewStates->find(active->id);
+            if (state != project.viewStates->end()) {
+                pixelsPerFrame_ = state->second.zoomScale;
+                scrollOffset_ = state->second.scrollOffsetX;
+            }
+        }
+        refreshProject();
+    });
+    connect(session_, &heisenberg::ui::EditorSession::mediaChanged, this, &TimelineWidget::refreshProject);
+    connect(session_, &heisenberg::ui::EditorSession::timelineChanged, this, [this](qint64 frame) {
+        refreshProject();
+        if (frame >= 0) setCurrentFrame(frame);
+    });
+    refreshProject();
+}
 
-    heisenberg::ProjectFile project;
-    std::string codecError;
-    const QByteArray projectBytes = projectFile.readAll();
-    if (!heisenberg::ProjectCodec::decode(
-            std::string(projectBytes.constData(), static_cast<size_t>(projectBytes.size())),
-            project, &codecError)) {
-        if (error) *error = QString::fromUtf8(codecError.c_str());
-        return false;
-    }
-
-    heisenberg::MediaManifest manifest;
-    QFile manifestFile(directory.filePath("media.json"));
-    if (!manifestFile.open(QIODevice::ReadOnly)) {
-        if (error) *error = tr("Cannot open %1").arg(manifestFile.fileName());
-        return false;
-    }
-    const QByteArray manifestBytes = manifestFile.readAll();
-    if (!manifest.loadFromJson(
-            std::string(manifestBytes.constData(), static_cast<size_t>(manifestBytes.size())),
-            &codecError)) {
-        if (error) *error = QString::fromUtf8(codecError.c_str());
-        return false;
-    }
-
-    project_ = std::move(project);
-    manifest_ = std::move(manifest);
-    packageDirectory_ = directory.absolutePath();
-    playbackFrameCount_ = 0;
-    currentFrame_ = 0;
-    selectedClipId_.clear();
-    hoveredClipId_.clear();
+void TimelineWidget::refreshProject() {
     mediaNames_.clear();
     missingMedia_.clear();
-
-    for (const auto& entry : manifest_.entries()) {
-        mediaNames_.emplace(entry.id, entry.name);
-        QString mediaPath;
-        if (entry.source.kind == heisenberg::MediaSource::Kind::External) {
-            mediaPath = QString::fromUtf8(entry.source.path.c_str());
-        } else {
-            mediaPath = directory.filePath(QString::fromUtf8(entry.source.path.c_str()));
-        }
-        if (!QFileInfo::exists(mediaPath)) missingMedia_.insert(entry.id);
-    }
-
-    if (const auto* active = timeline(); active && project_.viewStates) {
-        const auto state = project_.viewStates->find(active->id);
-        if (state != project_.viewStates->end()) {
-            if (std::isfinite(state->second.zoomScale))
-                pixelsPerFrame_ = std::clamp(state->second.zoomScale, kMinZoom, kMaxZoom);
-            if (std::isfinite(state->second.scrollOffsetX))
-                scrollOffset_ = std::max(0.0, state->second.scrollOffsetX);
-            currentFrame_ = std::max<qint64>(0, state->second.playheadFrame);
+    if (session_) {
+        for (const auto& asset : session_->editor().assets()) {
+            mediaNames_.emplace(asset.id, asset.name);
+            if (asset.missing) missingMedia_.insert(asset.id);
         }
     }
+    playbackFrameCount_ = timeline() ? timeline()->totalFrames() : 0;
+    currentFrame_ = std::clamp<qint64>(currentFrame_, 0, std::max<qint64>(0, contentFrameCount() - 1));
     clampView();
-    update();
-    return true;
-}
-
-void TimelineWidget::clearProject() {
-    project_ = {};
-    manifest_ = {};
-    mediaNames_.clear();
-    missingMedia_.clear();
-    packageDirectory_.clear();
-    selectedClipId_.clear();
-    hoveredClipId_.clear();
-    currentFrame_ = 0;
-    scrollOffset_ = 0.0;
     update();
 }
 
@@ -175,7 +144,7 @@ QSize TimelineWidget::sizeHint() const { return QSize(960, 210); }
 QSize TimelineWidget::minimumSizeHint() const { return QSize(480, 112); }
 
 const heisenberg::Timeline* TimelineWidget::timeline() const {
-    return project_.activeTimeline();
+    return session_ ? session_->editor().activeTimeline() : nullptr;
 }
 
 qint64 TimelineWidget::contentFrameCount() const {
@@ -426,6 +395,23 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
         painter.restore();
     }
 
+    if (!draggedMedia_.isEmpty() && session_ && active) {
+        const auto* entry = session_->editor().manifest().find(draggedMedia_.toStdString());
+        if (entry) {
+            const double ghostWidth = std::max(2.0, entry->duration * active->fps * pixelsPerFrame_);
+            painter.save();
+            painter.setClipRect(QRectF(kHeaderWidth, 0, width() - kHeaderWidth, height()));
+            painter.setPen(QPen(QColor(255, 255, 255, 220), 1, Qt::DashLine));
+            painter.setBrush(QColor(70, 149, 191, 95));
+            painter.drawRoundedRect(QRectF(xForFrame(dropFrame_), kRulerHeight + 3,
+                                           ghostWidth, kDefaultTrackHeight - 6), 4, 4);
+            painter.setPen(kPrimaryText);
+            painter.drawText(QPointF(xForFrame(dropFrame_) + 6, kRulerHeight + 60),
+                             tr("Overwrite at %1").arg(formatTimecode(dropFrame_)));
+            painter.restore();
+        }
+    }
+
     const double playheadX = xForFrame(currentFrame_);
     if (playheadX >= kHeaderWidth && playheadX <= width()) {
         painter.save();
@@ -522,4 +508,85 @@ void TimelineWidget::leaveEvent(QEvent* event) {
     unsetCursor();
     update();
     QWidget::leaveEvent(event);
+}
+
+QString TimelineWidget::mediaFromMime(const QMimeData* mime) const {
+    if (!session_ || !mime->hasFormat(heisenberg::ui::kMediaMimeType)) return {};
+    const auto data = QJsonDocument::fromJson(mime->data(heisenberg::ui::kMediaMimeType)).object();
+    if (data.value("session").toString() != session_->token()) return {};
+    const QString ref = data.value("mediaRef").toString();
+    const auto* entry = session_->editor().manifest().find(ref.toStdString());
+    if (!entry || entry->type != heisenberg::ClipType::Video ||
+        session_->editor().resolver().isMissing(entry->id)) return {};
+    return ref;
+}
+
+qint64 TimelineWidget::dropFrameAtX(double x) const {
+    // A placement can extend the timeline, unlike playback scrubbing.
+    const double frame = std::floor((x - kHeaderWidth + scrollOffset_) / pixelsPerFrame_);
+    return static_cast<qint64>(std::clamp(frame, 0.0,
+        static_cast<double>(std::numeric_limits<qint64>::max() / 4)));
+}
+
+bool TimelineWidget::canDropAt(const QPointF& point) const {
+    const auto* active = timeline();
+    if (!active || point.x() < kHeaderWidth || point.y() < kRulerHeight) return false;
+    if (session_->editor().compatibility().level == heisenberg::CompatibilityLevel::Unsupported)
+        return false;
+    const double laneHeight = active->tracks.empty()
+        ? height() - kRulerHeight : boundedTrackHeight(active->tracks.front().displayHeight);
+    return point.y() < kRulerHeight + laneHeight;
+}
+
+void TimelineWidget::dragEnterEvent(QDragEnterEvent* event) {
+    if (!mediaFromMime(event->mimeData()).isEmpty()) {
+        const auto report = session_->editor().compatibility();
+        if (report.level == heisenberg::CompatibilityLevel::Unsupported) {
+            QStringList messages;
+            for (const auto& message : report.messages)
+                messages << QString::fromUtf8(message.c_str());
+            emit editFailed(messages.join('\n'));
+            event->ignore();
+            return;
+        }
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    }
+}
+
+void TimelineWidget::dragMoveEvent(QDragMoveEvent* event) {
+    const QString ref = mediaFromMime(event->mimeData());
+    if (!ref.isEmpty() && canDropAt(event->position())) {
+        draggedMedia_ = ref;
+        dropFrame_ = dropFrameAtX(event->position().x());
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    } else {
+        draggedMedia_.clear();
+        event->ignore();
+    }
+    update();
+}
+
+void TimelineWidget::dragLeaveEvent(QDragLeaveEvent* event) {
+    draggedMedia_.clear();
+    update();
+    event->accept();
+}
+
+void TimelineWidget::dropEvent(QDropEvent* event) {
+    draggedMedia_.clear();
+    const QString ref = mediaFromMime(event->mimeData());
+    if (!ref.isEmpty() && canDropAt(event->position())) {
+        const auto result = session_->placeMedia(ref, dropFrameAtX(event->position().x()));
+        if (result.changed()) {
+            if (!result.affectedIds.empty()) selectedClipId_ = result.affectedIds.back();
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+        } else {
+            emit editFailed(QString::fromUtf8(result.message.c_str()));
+            event->ignore();
+        }
+    } else event->ignore();
+    update();
 }

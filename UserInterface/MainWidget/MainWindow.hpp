@@ -11,18 +11,23 @@ class TimelineWidget;
 class QAction;
 class QLabel;
 class QCloseEvent;
+class MediaPoolWidget;
+namespace heisenberg::ui { class EditorSession; }
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget* parent = nullptr);
+    explicit MainWindow(heisenberg::ui::EditorSession* session, QWidget* parent = nullptr);
     ~MainWindow() override = default;
 
     VideoWidget* videoWidget() const { return videoWidget_; }
     TimelineWidget* timelineWidget() const { return timelineWidget_; }
     bool hardwareDecodeEnabled() const;
     bool loadProjectPackage(const QString& path, bool showError = true);
+    bool saveProjectPackage(bool saveAs = false);
+    void setSourcePreview(bool source, const QString& name);
+    void showError(const QString& message);
 
 signals:
     void aboutToClose();
@@ -31,9 +36,10 @@ signals:
     void scrubFrameRequested(qint64 frameIndex);
     void scrubFinished(qint64 frameIndex);
     void openFileRequested(const QString& path);
-    void openPlaylistRequested(const QString& path);
     void openFilterGraphRequested(const QString& path);
     void hardwareDecodeToggled(bool enabled);
+    void previewMediaRequested(const QString& mediaRef);
+    void timelinePreviewRequested();
 
 public slots:
     void setDuration(double seconds);
@@ -49,6 +55,8 @@ protected:
 private:
     void setupUi();
     void setupConnections();
+    bool confirmDiscardChanges();
+    void updateProjectTitle();
 
     VideoWidget* videoWidget_ = nullptr;
     TimelineWidget* timelineWidget_ = nullptr;
@@ -56,6 +64,10 @@ private:
     QAction* hardwareDecodeAction_ = nullptr;
     QLabel* timelineTitleLabel_ = nullptr;
     QLabel* timeLabel_ = nullptr;
+    QLabel* previewLabel_ = nullptr;
+    heisenberg::ui::EditorSession* session_;
+    MediaPoolWidget* mediaPool_ = nullptr;
+    bool sourcePreview_ = false;
 
     double duration_ = 0.0;
     qint64 frameCount_ = 0;

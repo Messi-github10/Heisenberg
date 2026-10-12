@@ -1,4 +1,5 @@
 #include "PlayerController.hpp"
+#include "EditorSession.hpp"
 
 #include <MainWidget/VideoWidget.hpp>
 #include <Utiles/Logger.hpp>
@@ -10,10 +11,11 @@
 namespace heisenberg {
 namespace ui {
 
-PlayerController::PlayerController(QObject* parent)
+PlayerController::PlayerController(EditorSession* session, QObject* parent)
     : QObject(parent)
     , previewer_(heisenberg::IPreviewer::create())
-    , previewerAlive_(std::make_shared<std::atomic<bool>>(true)) {
+    , previewerAlive_(std::make_shared<std::atomic<bool>>(true))
+    , session_(session) {
     previewer_->setTaskDispatcher(
         [this, alive = previewerAlive_](heisenberg::IPreviewer::Task task) {
             QMetaObject::invokeMethod(this, [alive, task = std::move(task)]() mutable {
@@ -22,6 +24,8 @@ PlayerController::PlayerController(QObject* parent)
             }, Qt::QueuedConnection);
         });
     previewer_->setListener(this);
+    connect(session_, &EditorSession::projectChanged, this, [this]() { timelineTime_ = 0.0; });
+    connect(session_, &EditorSession::timelineChanged, this, &PlayerController::showTimeline);
 }
 
 PlayerController::~PlayerController() {
@@ -81,18 +85,50 @@ bool PlayerController::getFilterParameter(const QString& filterId,
 
 bool PlayerController::openFile(const QString& path) {
     if (!previewer_) return false;
-    previewer_->open(path.toStdString());
+    pendingPosition_ = -1.0;
+    scrubRequested_ = false;
+    previewingSource_ = true;
+    emit previewModeChanged(true, path);
+    previewer_->open(path.toUtf8().toStdString());
     currentFile_ = path;
     emit currentFileChanged();
     return true;
 }
 
 bool PlayerController::openPlaylist(const QString& path) {
-    if (!previewer_) return false;
-    previewer_->openPlaylist(path.toStdString());
-    currentFile_ = path;
-    emit currentFileChanged();
-    return true;
+    QString error;
+    if (session_->loadPackage(path, &error)) return true;
+    emit playbackFailed(error);
+    return false;
+}
+
+void PlayerController::previewAsset(const QString& mediaRef) {
+    const auto asset = session_->editor().resolver().asset(mediaRef.toStdString());
+    if (asset.missing) { emit playbackFailed(tr("This media is offline.")); return; }
+    openFile(QString::fromUtf8(asset.path.c_str()));
+}
+
+void PlayerController::showTimeline(qint64 focusFrame) {
+    if (!previewer_) return;
+    const auto* timeline = session_->editor().activeTimeline();
+    previewingSource_ = false;
+    emit previewModeChanged(false, timeline ? QString::fromUtf8(timeline->name.c_str()) : tr("Timeline"));
+    scrubRequested_ = false;
+    pendingScrubFrame_ = -1;
+    if (focusFrame >= 0 && timeline) timelineTime_ = static_cast<double>(focusFrame) / timeline->fps;
+    pendingPosition_ = timelineTime_;
+    currentTime_ = timelineTime_;
+    duration_ = timeline ? static_cast<double>(timeline->totalFrames()) / timeline->fps : 0.0;
+    frameCount_ = timeline ? timeline->totalFrames() : 0;
+    emit durationChanged();
+    emit frameCountChanged();
+    emit currentTimeChanged();
+    if (!timeline || timeline->totalFrames() == 0) {
+        pendingPosition_ = -1.0;
+        closeFile();
+        return;
+    }
+    previewer_->openTimeline(*timeline, session_->editor().manifest(), session_->editor().projectDir());
 }
 
 void PlayerController::closeFile() {
@@ -115,12 +151,28 @@ void PlayerController::play()            { if (previewer_) previewer_->play(); }
 void PlayerController::pause()           { if (previewer_) previewer_->pause(); }
 void PlayerController::togglePlayPause() { if (previewer_) previewer_->togglePlayPause(); }
 void PlayerController::seek(double s)    { if (previewer_) previewer_->seek(s); }
-void PlayerController::beginScrub()      { if (previewer_) previewer_->beginScrub(); }
+void PlayerController::beginScrub() {
+    if (!previewer_) return;
+    if (previewingSource_) showTimeline();
+    scrubRequested_ = true;
+    if (previewer_->state() != IPreviewer::State::Loading) previewer_->beginScrub();
+}
 void PlayerController::scrubToFrame(qint64 frame) {
-    if (previewer_) previewer_->scrubToFrame(frame);
+    if (!previewer_) return;
+    pendingScrubFrame_ = frame;
+    if (previewer_->state() == IPreviewer::State::Loading) return;
+    previewer_->scrubToFrame(frame);
 }
 void PlayerController::endScrub(qint64 frame) {
-    if (previewer_) previewer_->endScrub(frame);
+    scrubRequested_ = false;
+    pendingScrubFrame_ = -1;
+    if (!previewer_) return;
+    if (previewer_->state() == IPreviewer::State::Loading) {
+        const auto* timeline = session_->editor().activeTimeline();
+        if (timeline) pendingPosition_ = static_cast<double>(frame) / timeline->fps;
+        return;
+    }
+    previewer_->endScrub(frame);
 }
 void PlayerController::stepForward(int n)  { if (previewer_) previewer_->stepForward(n); }
 void PlayerController::stepBackward(int n) { if (previewer_) previewer_->stepBackward(n); }
@@ -139,10 +191,21 @@ void PlayerController::onStateChanged(heisenberg::IPreviewer::State state) {
         isSeekable_ = seekable;
         emit isSeekableChanged();
     }
+    if (state == IPreviewer::State::Paused && pendingPosition_ >= 0.0) {
+        const double position = pendingPosition_;
+        pendingPosition_ = -1.0;
+        previewer_->seek(position);
+        return;
+    }
+    if (state == IPreviewer::State::Paused && scrubRequested_) {
+        previewer_->beginScrub();
+        if (pendingScrubFrame_ >= 0) previewer_->scrubToFrame(pendingScrubFrame_);
+    }
 }
 
 void PlayerController::onPositionChanged(double seconds) {
     currentTime_ = seconds;
+    if (!previewingSource_) timelineTime_ = seconds;
     emit currentTimeChanged();
 }
 
@@ -166,6 +229,9 @@ void PlayerController::onEndOfStream() {
 
 void PlayerController::onOpenFailed(const std::string& reason) {
     LOG_ERROR("PlayerController: open failed — {}", reason);
+    pendingPosition_ = -1.0;
+    scrubRequested_ = false;
+    emit playbackFailed(QString::fromUtf8(reason.c_str()));
 }
 
 void PlayerController::onFilterGraphChanged(const std::string& path) {
