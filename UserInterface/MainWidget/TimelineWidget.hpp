@@ -46,6 +46,7 @@ public:
     int framesPerSecond() const;
 
 signals:
+    void timelineActivated();
     void scrubStarted();
     void scrubFrameRequested(qint64 frameIndex);
     void scrubFinished(qint64 frameIndex);

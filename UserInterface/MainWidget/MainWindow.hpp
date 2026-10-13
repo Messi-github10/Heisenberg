@@ -11,6 +11,7 @@ class TimelineWidget;
 class MediaInfoPanel;
 class QAction;
 class QLabel;
+class QSlider;
 class QCloseEvent;
 class MediaPoolWidget;
 namespace heisenberg::ui { class EditorSession; }
@@ -37,6 +38,7 @@ signals:
     void scrubStarted();
     void scrubFrameRequested(qint64 frameIndex);
     void scrubFinished(qint64 frameIndex);
+    void sourceSeekRequested(double seconds);
     void openFileRequested(const QString& path);
     void openFilterGraphRequested(const QString& path);
     void hardwareDecodeToggled(bool enabled);
@@ -64,9 +66,10 @@ private:
     TimelineWidget* timelineWidget_ = nullptr;
     QAction* playPauseAction_ = nullptr;
     QAction* hardwareDecodeAction_ = nullptr;
-    QLabel* timelineTitleLabel_ = nullptr;
-    QLabel* timeLabel_ = nullptr;
-    QLabel* previewLabel_ = nullptr;
+    QLabel* currentTimeLabel_ = nullptr;
+    QLabel* durationLabel_ = nullptr;
+    QWidget* sourceControls_ = nullptr;
+    QSlider* sourceSlider_ = nullptr;
     heisenberg::ui::EditorSession* session_;
     MediaPoolWidget* mediaPool_ = nullptr;
     MediaInfoPanel* mediaInfo_ = nullptr;

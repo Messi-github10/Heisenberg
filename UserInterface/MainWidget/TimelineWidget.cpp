@@ -564,6 +564,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
         return;
     }
     setFocus(Qt::MouseFocusReason);
+    emit timelineActivated();
     cancelInteraction();
     const auto hit = clipAt(event->position());
     if (!hit.empty()) {

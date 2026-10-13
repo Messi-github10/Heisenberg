@@ -166,6 +166,10 @@ MediaPoolWidget::MediaPoolWidget(heisenberg::ui::EditorSession* session, QWidget
     connect(importButton, &QPushButton::clicked, this, &MediaPoolWidget::chooseFiles);
     connect(list_, &MediaListWidget::filesDropped, this, &MediaPoolWidget::importFiles);
     connect(search_, &QLineEdit::textChanged, this, &MediaPoolWidget::filterMedia);
+    connect(list_, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) {
+        if (!item->data(kOfflineRole).toBool() && item->data(kSupportedRole).toBool())
+            emit mediaActivated();
+    });
     connect(list_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* item) {
         if (item->data(kOfflineRole).toBool()) emit importFailed(tr("This media is offline."));
         else if (!item->data(kSupportedRole).toBool()) emit importFailed(tr("Preview currently supports video media."));

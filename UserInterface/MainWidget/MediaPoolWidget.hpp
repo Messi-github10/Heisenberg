@@ -36,8 +36,10 @@ public:
     ~MediaPoolWidget() override;
     void importFiles(const QStringList& paths);
     void chooseFiles();
+    QString selectedMedia() const;
 signals:
     void previewRequested(const QString& mediaRef);
+    void mediaActivated();
     void placeRequested(const QString& mediaRef);
     void importFailed(const QString& message);
 private:
@@ -45,7 +47,6 @@ private:
     void filterMedia();
     void startNextThumbnail();
     void finishThumbnail(bool success);
-    QString selectedMedia() const;
 
     heisenberg::ui::EditorSession* session_;
     MediaListWidget* list_;

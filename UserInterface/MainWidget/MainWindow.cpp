@@ -23,10 +23,13 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QHBoxLayout>
+#include <QSlider>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QStyle>
 #include <QToolBar>
+#include <QToolButton>
 #include <QWidget>
 #include <QVBoxLayout>
 
@@ -129,29 +132,9 @@ void MainWindow::setupUi() {
     toolbar->addAction(openVideoAction);
     toolbar->addAction(saveAction);
     toolbar->addAction(splitAction);
-    toolbar->addSeparator();
-    toolbar->addAction(playPauseAction_);
-    auto* returnAction = toolbar->addAction(tr("Timeline Preview"));
-    returnAction->setToolTip(tr("Return from source preview to the timeline (Esc)"));
-
-    auto* leftSpacer = new QWidget(toolbar);
-    leftSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    toolbar->addWidget(leftSpacer);
-
-    timelineTitleLabel_ = new QLabel(tr("Timeline"), toolbar);
-    timelineTitleLabel_->setStyleSheet(
-        "font-weight: 600; color: rgba(255, 255, 255, 0.90); padding: 0 8px;");
-    toolbar->addWidget(timelineTitleLabel_);
-    timeLabel_ = new QLabel("00:00 / 00:00", toolbar);
-    timeLabel_->setMinimumWidth(112);
-    timeLabel_->setAlignment(Qt::AlignCenter);
-    timeLabel_->setStyleSheet(
-        "font-family: Consolas, monospace; color: #f29933; padding: 0 8px;");
-    toolbar->addWidget(timeLabel_);
-
-    auto* rightSpacer = new QWidget(toolbar);
-    rightSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    toolbar->addWidget(rightSpacer);
+    auto* toolSpacer = new QWidget(toolbar);
+    toolSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    toolbar->addWidget(toolSpacer);
     auto* toolbarZoomOut = toolbar->addAction("-");
     toolbarZoomOut->setToolTip(tr("Zoom Out"));
     auto* toolbarFit = toolbar->addAction(tr("Fit"));
@@ -174,13 +157,46 @@ void MainWindow::setupUi() {
     auto* previewLayout = new QVBoxLayout(previewPanel);
     previewLayout->setContentsMargins(0, 0, 0, 0);
     previewLayout->setSpacing(0);
-    previewLabel_ = new QLabel(tr("Timeline Preview"), previewPanel);
-    previewLabel_->setMargin(8);
-    previewLabel_->setStyleSheet("background: transparent; font-size: 11px;");
-    previewLayout->addWidget(previewLabel_);
     videoWidget_ = new VideoWidget(previewPanel);
     videoWidget_->setMinimumSize(320, 180);
     previewLayout->addWidget(videoWidget_, 1);
+
+    sourceControls_ = new QWidget(previewPanel);
+    auto* sourceLayout = new QVBoxLayout(sourceControls_);
+    sourceLayout->setContentsMargins(12, 8, 12, 8);
+    sourceLayout->setSpacing(4);
+    sourceSlider_ = new QSlider(Qt::Horizontal, sourceControls_);
+    sourceSlider_->setRange(0, 1000);
+    sourceSlider_->setEnabled(false);
+    sourceSlider_->hide();
+    sourceLayout->addWidget(sourceSlider_);
+
+    auto* transport = new QHBoxLayout;
+    transport->setContentsMargins(0, 0, 0, 0);
+    currentTimeLabel_ = new QLabel("00:00", sourceControls_);
+    durationLabel_ = new QLabel("00:00", sourceControls_);
+    const QString timeStyle = "font-family: Consolas, monospace; color: rgba(255,255,255,0.82);";
+    currentTimeLabel_->setStyleSheet(timeStyle);
+    durationLabel_->setStyleSheet(timeStyle);
+    durationLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    auto* playButton = new QToolButton(sourceControls_);
+    playButton->setDefaultAction(playPauseAction_);
+    playButton->setAutoRaise(true);
+    playButton->setIconSize(QSize(18, 18));
+    transport->addWidget(currentTimeLabel_);
+    transport->addStretch(1);
+    transport->addWidget(playButton);
+    transport->addStretch(1);
+    transport->addWidget(durationLabel_);
+    sourceLayout->addLayout(transport);
+    previewLayout->addWidget(sourceControls_);
+    connect(sourceSlider_, &QSlider::sliderPressed, this, [this]() {
+        if (isPlaying_) emit playPauseClicked();
+    });
+    connect(sourceSlider_, &QSlider::sliderReleased, this, [this]() {
+        if (duration_ <= 0.0) return;
+        emit sourceSeekRequested(duration_ * sourceSlider_->value() / 1000.0);
+    });
     mediaInfo_ = new MediaInfoPanel(workspace);
     workspace->addWidget(new RoundedPanel(mediaPool_, workspace));
     workspace->addWidget(new RoundedPanel(previewPanel, workspace));
@@ -241,7 +257,6 @@ void MainWindow::setupUi() {
     connect(timelinePreviewAction, &QAction::triggered, this, [this]() {
         if (!timelineWidget_->cancelInteraction()) emit timelinePreviewRequested();
     });
-    connect(returnAction, &QAction::triggered, this, &MainWindow::timelinePreviewRequested);
 }
 
 void MainWindow::setupConnections() {
@@ -251,6 +266,13 @@ void MainWindow::setupConnections() {
     connect(timelineWidget_, &TimelineWidget::scrubFrameRequested,
             this, &MainWindow::scrubFrameRequested);
     connect(timelineWidget_, &TimelineWidget::scrubFinished, this, &MainWindow::scrubFinished);
+    connect(mediaPool_, &MediaPoolWidget::mediaActivated, this, [this]() {
+        const QString ref = mediaPool_->selectedMedia();
+        if (!ref.isEmpty()) emit previewMediaRequested(ref);
+    });
+    connect(timelineWidget_, &TimelineWidget::timelineActivated, this, [this]() {
+        if (sourcePreview_) emit timelinePreviewRequested();
+    });
     connect(mediaPool_, &MediaPoolWidget::previewRequested, this, &MainWindow::previewMediaRequested);
     connect(mediaPool_, &MediaPoolWidget::placeRequested, this, [this](const QString& ref) {
         const auto result = session_->placeMedia(ref, timelineWidget_->currentFrame());
@@ -273,7 +295,6 @@ bool MainWindow::loadProjectPackage(const QString& path, bool showError) {
         if (showError) QMessageBox::critical(this, tr("Cannot Open Project"), error);
         return false;
     }
-    timelineTitleLabel_->setText(timelineWidget_->timelineName());
     updateProjectTitle();
     statusBar()->showMessage(tr("Loaded %1").arg(QDir::toNativeSeparators(path)), 3500);
     return true;
@@ -281,6 +302,7 @@ bool MainWindow::loadProjectPackage(const QString& path, bool showError) {
 
 void MainWindow::setDuration(double seconds) {
     duration_ = std::max(0.0, seconds);
+    if (sourceSlider_) sourceSlider_->setEnabled(sourcePreview_ && duration_ > 0.0);
 }
 
 void MainWindow::setFrameCount(qint64 frameCount) {
@@ -303,7 +325,14 @@ void MainWindow::setCurrentTime(double seconds) {
             .arg(total / 60, 2, 10, QChar('0'))
             .arg(total % 60, 2, 10, QChar('0'));
     };
-    timeLabel_->setText(format(seconds) + " / " + format(duration_));
+    currentTimeLabel_->setText(format(seconds));
+    durationLabel_->setText(format(duration_));
+    if (sourcePreview_ && sourceSlider_ && !sourceSlider_->isSliderDown() && duration_ > 0.0) {
+        const int position = std::clamp(
+            static_cast<int>(std::llround(std::clamp(seconds / duration_, 0.0, 1.0) * 1000.0)),
+            0, 1000);
+        sourceSlider_->setValue(position);
+    }
 }
 
 void MainWindow::setPlayingState(bool playing) {
@@ -328,7 +357,6 @@ void MainWindow::updateProjectTitle() {
         : QFileInfo(QString::fromUtf8(root.c_str())).completeBaseName();
     setWindowTitle(name + "[*] - Heisenberg");
     setWindowModified(session_->isDirty());
-    timelineTitleLabel_->setText(timelineWidget_->timelineName());
 }
 
 bool MainWindow::saveProjectPackage(bool saveAs) {
@@ -361,9 +389,13 @@ bool MainWindow::confirmDiscardChanges() {
 }
 
 void MainWindow::setSourcePreview(bool source, const QString& name) {
+    Q_UNUSED(name);
     sourcePreview_ = source;
-    previewLabel_->setText(source ? tr("Source Preview  /  %1").arg(QFileInfo(name).fileName())
-                                  : tr("Timeline Preview  /  %1").arg(name));
+    if (sourceSlider_) {
+        sourceSlider_->setVisible(source);
+        sourceSlider_->setEnabled(source && duration_ > 0.0);
+        if (!source) sourceSlider_->setValue(0);
+    }
     if (!source) showFileInfo(QString());
 }
 
