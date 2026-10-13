@@ -1,6 +1,6 @@
 set(QT_PATH "D:/Environment/Qt/6.8.3/msvc2022_64" CACHE PATH "Qt 6 installation root")
 list(APPEND CMAKE_PREFIX_PATH "${QT_PATH}")
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent)
 
 file(GLOB_RECURSE UI_SOURCES *.cpp *.hpp)
 
@@ -22,7 +22,7 @@ target_include_directories(MainApp PRIVATE
 target_link_libraries(MainApp PRIVATE
     HeisenbergFramework HeisenbergUtiles
     spdlog ffmpeg libplacebo vulkan volk
-    Qt6::Core Qt6::Gui Qt6::Widgets
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Concurrent
 )
 
 if(MSVC)
@@ -57,6 +57,13 @@ if(WIN32)
     add_custom_command(TARGET MainApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/Dependence/LibPlacebo/windows/bin/libplacebo-365.dll"
+            "$<TARGET_FILE_DIR:MainApp>"
+    )
+
+    add_custom_command(TARGET MainApp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/Dependence/MediaInfo/bin/MediaInfo.dll"
+            "$<IF:$<CONFIG:Debug>,${QT_PATH}/bin/Qt6Concurrentd.dll,${QT_PATH}/bin/Qt6Concurrent.dll>"
             "$<TARGET_FILE_DIR:MainApp>"
     )
 

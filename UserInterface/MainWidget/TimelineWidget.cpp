@@ -33,7 +33,7 @@ constexpr double kMinZoom = 0.05;
 constexpr double kMaxZoom = 40.0;
 constexpr double kTrimHandleWidth = 6.0;
 
-const QColor kBase(24, 25, 28);
+const QColor kBase(30, 31, 35);
 const QColor kSurface(30, 31, 35);
 const QColor kRaised(38, 39, 44);
 const QColor kProminent(48, 49, 55);

@@ -130,6 +130,7 @@ add_dependencies(HeisenbergFramework HeisenbergShaderSourceContractTests)
 
 target_include_directories(HeisenbergFramework PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_SOURCE_DIR}/Dependence/MediaInfo/include
     ${CMAKE_CURRENT_LIST_DIR}/MultiMedia/Video/Renderer/FilterGraph/Common
     ${CMAKE_CURRENT_LIST_DIR}/MultiMedia/Video/Renderer/FilterGraph/Vulkan
     ${CMAKE_CURRENT_LIST_DIR}/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Filters

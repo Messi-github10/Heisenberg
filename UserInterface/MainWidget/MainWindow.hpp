@@ -8,6 +8,7 @@
 
 class VideoWidget;
 class TimelineWidget;
+class MediaInfoPanel;
 class QAction;
 class QLabel;
 class QCloseEvent;
@@ -27,6 +28,7 @@ public:
     bool loadProjectPackage(const QString& path, bool showError = true);
     bool saveProjectPackage(bool saveAs = false);
     void setSourcePreview(bool source, const QString& name);
+    void showFileInfo(const QString& path);
     void showError(const QString& message);
 
 signals:
@@ -67,7 +69,9 @@ private:
     QLabel* previewLabel_ = nullptr;
     heisenberg::ui::EditorSession* session_;
     MediaPoolWidget* mediaPool_ = nullptr;
+    MediaInfoPanel* mediaInfo_ = nullptr;
     bool sourcePreview_ = false;
+    quint64 probeSerial_ = 0;
 
     double duration_ = 0.0;
     qint64 frameCount_ = 0;

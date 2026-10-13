@@ -2,6 +2,8 @@
 #include <QFileInfo>
 #include <QString>
 
+#include <Backend/MediaInfoProbe.hpp>
+
 #include <MainWidget/MainWindow.hpp>
 #include <Backend/PlayerController.hpp>
 #include <Backend/EditorSession.hpp>
@@ -15,6 +17,7 @@ int main(int argc, char* argv[])
 
     QApplication app(argc, argv);
     app.setApplicationName("Heisenberg");
+    qRegisterMetaType<heisenberg::ui::MediaInfoReport>();
 
     heisenberg::Logger::Init();
 
@@ -61,6 +64,11 @@ int main(int argc, char* argv[])
     QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::filterGraphLoadFailed,
                      &mainWindow, &MainWindow::setFilterGraphError);
 
+    QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::currentFileChanged,
+                     &mainWindow, [&]() {
+                         if (playerCtrl.previewingSource())
+                             mainWindow.showFileInfo(playerCtrl.currentFile());
+                     });
     QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::isPlayingChanged,
                      &mainWindow, [&]() { mainWindow.setPlayingState(playerCtrl.isPlaying()); });
     QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::currentTimeChanged,

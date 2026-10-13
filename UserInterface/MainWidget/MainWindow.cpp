@@ -6,10 +6,15 @@
 #include "MainWidget/TimelineWidget.hpp"
 #include "MainWidget/VideoWidget.hpp"
 #include "MainWidget/MediaPoolWidget.hpp"
+#include "MainWidget/MediaInfoPanel.hpp"
+#include "MainWidget/RoundedPanel.hpp"
 #include "Backend/EditorSession.hpp"
+#include "Backend/MediaInfoProbe.hpp"
 
 #include <QAction>
 #include <QCloseEvent>
+#include <QFutureWatcher>
+#include <QtConcurrent>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -55,17 +60,18 @@ void MainWindow::setupUi() {
         QToolButton { border: 0; padding: 5px; min-width: 24px; min-height: 24px; }
         QToolButton:hover { background: #303137; }
         QToolButton:pressed, QToolButton:checked { background: #26272c; }
-        QSplitter::handle { background: #08090a; height: 4px; }
+        QSplitter::handle { background: #121316; }
         QStatusBar { border-top: 1px solid rgba(255, 255, 255, 0.08); }
-        QWidget#mediaPool { background: #1e1f23; color: #ececef; }
-        QWidget#mediaPool QLabel, QWidget#previewPanel QLabel { color: #d8d9df; }
-        QListWidget { background: #1e1f23; border: 0; outline: 0; }
+        QWidget#workspace, QWidget#editorSplit { background: #121316; }
+        QWidget#mediaPool, QWidget#mediaInfo, QWidget#previewPanel { background: transparent; color: #ececef; }
+        QWidget#mediaPool QLabel, QWidget#previewPanel QLabel, QWidget#mediaInfo QLabel { color: #d8d9df; }
+        QListWidget { background: transparent; border: 0; outline: 0; }
         QLineEdit { background: #18191c; border: 1px solid #37383e; border-radius: 4px;
                     padding: 6px; color: #ececef; }
         QPushButton { background: #303137; border: 1px solid #41434a; border-radius: 4px;
                       padding: 5px 8px; color: #ececef; }
         QPushButton:hover { background: #3b3d44; }
-        QScrollBar:vertical { background: #1e1f23; width: 10px; }
+        QScrollBar:vertical { background: transparent; width: 10px; }
         QScrollBar::handle:vertical { background: #494b53; min-height: 24px; border-radius: 4px; }
     )");
 
@@ -155,10 +161,13 @@ void MainWindow::setupUi() {
     toolbar->addAction(snapAction);
 
     auto* splitter = new QSplitter(Qt::Vertical, this);
+    splitter->setObjectName("editorSplit");
     splitter->setChildrenCollapsible(false);
-    splitter->setHandleWidth(4);
+    splitter->setHandleWidth(1);
     auto* workspace = new QSplitter(Qt::Horizontal, splitter);
+    workspace->setObjectName("workspace");
     workspace->setChildrenCollapsible(false);
+    workspace->setHandleWidth(1);
     mediaPool_ = new MediaPoolWidget(session_, workspace);
     auto* previewPanel = new QWidget(workspace);
     previewPanel->setObjectName("previewPanel");
@@ -167,20 +176,23 @@ void MainWindow::setupUi() {
     previewLayout->setSpacing(0);
     previewLabel_ = new QLabel(tr("Timeline Preview"), previewPanel);
     previewLabel_->setMargin(8);
-    previewLabel_->setStyleSheet("background: #1e1f23; font-size: 11px;");
+    previewLabel_->setStyleSheet("background: transparent; font-size: 11px;");
     previewLayout->addWidget(previewLabel_);
     videoWidget_ = new VideoWidget(previewPanel);
     videoWidget_->setMinimumSize(320, 180);
     previewLayout->addWidget(videoWidget_, 1);
-    workspace->addWidget(mediaPool_);
-    workspace->addWidget(previewPanel);
-    workspace->setSizes({330, 870});
+    mediaInfo_ = new MediaInfoPanel(workspace);
+    workspace->addWidget(new RoundedPanel(mediaPool_, workspace));
+    workspace->addWidget(new RoundedPanel(previewPanel, workspace));
+    workspace->addWidget(new RoundedPanel(mediaInfo_, workspace));
+    workspace->setSizes({330, 610, 280});
     workspace->setStretchFactor(0, 0);
     workspace->setStretchFactor(1, 1);
+    workspace->setStretchFactor(2, 0);
     timelineWidget_ = new TimelineWidget(splitter);
     timelineWidget_->setSession(session_);
     splitter->addWidget(workspace);
-    splitter->addWidget(timelineWidget_);
+    splitter->addWidget(new RoundedPanel(timelineWidget_, splitter));
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 0);
     splitter->setSizes({520, 200});
@@ -352,6 +364,28 @@ void MainWindow::setSourcePreview(bool source, const QString& name) {
     sourcePreview_ = source;
     previewLabel_->setText(source ? tr("Source Preview  /  %1").arg(QFileInfo(name).fileName())
                                   : tr("Timeline Preview  /  %1").arg(name));
+    if (!source) showFileInfo(QString());
+}
+
+void MainWindow::showFileInfo(const QString& path) {
+    const quint64 serial = ++probeSerial_;
+    if (path.isEmpty()) {
+        mediaInfo_->showTimelineHint();
+        return;
+    }
+    mediaInfo_->showLoading(path);
+    auto* watcher = new QFutureWatcher<heisenberg::ui::MediaInfoReport>(this);
+    connect(watcher, &QFutureWatcher<heisenberg::ui::MediaInfoReport>::finished, this,
+            [this, watcher, serial]() {
+        const auto report = watcher->result();
+        watcher->deleteLater();
+        if (serial != probeSerial_) return;
+        mediaInfo_->showProbe(report);
+    });
+    watcher->setFuture(QtConcurrent::run([path]() {
+        const auto probe = heisenberg::mediainfo::probeFile(path.toUtf8().toStdString());
+        return heisenberg::ui::presentProbe(probe, path);
+    }));
 }
 
 void MainWindow::showError(const QString& message) {
