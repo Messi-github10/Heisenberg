@@ -54,9 +54,7 @@ struct PlaybackController::Impl {
     PlaybackController::TaskDispatcher dispatcher;
     std::shared_ptr<bool> alive{std::make_shared<bool>(true)};
 
-    // ── Consumer thread (MLT-style: dedicated thread + audio-clock master) ──
-    std::thread             consumerThread;
-    std::atomic<bool>       consumerRunning_{false};
+    // The render thread owns the clock. These only pause and wake it.
     std::atomic<bool>       playing_{false};
     std::mutex              consumerMutex;
     std::condition_variable consumerCv;
@@ -181,135 +179,103 @@ struct PlaybackController::Impl {
         });
     }
 
-    void runConsumer(PlaybackController* ctrl) {
-        using Clock     = std::chrono::steady_clock;
-        using MilliSec  = std::chrono::duration<double, std::milli>;
+    std::chrono::steady_clock::time_point wallStart = std::chrono::steady_clock::now();
+    double wallOffsetMs = 0.0;
 
-        auto       startTime   = Clock::now();
-        double     pauseOffset = 0.0;     // ms, used in wall-clock mode
+    void resetWallClock() {
+        wallOffsetMs = std::max(0.0, lastDisplayedPtsMs);
+        wallStart = std::chrono::steady_clock::now();
+    }
 
-        LOG_INFO("consumer: thread started, streamingAudio={} audioSpec={}Hz {}ch",
-                 hasAudio, audioSpec.sampleRate, audioSpec.channels);
-
-        while (consumerRunning_.load(std::memory_order_acquire)) {
-
-            // ── Handle paused state ──────────────────────────
-            if (!playing_.load(std::memory_order_acquire)) {
-                std::unique_lock<std::mutex> lock(consumerMutex);
-                consumerCv.wait(lock, [this] {
-                    return !consumerRunning_.load(std::memory_order_acquire)
-                        || playing_.load(std::memory_order_acquire);
-                });
-                if (!consumerRunning_.load(std::memory_order_acquire)) break;
-
-                pauseOffset = lastDisplayedPtsMs;
-                startTime   = Clock::now();
-            }
-
-            // ── Master clock ─────────────────────────────────
-            double masterTimeMs;
-            if (hasAudio && !audioEof.load(std::memory_order_acquire)) {
-                // Audio clock: sample position → milliseconds.
-                int64_t pos = audioSamplePos.load(std::memory_order_relaxed);
-                masterTimeMs = static_cast<double>(pos)
-                             / static_cast<double>(audioSpec.sampleRate) * 1000.0;
-            } else {
-                // Wall clock (no audio track, or decoder EOF —
-                // audio clock may stall before video frames finish).
-                auto elapsed = std::chrono::duration_cast<MilliSec>(Clock::now() - startTime);
-                masterTimeMs = pauseOffset + elapsed.count();
-            }
-
-            // ── Peek next frame ──────────────────────────────
-            auto front = frameBuffer.peekFront();
-            if (!front.has_value()) {
-                consumerEmpty.fetch_add(1, std::memory_order_relaxed);
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
-                continue;
-            }
-
-            const uint64_t expectedGeneration =
-                activeGeneration.load(std::memory_order_acquire);
-            if (front->metadata.generation != expectedGeneration) {
-                MediaFrame stale;
-                frameBuffer.popWithTimeout(stale,
-                                           std::chrono::milliseconds(5));
-                continue;
-            }
-
-            if (front->isSignal()) {
-                if (hasAudio &&
-                    !audioEof.load(std::memory_order_acquire)) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-                    continue;
-                }
-                MediaFrame eofFrame;
-                if (frameBuffer.popWithTimeout(eofFrame,
-                                               std::chrono::milliseconds(5))) {
-                    LOG_INFO("consumer: received EOF for generation {}",
-                             expectedGeneration);
-                    finishPlayback(ctrl);
-                }
-                continue;
-            }
-
-            FramePtr frontFrame = front->videoFrame();
-            if (!frontFrame) {
-                MediaFrame unsupported;
-                frameBuffer.popWithTimeout(unsupported,
-                                           std::chrono::milliseconds(5));
-                continue;
-            }
-
-            const double pts = frameTimeMilliseconds(*frontFrame);
-            const double delay = pts - masterTimeMs;
-
-            // ── Frame in the future → sleep until just before it's due ──
-            if (delay > 2.0) {
-                auto sleepUs = static_cast<int64_t>((delay - 2.0) * 1000.0);
-                if (sleepUs > 0) {
-                    std::unique_lock<std::mutex> lock(consumerMutex);
-                    consumerCv.wait_for(lock, std::chrono::microseconds(sleepUs), [this] {
-                        return !consumerRunning_.load(std::memory_order_acquire)
-                            || !playing_.load(std::memory_order_acquire);
-                    });
-                }
-                continue;
-            }
-
-            // ── Frame is due → pop and display ───────────────
-            MediaFrame mediaFrame;
-            if (!frameBuffer.popWithTimeout(mediaFrame,
-                                            std::chrono::milliseconds(5))) {
-                continue;   // buffer cleared (seek) between peek and pop
-            }
-            FramePtr frame = mediaFrame.videoFrame();
-            if (!frame) continue;
-
-            {
-                int64_t n = consumerFrames.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (n % 60 == 0) {
-                    int64_t empty = consumerEmpty.load(std::memory_order_relaxed);
-                    LOG_INFO("consumer: frame#{} pts={:.0f}ms master={:.0f}ms delay={:.1f}ms "
-                             "emptyWaits={}",
-                             n, pts, masterTimeMs, delay, empty);
-                }
-            }
-
-            if (pts != lastDisplayedPtsMs) {
-                lastDisplayedPtsMs = pts;
-                auto keepAlive = alive;
-                ctrl->dispatch([ctrl, f = std::move(frame), pts, keepAlive]() mutable {
-                    if (!*keepAlive) return;
-                    if (ctrl->onFrameDecoded) ctrl->onFrameDecoded(std::move(f));
-                    if (ctrl->onPositionChanged) ctrl->onPositionChanged(pts / 1000.0);
-                });
-            }
+    double masterTimeMs() const {
+        if (hasAudio && !audioEof.load(std::memory_order_acquire)) {
+            const int64_t pos = audioSamplePos.load(std::memory_order_relaxed);
+            return static_cast<double>(pos)
+                / static_cast<double>(audioSpec.sampleRate) * 1000.0;
         }
-
-        LOG_INFO("consumer: thread stopped");
+        const auto elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - wallStart);
+        return wallOffsetMs + elapsed.count();
     }
 };
+
+PlaybackController::Pump PlaybackController::pumpFrame(int& waitMs) {
+    waitMs = 2;
+    if (!impl_->playing_.load(std::memory_order_acquire)) return Pump::Paused;
+
+    auto front = impl_->frameBuffer.peekFront();
+    if (!front.has_value()) {
+        impl_->consumerEmpty.fetch_add(1, std::memory_order_relaxed);
+        return Pump::Wait;
+    }
+
+    const uint64_t expectedGeneration =
+        impl_->activeGeneration.load(std::memory_order_acquire);
+    if (front->metadata.generation != expectedGeneration) {
+        MediaFrame stale;
+        impl_->frameBuffer.popWithTimeout(stale, std::chrono::milliseconds(0));
+        waitMs = 0;
+        return Pump::Presented;
+    }
+
+    if (front->isSignal()) {
+        if (impl_->hasAudio && !impl_->audioEof.load(std::memory_order_acquire))
+            return Pump::Wait;
+        MediaFrame eofFrame;
+        if (impl_->frameBuffer.popWithTimeout(eofFrame, std::chrono::milliseconds(0))) {
+            LOG_INFO("render: received EOF for generation {}", expectedGeneration);
+            impl_->finishPlayback(this);
+        }
+        return Pump::Ended;
+    }
+
+    FramePtr frontFrame = front->videoFrame();
+    if (!frontFrame) {
+        MediaFrame unsupported;
+        impl_->frameBuffer.popWithTimeout(unsupported, std::chrono::milliseconds(0));
+        waitMs = 0;
+        return Pump::Presented;
+    }
+
+    const double pts = frameTimeMilliseconds(*frontFrame);
+    const double master = impl_->masterTimeMs();
+    const double delay = pts - master;
+    if (delay > 2.0) {
+        waitMs = static_cast<int>(delay);
+        return Pump::Wait;
+    }
+
+    MediaFrame mediaFrame;
+    if (!impl_->frameBuffer.popWithTimeout(mediaFrame, std::chrono::milliseconds(0)))
+        return Pump::Wait;
+    FramePtr frame = mediaFrame.videoFrame();
+    if (!frame) return Pump::Wait;
+
+    const int64_t shown = impl_->consumerFrames.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (shown % 60 == 0) {
+        LOG_INFO("render: frame#{} pts={:.0f}ms master={:.0f}ms delay={:.1f}ms",
+                 shown, pts, master, delay);
+    }
+    if (pts != impl_->lastDisplayedPtsMs) {
+        impl_->lastDisplayedPtsMs = pts;
+        if (onFrameDecoded) onFrameDecoded(frame);
+        auto keepAlive = impl_->alive;
+        dispatch([this, seconds = pts / 1000.0, keepAlive] {
+            if (!*keepAlive) return;
+            if (onPositionChanged) onPositionChanged(seconds);
+        });
+    }
+    waitMs = 0;
+    return Pump::Presented;
+}
+
+void PlaybackController::pauseClock() {
+    {
+        std::lock_guard<std::mutex> lock(impl_->consumerMutex);
+        impl_->playing_.store(false, std::memory_order_release);
+    }
+    impl_->consumerCv.notify_all();
+}
 
 // ============================================================================
 //  PlaybackController
@@ -533,7 +499,7 @@ bool PlaybackController::openTimeline(const Timeline& timeline, const MediaManif
     impl_->timeline = std::make_unique<TimelineProducer>(
         timeline, manifest, projectDir);
     impl_->timeline->setHardwareDecode(impl_->hardwareDecode);
-    if (!impl_->timeline->open(&error)) {
+    if (!impl_->timeline->prepare(&error)) {
         impl_->timeline.reset();
         impl_->usingProducer = false;
         setState(Idle);
@@ -621,16 +587,11 @@ bool PlaybackController::openTimeline(const Timeline& timeline, const MediaManif
 void PlaybackController::close() {
     *impl_->alive = false;
 
-    // Stop consumer thread
     {
         std::lock_guard<std::mutex> lock(impl_->consumerMutex);
-        impl_->consumerRunning_ = false;
-        impl_->playing_         = false;
+        impl_->playing_ = false;
     }
     impl_->consumerCv.notify_all();
-    if (impl_->consumerThread.joinable()) {
-        impl_->consumerThread.join();
-    }
     impl_->consumerFrames.store(0, std::memory_order_relaxed);
     impl_->consumerEmpty.store(0, std::memory_order_relaxed);
     impl_->activeGeneration.store(0, std::memory_order_relaxed);
@@ -700,23 +661,11 @@ void PlaybackController::play() {
         }
     }
 
-    // One consumer thread per open file; EOF only puts it back to sleep.
-    bool startConsumer = false;
+    impl_->resetWallClock();
     {
         std::lock_guard<std::mutex> lock(impl_->consumerMutex);
-        impl_->playing_ = true;
-        if (!impl_->consumerRunning_.load(std::memory_order_acquire)) {
-            impl_->consumerRunning_ = true;
-            startConsumer = true;
-        }
+        impl_->playing_.store(true, std::memory_order_release);
     }
-
-    if (startConsumer) {
-        impl_->consumerThread = std::thread([this] {
-            impl_->runConsumer(this);
-        });
-    }
-
     impl_->consumerCv.notify_all();
     setState(Playing);
 
@@ -802,7 +751,6 @@ void PlaybackController::seek(double seconds) {
             impl_->pendingPlayAfterSeek = false;
 
             if (shouldResume) {
-                // Wake the persistent consumer after seek completes.
                 setState(Paused);
                 play();
             } else {

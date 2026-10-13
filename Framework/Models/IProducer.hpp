@@ -40,6 +40,7 @@ public:
     virtual int64_t position() const = 0;
     virtual bool seekable() const = 0;
     virtual bool seek(int64_t position) = 0;
+    virtual bool open(std::string* /*error*/ = nullptr) { return true; }
     virtual ProducerFrame getFrame(int64_t position) = 0;
     virtual bool isBlank() const { return false; }
 };

@@ -12,6 +12,7 @@
 #include <dxgi1_2.h>
 
 #include <cstring>
+#include <mutex>
 
 namespace heisenberg::renderer {
 
@@ -47,6 +48,8 @@ D3D11Context::~D3D11Context() {
 }
 
 void D3D11Context::createDevice() {
+    static std::mutex creation;
+    std::lock_guard<std::mutex> lock(creation);
     if (impl_->created) return;
     impl_->release();
 

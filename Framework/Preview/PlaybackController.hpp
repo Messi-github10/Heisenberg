@@ -76,6 +76,17 @@ public:
     void setHardwareDecode(bool enabled);
     const std::vector<TimelineFilter>& timelineFilters() const;
 
+    enum class Pump {
+        Presented,
+        Wait,
+        Paused,
+        Ended
+    };
+
+    // Called only by the render thread. Paused and Ended also carry the wait.
+    Pump pumpFrame(int& waitMs);
+    void pauseClock();
+
     std::function<void(State)> onStateChanged;
     std::function<void(FramePtr)> onFrameDecoded;
     std::function<void(double)> onPositionChanged;

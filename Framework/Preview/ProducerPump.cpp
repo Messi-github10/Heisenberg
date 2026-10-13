@@ -215,6 +215,11 @@ void ProducerPump::processCommand(Cmd cmd) {
             if (onOpenFailed) onOpenFailed("Playlist producer is missing");
             break;
         }
+        std::string openError;
+        if (!producer_->open(&openError)) {
+            if (onOpenFailed) onOpenFailed(openError.empty() ? "Timeline open failed" : openError);
+            break;
+        }
 
         const ProducerFrame first = pull(0);
         lastVideo_ = stampVideo(first);

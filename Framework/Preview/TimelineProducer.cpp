@@ -43,13 +43,23 @@ void TimelineProducer::setHardwareDecode(bool enabled) {
     for (auto& [id, producer] : impl_->producers) producer->setHardwareDecode(enabled);
 }
 
-bool TimelineProducer::open(std::string* error) {
+bool TimelineProducer::prepare(std::string* error) {
     const ProjectCompatibility compatibility = compatibilityFor(impl_->timeline);
     if (compatibility.level == CompatibilityLevel::Unsupported) {
         if (error) *error = compatibility.messages.empty() ? "unsupported timeline" : compatibility.messages.front();
         return false;
     }
     impl_->warnings = compatibility.messages;
+    return true;
+}
+
+bool TimelineProducer::open(std::string* error) {
+    const ProjectCompatibility compatibility = compatibilityFor(impl_->timeline);
+    if (compatibility.level == CompatibilityLevel::Unsupported) {
+        if (error) *error = compatibility.messages.empty()
+            ? "unsupported timeline" : compatibility.messages.front();
+        return false;
+    }
     impl_->producers.clear();
     const Track* track = impl_->track();
     if (!track) return true;

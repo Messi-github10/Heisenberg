@@ -563,7 +563,7 @@ bool D3D11VulkanInterop::init(ID3D11Device* device,
 
     struct pl_log_params logParams{};
     logParams.log_cb = d3d11LibplaceboLog;
-    logParams.log_level = PL_LOG_ALL;
+    logParams.log_level = PL_LOG_WARN;
     impl_->log = pl_log_create(PL_API_VER, &logParams);
     if (!impl_->log) return false;
 

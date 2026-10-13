@@ -1,6 +1,7 @@
 #include "IPreviewer.hpp"
 
 #include "PlaybackController.hpp"
+#include "MultiMedia/Video/Renderer/RenderThread.hpp"
 #include "Platform/D3D11/D3D11Context.hpp"
 #include "Platform/GpuContext.hpp"
 #include "Platform/Vulkan/VulkanContext.hpp"
@@ -41,6 +42,16 @@ public:
     Previewer() {
         playback_ = std::make_unique<ctrl::PlaybackController>();
         bindPlayback();
+        render_.start([this] {
+            if (!playback_) return 2;
+            int waitMs = 2;
+            const auto pump = playback_->pumpFrame(waitMs);
+            if (pump == ctrl::PlaybackController::Pump::Paused
+                || pump == ctrl::PlaybackController::Pump::Ended) {
+                return -1;
+            }
+            return waitMs;
+        });
     }
 
     ~Previewer() override {
@@ -61,66 +72,23 @@ public:
             LOG_ERROR("IPreviewer: native surface is null");
             return;
         }
-        if (!ensureGpu() || !gpuCtx_ || !playback_) return;
-
-        detachWindow();
-
         const int width = w > 0 ? w : 640;
         const int height = h > 0 ? h : 360;
-
-        auto& vkCtx = renderer::VulkanContext::instance();
-        auto swapChain = std::make_unique<renderer::SwapChain>();
-        if (!swapChain->initialize(gpuCtx_->plVulkan(), vkCtx.vkInstance(),
-                                   nativeSurface, width, height)) {
-            LOG_ERROR("IPreviewer: SwapChain initialization failed");
-            return;
-        }
-
-        presenter_ = std::make_unique<renderer::VideoPresenter>();
-        if (!presenter_->initialize(gpuCtx_->plGpu(), gpuCtx_->plVulkan(),
-                                    std::move(swapChain), width, height)) {
-            LOG_ERROR("IPreviewer: VideoPresenter initialization failed");
-            presenter_.reset();
-            return;
-        }
-
-        presenter_->setD3D11Device(
-            renderer::D3D11Context::instance().device(),
-            renderer::D3D11Context::instance().context());
-        presenter_->setOnResize([this](int width, int height) {
-            videoWidth_ = width;
-            videoHeight_ = height;
+        render_.postSync([this, nativeSurface, width, height] {
+            attachWindowOnRenderThread(nativeSurface, width, height);
         });
-        attachedGraph_ = nullptr;
-        if (!timelineGraph_ && !pendingTimelineGraph_.empty()) {
-            loadPlaylistFilters();
-        }
-        applyGraphForFrame(lastFrame_.get());
-
-        nativeSurface_ = nativeSurface;
-        videoWidth_ = width;
-        videoHeight_ = height;
-        LOG_INFO("IPreviewer: attached native surface 0x{:x} {}x{}",
-                 reinterpret_cast<uintptr_t>(nativeSurface), width, height);
     }
 
     void detachWindow() override {
-        if (presenter_) {
-            presenter_->setFilterGraph(nullptr, nullptr, nullptr);
-            presenter_->shutdown();
-            presenter_.reset();
-        }
-        nativeSurface_ = nullptr;
-        lastFrame_.reset();
-        attachedGraph_ = nullptr;
-        videoWidth_ = 0;
-        videoHeight_ = 0;
+        render_.postSync([this] { detachWindowOnRenderThread(); });
     }
 
     void resize(int w, int h) override {
-        if (!presenter_) return;
-        presenter_->resize(w, h);
-        presentCurrentFrame();
+        render_.post([this, w, h] {
+            if (!presenter_) return;
+            presenter_->resize(w, h);
+            presentCurrentFrame();
+        });
     }
 
     void open(const std::string& path) override {
@@ -159,14 +127,17 @@ public:
 
     void play() override {
         if (playback_) playback_->play();
+        render_.setPlaying(playback_ && playback_->isPlaying());
     }
 
     void pause() override {
         if (playback_) playback_->pause();
+        render_.setPlaying(false);
     }
 
     void togglePlayPause() override {
         if (playback_) playback_->togglePlayPause();
+        render_.setPlaying(playback_ && playback_->isPlaying());
     }
 
     void seek(double seconds) override {
@@ -206,13 +177,21 @@ public:
     }
 
     void openFilterGraph(const std::string& path) override {
-        std::string error;
-        if (!loadFilterGraph(path, &error)) {
-            LOG_ERROR("IPreviewer: filter graph load failed: {}", error);
-            if (listener_) listener_->onFilterGraphFailed(error);
-            return;
-        }
-        LOG_INFO("IPreviewer: loaded filter graph '{}'", path);
+        render_.postSync([this, path] {
+            std::string error;
+            if (!loadFilterGraph(path, &error)) {
+                LOG_ERROR("IPreviewer: filter graph load failed: {}", error);
+                if (dispatcher_) {
+                    dispatcher_([this, error] {
+                        if (listener_) listener_->onFilterGraphFailed(error);
+                    });
+                } else if (listener_) {
+                    listener_->onFilterGraphFailed(error);
+                }
+                return;
+            }
+            LOG_INFO("IPreviewer: loaded filter graph '{}'", path);
+        });
     }
 
     bool setNodeParameter(uint64_t nodeId,
@@ -223,10 +202,12 @@ public:
         patch[name] = value;
         if (!graphDocument_.updateParameter(nodeId, patch)) return false;
         const auto* node = findDocumentNode(nodeId);
-        if (!node || !filterGraph_->setParameters(nodeId, node->parameter)) {
-            return false;
-        }
-        presentCurrentFrame();
+        if (!node) return false;
+        const auto parameter = node->parameter;
+        render_.post([this, nodeId, parameter] {
+            if (!filterGraph_) return;
+            if (filterGraph_->setParameters(nodeId, parameter)) presentCurrentFrame();
+        });
         return true;
     }
 
@@ -268,12 +249,15 @@ public:
 
         listener_ = nullptr;
         if (playback_) playback_->close();
-        detachWindow();
-        clearTimelineGraph();
-        filterGraph_.reset();
-        graphDocument_ = {};
-        timelineGraph_.reset();
-        gpuCtx_.reset();
+        render_.postSync([this] {
+            detachWindowOnRenderThread();
+            clearTimelineGraph();
+            filterGraph_.reset();
+            graphDocument_ = {};
+            timelineGraph_.reset();
+            gpuCtx_.reset();
+        });
+        render_.stop();
         LOG_INFO("IPreviewer: GPU resources released");
     }
 
@@ -341,9 +325,6 @@ private:
             if (listener_) listener_->onStateChanged(toPreviewerState(state));
         };
         playback_->onFrameDecoded = [this](std::shared_ptr<AVFrame> frame) {
-            if (!timelineGraph_ && !pendingTimelineGraph_.empty()) {
-                loadPlaylistFilters();
-            }
             presentDecodedFrame(std::move(frame));
         };
         playback_->onPositionChanged = [this](double seconds) {
@@ -580,6 +561,58 @@ private:
         return nullptr;
     }
 
+    void attachWindowOnRenderThread(void* nativeSurface, int width, int height) {
+        if (!ensureGpu() || !gpuCtx_ || !playback_) return;
+        detachWindowOnRenderThread();
+
+        auto& vkCtx = renderer::VulkanContext::instance();
+        auto swapChain = std::make_unique<renderer::SwapChain>();
+        if (!swapChain->initialize(gpuCtx_->plVulkan(), vkCtx.vkInstance(),
+                                   nativeSurface, width, height)) {
+            LOG_ERROR("IPreviewer: SwapChain initialization failed");
+            return;
+        }
+
+        presenter_ = std::make_unique<renderer::VideoPresenter>();
+        if (!presenter_->initialize(gpuCtx_->plGpu(), gpuCtx_->plVulkan(),
+                                    std::move(swapChain), width, height)) {
+            LOG_ERROR("IPreviewer: VideoPresenter initialization failed");
+            presenter_.reset();
+            return;
+        }
+
+        presenter_->setD3D11Device(
+            renderer::D3D11Context::instance().device(),
+            renderer::D3D11Context::instance().context());
+        presenter_->setOnResize([this](int resizedWidth, int resizedHeight) {
+            videoWidth_ = resizedWidth;
+            videoHeight_ = resizedHeight;
+        });
+        attachedGraph_ = nullptr;
+        if (!timelineGraph_ && !pendingTimelineGraph_.empty()) loadPlaylistFilters();
+        applyGraphForFrame(lastFrame_.get());
+
+        nativeSurface_ = nativeSurface;
+        videoWidth_ = width;
+        videoHeight_ = height;
+        LOG_INFO("IPreviewer: attached native surface 0x{:x} {}x{}",
+                 reinterpret_cast<uintptr_t>(nativeSurface), width, height);
+    }
+
+    void detachWindowOnRenderThread() {
+        if (presenter_) {
+            presenter_->setFilterGraph(nullptr, nullptr, nullptr);
+            presenter_->shutdown();
+            presenter_.reset();
+        }
+        nativeSurface_ = nullptr;
+        lastFrame_.reset();
+        attachedGraph_ = nullptr;
+        videoWidth_ = 0;
+        videoHeight_ = 0;
+    }
+
+    renderer::RenderThread render_;
     TaskDispatcher dispatcher_;
     Listener* listener_ = nullptr;
     std::unique_ptr<ctrl::PlaybackController> playback_;

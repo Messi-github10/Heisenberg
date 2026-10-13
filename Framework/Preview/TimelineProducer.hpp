@@ -19,6 +19,7 @@ public:
     TimelineProducer(const TimelineProducer&) = delete;
     TimelineProducer& operator=(const TimelineProducer&) = delete;
 
+    bool prepare(std::string* error = nullptr);
     bool open(std::string* error = nullptr);
     void setHardwareDecode(bool enabled);
     const std::vector<std::string>& warnings() const;
