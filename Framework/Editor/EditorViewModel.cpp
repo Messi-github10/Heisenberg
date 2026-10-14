@@ -286,8 +286,8 @@ bool EditorViewModel::importMedia(const std::string& path, std::string* error) {
     entry.type = ClipType::Video;
     entry.source = {MediaSource::Kind::External, path};
     entry.duration = duration;
-    entry.sourceWidth = video->codec.width;
-    entry.sourceHeight = video->codec.height;
+    entry.sourceWidth = video->codec.width();
+    entry.sourceHeight = video->codec.height();
     if (video->codec.fps() > 0.0) entry.sourceFPS = video->codec.fps();
     entry.hasAudio = hasAudio;
     return impl_->manifest.add(std::move(entry), error);

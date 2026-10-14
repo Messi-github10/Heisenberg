@@ -85,20 +85,20 @@ int SoftwareDecoder::open(const Stream& stream) {
         return -3;
     }
 
-    impl_->ctx->width = stream.codec.width;
-    impl_->ctx->height = stream.codec.height;
+    impl_->ctx->width = stream.codec.width();
+    impl_->ctx->height = stream.codec.height();
     impl_->ctx->pix_fmt = AV_PIX_FMT_NONE;
     if (stream.isAudio()) {
-        impl_->ctx->sample_rate = stream.codec.sampleRate;
-        if (stream.codec.channels > 0) {
+        impl_->ctx->sample_rate = stream.codec.sampleRate();
+        if (stream.codec.channels() > 0) {
             av_channel_layout_default(&impl_->ctx->ch_layout,
-                                      stream.codec.channels);
+                                      stream.codec.channels());
         }
     }
 
-    impl_->ctx->time_base = {stream.codec.tbNum, stream.codec.tbDen};
+    impl_->ctx->time_base = {stream.codec.tbNum(), stream.codec.tbDen()};
     impl_->ctx->pkt_timebase = impl_->ctx->time_base;
-    impl_->ctx->framerate = {stream.codec.fpsNum, stream.codec.fpsDen};
+    impl_->ctx->framerate = {stream.codec.fpsNum(), stream.codec.fpsDen()};
     impl_->startTime_ = stream.startTime;
 
     if (stream.codec.extradata() && stream.codec.extradataSize() > 0) {

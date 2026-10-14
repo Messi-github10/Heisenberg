@@ -219,8 +219,8 @@ void DecodeThread::processCommand(Cmd cmd) {
                 audioDecoder_.reset();
                 audioStream_ = nullptr;
             } else {
-                audioSpec_.sampleRate = audioStream_->codec.sampleRate;
-                audioSpec_.channels = audioStream_->codec.channels;
+                audioSpec_.sampleRate = audioStream_->codec.sampleRate();
+                audioSpec_.channels = audioStream_->codec.channels();
                 audioSpec_.layout = defaultLayout(audioSpec_.channels);
                 if (!audioSpec_.valid()) {
                     LOG_WARN("DecodeThread: audio stream has an invalid format");
@@ -410,8 +410,8 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAt(double targetSeconds,
     if (!demuxContext_ || !videoDecoder_ || !videoStream_) return nullptr;
 
     AVRational sourceFrameRate = {
-        videoStream_->codec.fpsNum,
-        videoStream_->codec.fpsDen
+        videoStream_->codec.fpsNum(),
+        videoStream_->codec.fpsDen()
     };
     if (sourceFrameRate.num <= 0 || sourceFrameRate.den <= 0) {
         sourceFrameRate = {25, 1};
@@ -440,8 +440,8 @@ DecodeThread::FramePtr DecodeThread::decodeFrameAtFrame(
     if (!demuxContext_ || !videoDecoder_ || !videoStream_) return nullptr;
 
     AVRational sourceFrameRate = {
-        videoStream_->codec.fpsNum,
-        videoStream_->codec.fpsDen
+        videoStream_->codec.fpsNum(),
+        videoStream_->codec.fpsDen()
     };
     if (sourceFrameRate.num <= 0 || sourceFrameRate.den <= 0) {
         sourceFrameRate = {25, 1};
@@ -728,8 +728,8 @@ DecodeThread::FramePtr DecodeThread::receiveDecodedFrame(MediaFrame* signal) {
         lastDecodedFrameIndex_ = -1;
     } else {
         AVRational sourceFrameRate = {
-            videoStream_->codec.fpsNum,
-            videoStream_->codec.fpsDen
+            videoStream_->codec.fpsNum(),
+            videoStream_->codec.fpsDen()
         };
         if (sourceFrameRate.num <= 0 || sourceFrameRate.den <= 0) {
             sourceFrameRate = {25, 1};

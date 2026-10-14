@@ -45,8 +45,8 @@ std::string ffmpegError(int code) {
 }
 
 AVRational sourceFrameRate(const Stream& stream) {
-    if (stream.codec.fpsNum > 0 && stream.codec.fpsDen > 0) {
-        return {stream.codec.fpsNum, stream.codec.fpsDen};
+    if (stream.codec.fpsNum() > 0 && stream.codec.fpsDen() > 0) {
+        return {stream.codec.fpsNum(), stream.codec.fpsDen()};
     }
     return {25, 1};
 }

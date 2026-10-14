@@ -11,6 +11,7 @@ namespace heisenberg {
 
 class AudioFrame;
 class Packet;
+class VideoFrame;
 
 // A media item travelling through the demux/decode/filter pipeline.
 // The payload is type-safe; shared ownership supports queues and seek caches.
@@ -33,6 +34,7 @@ struct FrameMetadata {
 
 using PacketPtr = std::shared_ptr<const Packet>;
 using VideoFramePtr = std::shared_ptr<AVFrame>;
+using OwnedVideoFrame = std::shared_ptr<VideoFrame>;
 using AudioFramePtr = std::shared_ptr<AudioFrame>;
 using MediaPayload = std::variant<std::monostate, PacketPtr, VideoFramePtr,
                                   AudioFramePtr>;

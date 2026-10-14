@@ -4,10 +4,25 @@
 
 #pragma once
 
+#include "AudioSpec.hpp"
+#include "Rational.hpp"
+#include "VideoSpec.hpp"
+
 #include <cstdint>
 #include <vector>
 
 namespace heisenberg {
+
+struct VideoCodecParams {
+    VideoSpec spec;
+    int bitDepth = 0;
+};
+
+struct AudioCodecParams {
+    AudioSpec spec;
+    int bitDepth = 0;
+    int blockAlign = 0;
+};
 
 class CodecParams {
 public:
@@ -23,6 +38,9 @@ public:
 
     Type type = VIDEO;
     ID codecId = UNKNOWN;
+    Rational timeBase{1, 1};
+    VideoCodecParams video;
+    AudioCodecParams audio;
 
     const uint8_t *extradata() const { return extradata_.data(); }
     int extradataSize() const { return static_cast<int>(extradata_.size()); }
@@ -30,30 +48,27 @@ public:
         extradata_.assign(data, data + n);
     }
 
-    int width = 0;
-    int height = 0;
-    int fpsNum = 0;
-    int fpsDen = 1;
-    int sarNum = 1;
-    int sarDen = 1;
-
-    int sampleRate = 0;
-    int channels = 0;
-    int bitDepth = 0;
-    int blockAlign = 0;
-
-    int tbNum = 1;
-    int tbDen = 1;
+    int width() const { return video.spec.width; }
+    int height() const { return video.spec.height; }
+    int fpsNum() const { return video.spec.frameRate.numerator(); }
+    int fpsDen() const { return video.spec.frameRate.denominator(); }
+    int sarNum() const { return video.spec.sampleAspect.numerator(); }
+    int sarDen() const { return video.spec.sampleAspect.denominator(); }
+    int sampleRate() const { return audio.spec.sampleRate; }
+    int channels() const { return audio.spec.channels; }
+    int bitDepth() const { return isAudio() ? audio.bitDepth : video.bitDepth; }
+    int blockAlign() const { return audio.blockAlign; }
+    int tbNum() const { return timeBase.numerator(); }
+    int tbDen() const { return timeBase.denominator(); }
 
     double toSeconds(int64_t ts) const {
-        return static_cast<double>(ts) * tbNum / tbDen;
+        return timeBase.toDouble() * static_cast<double>(ts);
     }
     int64_t toTimestamp(double sec) const {
-        return static_cast<int64_t>(sec * tbDen / tbNum);
+        const double scale = timeBase.toDouble();
+        return scale == 0.0 ? 0 : static_cast<int64_t>(sec / scale);
     }
-    double fps() const {
-        return fpsDen ? static_cast<double>(fpsNum) / fpsDen : 0.0;
-    }
+    double fps() const { return video.spec.frameRate.toDouble(); }
 
     bool isVideo() const { return type == VIDEO; }
     bool isAudio() const { return type == AUDIO; }

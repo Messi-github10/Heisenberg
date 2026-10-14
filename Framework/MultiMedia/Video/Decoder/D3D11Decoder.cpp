@@ -116,8 +116,8 @@ int D3D11Decoder::open(const Stream& stream) {
 
     impl_->ctx = avcodec_alloc_context3(impl_->codec);
     if (!impl_->ctx) { impl_->close(); return -7; }
-    impl_->ctx->width = stream.codec.width;
-    impl_->ctx->height = stream.codec.height;
+    impl_->ctx->width = stream.codec.width();
+    impl_->ctx->height = stream.codec.height();
     impl_->ctx->pix_fmt = AV_PIX_FMT_NONE;
     // Hardware frames are held temporarily by the video queue, the UI
     // presentation callback and the D3D11/Vulkan interop ring.  The default
@@ -125,9 +125,9 @@ int D3D11Decoder::open(const Stream& stream) {
     // small for that ownership model and results in "Static surface pool
     // size exceeded" after the first few frames.
     impl_->ctx->extra_hw_frames = 32;
-    impl_->ctx->time_base = {stream.codec.tbNum, stream.codec.tbDen};
+    impl_->ctx->time_base = {stream.codec.tbNum(), stream.codec.tbDen()};
     impl_->ctx->pkt_timebase = impl_->ctx->time_base;
-    impl_->ctx->framerate = {stream.codec.fpsNum, stream.codec.fpsDen};
+    impl_->ctx->framerate = {stream.codec.fpsNum(), stream.codec.fpsDen()};
     impl_->startTime = stream.startTime;
     if (stream.codec.extradata() && stream.codec.extradataSize() > 0) {
         impl_->ctx->extradata = static_cast<uint8_t*>(
@@ -138,15 +138,15 @@ int D3D11Decoder::open(const Stream& stream) {
         impl_->ctx->extradata_size = stream.codec.extradataSize();
     }
 
-    const AVPixelFormat softwareFormat = stream.codec.bitDepth >= 10
+    const AVPixelFormat softwareFormat = stream.codec.bitDepth() >= 10
         ? AV_PIX_FMT_P010 : AV_PIX_FMT_NV12;
     AVBufferRef* framesRef = av_hwframe_ctx_alloc(impl_->hwDeviceCtx);
     if (!framesRef) { impl_->close(); return -9; }
     auto* framesContext = reinterpret_cast<AVHWFramesContext*>(framesRef->data);
     framesContext->format = AV_PIX_FMT_D3D11;
     framesContext->sw_format = softwareFormat;
-    framesContext->width = stream.codec.width;
-    framesContext->height = stream.codec.height;
+    framesContext->width = stream.codec.width();
+    framesContext->height = stream.codec.height();
     // Keep a fixed array texture (required by D3D11VA), but make it large
     // enough for decoder reordering plus queued/in-flight presentation frames.
     framesContext->initial_pool_size = 48;

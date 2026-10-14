@@ -176,31 +176,30 @@ CodecParams Demuxer::avstreamToCodecparams(const AVStream *avstream) {
                             static_cast<size_t>(codecPar->extradata_size));
     }
 
-    params.width = codecPar->width;
-    params.height = codecPar->height;
+    params.video.spec.width = codecPar->width;
+    params.video.spec.height = codecPar->height;
 
     AVRational fps = avstream->avg_frame_rate;
     if (fps.num <= 0 || fps.den <= 0) {
         fps = avstream->r_frame_rate;
     }
-    params.fpsNum = fps.num;
-    params.fpsDen = (fps.den > 0) ? fps.den : 1;
+    params.video.spec.frameRate = Rational(fps.num, fps.den > 0 ? fps.den : 1);
 
     AVRational sar = codecPar->sample_aspect_ratio;
     if (sar.num <= 0 || sar.den <= 0) {
         sar.num = 1;
         sar.den = 1;
     }
-    params.sarNum = sar.num;
-    params.sarDen = sar.den;
+    params.video.spec.sampleAspect = Rational(sar.num, sar.den);
 
-    params.sampleRate = codecPar->sample_rate;
-    params.channels = codecPar->ch_layout.nb_channels;
-    params.bitDepth = codecPar->bits_per_raw_sample;
-    params.blockAlign = codecPar->block_align;
+    params.audio.spec.sampleRate = codecPar->sample_rate;
+    params.audio.spec.channels = codecPar->ch_layout.nb_channels;
+    params.video.bitDepth = codecPar->bits_per_raw_sample;
+    params.audio.bitDepth = codecPar->bits_per_raw_sample;
+    params.audio.blockAlign = codecPar->block_align;
 
-    params.tbNum = avstream->time_base.num;
-    params.tbDen = avstream->time_base.den;
+    params.timeBase = Rational(avstream->time_base.num, avstream->time_base.den);
+    params.video.spec.timeBase = params.timeBase;
 
     return params;
 }
