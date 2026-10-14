@@ -110,7 +110,8 @@ void PlayerController::previewAsset(const QString& mediaRef) {
 
 void PlayerController::showTimeline(qint64 focusFrame) {
     if (!previewer_) return;
-    const auto* timeline = session_->editor().activeTimeline();
+    const auto snapshot = session_->snapshot();
+    const auto* timeline = snapshot.activeTimeline();
     previewingSource_ = false;
     emit previewModeChanged(false, timeline ? QString::fromUtf8(timeline->name.c_str()) : tr("Timeline"));
     scrubRequested_ = false;
@@ -128,7 +129,7 @@ void PlayerController::showTimeline(qint64 focusFrame) {
         closeFile();
         return;
     }
-    previewer_->openTimeline(*timeline, session_->editor().manifest(), session_->editor().projectDir());
+    previewer_->openTimeline(*timeline, snapshot.manifest(), snapshot.projectDir());
 }
 
 void PlayerController::closeFile() {
@@ -150,7 +151,17 @@ void PlayerController::closeFile() {
 void PlayerController::play()            { if (previewer_) previewer_->play(); }
 void PlayerController::pause()           { if (previewer_) previewer_->pause(); }
 void PlayerController::togglePlayPause() { if (previewer_) previewer_->togglePlayPause(); }
-void PlayerController::seek(double s)    { if (previewer_) previewer_->seek(s); }
+void PlayerController::seek(double seconds) {
+    if (!previewer_) return;
+    // A newer explicit selection supersedes the initial timeline focus. Do not
+    // let the asynchronous open's Paused notification seek back to that focus.
+    if (previewer_->state() == IPreviewer::State::Loading) {
+        pendingPosition_ = seconds;
+        return;
+    }
+    pendingPosition_ = -1.0;
+    previewer_->seek(seconds);
+}
 void PlayerController::beginScrub() {
     if (!previewer_) return;
     if (previewingSource_) showTimeline();

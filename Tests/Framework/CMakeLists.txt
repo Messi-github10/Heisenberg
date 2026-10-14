@@ -54,11 +54,17 @@ add_custom_target(HeisenbergFrameworkTestMedia
         "${FRAMEWORK_TEST_CLIP_B}")
 
 add_executable(HeisenbergFrameworkTests
-    profile_test.cpp
-    producer_test.cpp
-    blank_test.cpp
+    timeline_settings_test.cpp
+    video_engine_source_test.cpp
+    frame_renderer_test.cpp
     timeline_test.cpp
     editor_test.cpp
+    render_thread_test.cpp
+    media_math_test.cpp
+    composition_plan_test.cpp
+    audio_mixer_test.cpp
+    video_engine_transport_test.cpp
+    native_preview_test.cpp
 )
 add_dependencies(HeisenbergFrameworkTests HeisenbergFrameworkTestMedia)
 target_link_libraries(HeisenbergFrameworkTests PRIVATE
@@ -69,6 +75,7 @@ target_compile_definitions(HeisenbergFrameworkTests PRIVATE
     HEISENBERG_TEST_MEDIA="${FRAMEWORK_TEST_MEDIA}"
     HEISENBERG_PLAYLIST_CLIP_A="${FRAMEWORK_TEST_CLIP_A}"
     HEISENBERG_PLAYLIST_CLIP_B="${FRAMEWORK_TEST_CLIP_B}"
+    HEISENBERG_TEST_FILTER="${CMAKE_SOURCE_DIR}/Framework/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Test/exposure.json"
 )
 
 if(MSVC)

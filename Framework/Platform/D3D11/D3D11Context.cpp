@@ -17,6 +17,7 @@
 namespace heisenberg::renderer {
 
 struct D3D11Context::Impl {
+    mutable std::mutex mutex;
     ID3D11Device* device = nullptr;
     ID3D11DeviceContext* context = nullptr;
     bool tier2 = false;
@@ -48,8 +49,7 @@ D3D11Context::~D3D11Context() {
 }
 
 void D3D11Context::createDevice() {
-    static std::mutex creation;
-    std::lock_guard<std::mutex> lock(creation);
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     if (impl_->created) return;
     impl_->release();
 
@@ -165,8 +165,17 @@ void D3D11Context::createDevice() {
              impl_->tier2);
 }
 
-ID3D11Device* D3D11Context::device() const { return impl_->device; }
-ID3D11DeviceContext* D3D11Context::context() const { return impl_->context; }
-bool D3D11Context::sharedResourceTier2() const { return impl_->tier2; }
+ID3D11Device* D3D11Context::device() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->device;
+}
+ID3D11DeviceContext* D3D11Context::context() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->context;
+}
+bool D3D11Context::sharedResourceTier2() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->tier2;
+}
 
 } // namespace heisenberg::renderer

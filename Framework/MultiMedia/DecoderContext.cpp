@@ -4,6 +4,7 @@
 #include <Common/AudioSpec.hpp>
 #include <Common/Packet.hpp>
 #include <Common/Stream.hpp>
+#include <Common/VideoFrame.hpp>
 #include <MultiMedia/Video/Decoder/IDecoder.hpp>
 #include <Utiles/Logger.hpp>
 
@@ -197,7 +198,7 @@ MediaFrame DecoderContext::pull(uint64_t generation) {
             if (!audioFrame) return {};
             output = MediaFrame::audio(std::move(audioFrame), generation);
         } else {
-            output = MediaFrame::video(frame, generation);
+            output = MediaFrame::video(VideoFrame::wrap(frame), generation);
         }
         output.metadata.pts = frame->pts;
         output.metadata.duration = frame->duration;

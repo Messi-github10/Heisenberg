@@ -6,8 +6,6 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <limits>
 #include <unordered_set>
 
@@ -21,30 +19,6 @@ std::string utf8(const std::filesystem::path& path) {
     return {reinterpret_cast<const char*>(value.c_str()), value.size()};
 }
 
-bool readText(const std::filesystem::path& path, std::string& text, std::string* error) {
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) { setError(error, "Failed to open '" + utf8(path) + "'"); return false; }
-    text.assign(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
-    return true;
-}
-
-bool writeAtomic(const std::filesystem::path& path, const std::string& text, std::string* error) {
-    std::error_code code;
-    std::filesystem::create_directories(path.parent_path(), code);
-    const auto temporary = path.parent_path() / (path.filename().string() + ".tmp-" + makeUuid());
-    {
-        std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
-        if (!stream) { setError(error, "Failed to write '" + utf8(path) + "'"); return false; }
-        stream << text;
-        if (!stream) { setError(error, "Failed to write '" + utf8(path) + "'"); return false; }
-    }
-    std::filesystem::remove(path, code);
-    code.clear();
-    std::filesystem::rename(temporary, path, code);
-    if (code) { std::filesystem::remove(temporary, code); setError(error, "Failed to replace '" + utf8(path) + "'"); return false; }
-    return true;
-}
-
 bool addChecked(int64_t left, int64_t right, int64_t& result) {
     if ((right > 0 && left > std::numeric_limits<int64_t>::max() - right) ||
         (right < 0 && left < std::numeric_limits<int64_t>::min() - right)) return false;
@@ -55,18 +29,16 @@ bool addChecked(int64_t left, int64_t right, int64_t& result) {
 } // namespace
 
 struct EditorViewModel::Impl {
-    struct UndoEntry { std::string timelineId; Timeline before; Timeline after; std::string name; };
     bool hardwareDecode = false;
     std::string packageDir;
-    ProjectFile project;
+    EditorViewModelTimelines timelines;
     MediaManifest manifest;
-    std::vector<UndoEntry> undo;
-    std::vector<UndoEntry> redo;
+    uint64_t revision = 0;
 
-    Timeline* active() { return project.activeTimeline(); }
-    const Timeline* active() const { return project.activeTimeline(); }
-    Track* track() { Timeline* t = active(); return t && t->tracks.size() == 1 ? &t->tracks.front() : nullptr; }
-    const Track* track() const { const Timeline* t = active(); return t && t->tracks.size() == 1 ? &t->tracks.front() : nullptr; }
+    Timeline* active() { return timelines.activeTimeline(); }
+    const Timeline* active() const { return timelines.activeTimeline(); }
+    Track* track() { return timelines.activeTrack(); }
+    const Track* track() const { return timelines.activeTrack(); }
 };
 
 namespace {
@@ -239,25 +211,26 @@ std::vector<std::string> clearRegion(Track& track, int64_t start, int64_t end,
 }
 }
 
-EditorViewModel::EditorViewModel() : impl_(std::make_unique<Impl>()) {
-    Timeline timeline;
-    timeline.id = makeUuid();
-    impl_->project.timelines.push_back(timeline);
-    impl_->project.activeTimelineId = timeline.id;
-    impl_->project.openTimelineIds = std::vector<std::string>{timeline.id};
-    impl_->project.viewStates = std::unordered_map<std::string, TimelineViewState>{};
-}
-
+EditorViewModel::EditorViewModel() : impl_(std::make_unique<Impl>()) {}
 EditorViewModel::~EditorViewModel() = default;
 void EditorViewModel::setHardwareDecode(bool enabled) { impl_->hardwareDecode = enabled; }
+void EditorViewModel::setProfile(TimelineSettings settings) { applyTimelineSettings(settings); }
+const EditorViewModelTimelines& EditorViewModel::timelines() const { return impl_->timelines; }
+uint64_t EditorViewModel::revision() const { return impl_->revision; }
 
-void EditorViewModel::setProfile(Profile profile) {
-    Timeline* timeline = impl_->active();
-    if (!timeline) return;
-    timeline->width = profile.width();
-    timeline->height = profile.height();
-    timeline->fps = std::max(1, static_cast<int>(std::llround(profile.fps())));
-    timeline->settingsConfigured = true;
+EditResult EditorViewModel::applyTimelineSettings(const TimelineSettings& settings) {
+    auto* timeline = impl_->active();
+    if (!timeline) return {EditStatus::Invalid, {}, "active timeline is required"};
+    Timeline candidate = *timeline;
+    std::string error;
+    if (!candidate.applySettings(settings, &error)) return {EditStatus::Invalid, {}, error};
+    if (candidate == *timeline) return {EditStatus::NoOp, {}, {}};
+    const Timeline before = *timeline;
+    *timeline = std::move(candidate);
+    impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Timeline Settings"});
+    impl_->timelines.redo_.clear();
+    ++impl_->revision;
+    return {EditStatus::Changed, {timeline->id}, {}};
 }
 
 bool EditorViewModel::importMedia(const std::string& path, std::string* error) {
@@ -290,16 +263,16 @@ bool EditorViewModel::importMedia(const std::string& path, std::string* error) {
     entry.sourceHeight = video->codec.height();
     if (video->codec.fps() > 0.0) entry.sourceFPS = video->codec.fps();
     entry.hasAudio = hasAudio;
-    return impl_->manifest.add(std::move(entry), error);
+    if (!impl_->manifest.add(std::move(entry), error)) return false;
+    ++impl_->revision;
+    return true;
 }
 
-const ProjectFile& EditorViewModel::project() const { return impl_->project; }
+const ProjectFile& EditorViewModel::project() const { return impl_->timelines.project(); }
 const MediaManifest& EditorViewModel::manifest() const { return impl_->manifest; }
 MediaResolver EditorViewModel::resolver() const { return MediaResolver(impl_->manifest, impl_->packageDir); }
 const Timeline* EditorViewModel::activeTimeline() const { return impl_->active(); }
-Timeline* EditorViewModel::activeTimeline() { return impl_->active(); }
 const Track* EditorViewModel::activeTrack() const { return impl_->track(); }
-Track* EditorViewModel::activeTrack() { return impl_->track(); }
 const std::string& EditorViewModel::projectDir() const { return impl_->packageDir; }
 ProjectCompatibility EditorViewModel::compatibility() const {
     const Timeline* timeline = impl_->active();
@@ -357,8 +330,9 @@ EditResult EditorViewModel::placeClip(const std::string& mediaRef, int64_t start
     std::string error;
     if (!validateTimeline(*timeline, &error)) { *timeline = std::move(before); return {EditStatus::Invalid, {}, error}; }
     affected.push_back(clip.id);
-    impl_->undo.push_back({timeline->id, before, *timeline, "Place Clip"});
-    impl_->redo.clear();
+    impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Place Clip"});
+    impl_->timelines.redo_.clear();
+    ++impl_->revision;
     return {EditStatus::Changed, std::move(affected), {}};
 }
 
@@ -383,8 +357,9 @@ EditResult EditorViewModel::moveClip(const std::string& clipId, int64_t startFra
     std::string error;
     if (!validateTimeline(*timeline, &error)) { *timeline = std::move(before); return {EditStatus::Invalid, {}, error}; }
     affected.push_back(clipId);
-    impl_->undo.push_back({timeline->id, before, *timeline, "Move Clip"});
-    impl_->redo.clear();
+    impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Move Clip"});
+    impl_->timelines.redo_.clear();
+    ++impl_->revision;
     return {EditStatus::Changed, std::move(affected), {}};
 }
 
@@ -410,8 +385,9 @@ EditResult EditorViewModel::splitClip(const std::string& clipId, int64_t atFrame
     const std::string rightId = values->second.id;
     const Timeline before = *timeline;
     *timeline = candidate;
-    impl_->undo.push_back({timeline->id, before, *timeline, "Split Clip"});
-    impl_->redo.clear();
+    impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Split Clip"});
+    impl_->timelines.redo_.clear();
+    ++impl_->revision;
     return {EditStatus::Changed, {clipId, rightId}, {}};
 }
 
@@ -473,8 +449,9 @@ EditResult EditorViewModel::trimClip(const std::string& clipId, TrimEdge edge, i
     }
     const Timeline before = *timeline;
     *timeline = std::move(candidate);
-    impl_->undo.push_back({timeline->id, before, *timeline, "Trim Clip"});
-    impl_->redo.clear();
+    impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Trim Clip"});
+    impl_->timelines.redo_.clear();
+    ++impl_->revision;
     return {EditStatus::Changed, std::move(affected), {}};
 }
 
@@ -494,112 +471,32 @@ EditResult EditorViewModel::removeClips(const std::vector<std::string>& clipIds)
                        track->clips.end());
     std::string error;
     if (!validateTimeline(*timeline, &error)) { *timeline = before; return {EditStatus::Invalid, {}, error}; }
-    impl_->undo.push_back({timeline->id, before, *timeline, affected.size() == 1 ? "Remove Clip" : "Remove Clips"});
-    impl_->redo.clear();
+    impl_->timelines.undo_.push_back({timeline->id, before, *timeline, affected.size() == 1 ? "Remove Clip" : "Remove Clips"});
+    impl_->timelines.redo_.clear();
+    ++impl_->revision;
     return {EditStatus::Changed, std::move(affected), {}};
 }
 
 bool EditorViewModel::undo() {
-    if (impl_->undo.empty()) return false;
-    Impl::UndoEntry entry = std::move(impl_->undo.back());
-    impl_->undo.pop_back();
-    auto found = std::find_if(impl_->project.timelines.begin(), impl_->project.timelines.end(),
-                              [&](const Timeline& timeline) { return timeline.id == entry.timelineId; });
-    if (found == impl_->project.timelines.end()) return false;
-    *found = entry.before;
-    impl_->project.activeTimelineId = entry.timelineId;
-    impl_->redo.push_back(std::move(entry));
+    if (!impl_->timelines.undo()) return false;
+    ++impl_->revision;
     return true;
 }
-
 bool EditorViewModel::redo() {
-    if (impl_->redo.empty()) return false;
-    Impl::UndoEntry entry = std::move(impl_->redo.back());
-    impl_->redo.pop_back();
-    auto found = std::find_if(impl_->project.timelines.begin(), impl_->project.timelines.end(),
-                              [&](const Timeline& timeline) { return timeline.id == entry.timelineId; });
-    if (found == impl_->project.timelines.end()) return false;
-    *found = entry.after;
-    impl_->project.activeTimelineId = entry.timelineId;
-    impl_->undo.push_back(std::move(entry));
+    if (!impl_->timelines.redo()) return false;
+    ++impl_->revision;
     return true;
 }
 
-bool EditorViewModel::loadPackage(const std::string& packageDir, std::string* error) {
-    std::filesystem::path root = std::filesystem::u8path(packageDir);
-    if (root.filename() == "project.json") root = root.parent_path();
-    std::error_code code;
-    if (!std::filesystem::is_directory(root, code)) {
-        setError(error, "Palmier package directory was not found");
-        return false;
-    }
-    std::string projectText, mediaText;
-    if (!readText(root / "project.json", projectText, error) ||
-        !readText(root / "media.json", mediaText, error)) return false;
-    ProjectFile project;
-    MediaManifest manifest;
-    if (!ProjectCodec::decode(projectText, project, error) ||
-        !manifest.loadFromJson(mediaText, error)) return false;
-
-    impl_->project = std::move(project);
+bool EditorViewModel::replaceDocument(ProjectFile project, MediaManifest manifest,
+                                      std::string packageDir, std::string* error) {
+    if (!validateProject(project, error) || !manifest.validate(error)) return false;
+    impl_->timelines.replace(std::move(project));
     impl_->manifest = std::move(manifest);
-    impl_->packageDir = utf8(root.lexically_normal());
-    impl_->undo.clear();
-    impl_->redo.clear();
+    impl_->packageDir = std::move(packageDir);
+    ++impl_->revision;
     return true;
 }
-
-bool EditorViewModel::savePackage(const std::string& packageDir, std::string* error) {
-    std::filesystem::path destination = std::filesystem::u8path(packageDir);
-    if (destination.filename() == "project.json") destination = destination.parent_path();
-    if (destination.empty()) { setError(error, "package directory is required"); return false; }
-    std::string validationError;
-    if (!validateProject(impl_->project, &validationError)) {
-        setError(error, validationError); return false;
-    }
-    if (!impl_->manifest.validate(&validationError)) {
-        setError(error, validationError); return false;
-    }
-
-    std::error_code code;
-    std::filesystem::path source;
-    if (!impl_->packageDir.empty()) {
-        source = std::filesystem::absolute(std::filesystem::u8path(impl_->packageDir), code).lexically_normal();
-        if (code) { setError(error, "failed to resolve source package path"); return false; }
-    }
-    destination = std::filesystem::absolute(destination, code).lexically_normal();
-    if (code) { setError(error, "failed to resolve package path"); return false; }
-    const bool saveAs = !impl_->packageDir.empty() && source != destination;
-    if (saveAs && std::filesystem::exists(source, code)) {
-        auto sourceIt = source.begin(), destinationIt = destination.begin();
-        while (sourceIt != source.end() && destinationIt != destination.end() && *sourceIt == *destinationIt) {
-            ++sourceIt; ++destinationIt;
-        }
-        if (sourceIt == source.end()) {
-            setError(error, "Save As destination cannot be inside the source package");
-            return false;
-        }
-        std::filesystem::create_directories(destination, code);
-        if (code) { setError(error, "failed to create Save As package"); return false; }
-        for (std::filesystem::recursive_directory_iterator it(source, code), end; !code && it != end; it.increment(code)) {
-            const auto relative = std::filesystem::relative(it->path(), source, code);
-            if (code) break;
-            const auto target = destination / relative;
-            if (it->is_directory()) std::filesystem::create_directories(target, code);
-            else std::filesystem::copy(it->path(), target,
-                                       std::filesystem::copy_options::overwrite_existing |
-                                       std::filesystem::copy_options::copy_symlinks, code);
-            if (code) break;
-        }
-        if (code) { setError(error, "failed to preserve existing package contents: " + code.message()); return false; }
-    }
-
-    std::filesystem::create_directories(destination / "media", code);
-    if (code) { setError(error, "failed to create Palmier package directories"); return false; }
-    if (!writeAtomic(destination / "project.json", ProjectCodec::encode(impl_->project), error) ||
-        !writeAtomic(destination / "media.json", impl_->manifest.toJson(), error)) return false;
-    impl_->packageDir = utf8(destination);
-    return true;
-}
+void EditorViewModel::setProjectDir(std::string root) { impl_->packageDir = std::move(root); }
 
 } // namespace heisenberg

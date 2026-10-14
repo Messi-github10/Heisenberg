@@ -44,57 +44,20 @@ public:
     }
 
     static Rational fromDouble(double value, bool *ok = nullptr) {
-        if (std::isnan(value) || std::isinf(value)) {
-            if (ok) *ok = false;
+        if (ok) *ok = false;
+        // av_d2q uses checked continued fractions with the correct initial
+        // convergents. Never cast a non-finite or out-of-range double to int.
+        if (!std::isfinite(value) ||
+            std::abs(value) > std::numeric_limits<int>::max()) {
             return NaN;
         }
-
-        constexpr int kMaxIterations = 15;
-
-        double f = std::abs(value);
-        double bestError = std::numeric_limits<double>::max();
-
-        int64_t bestNum = 0;
-        int64_t bestDen = 1;
-
-        int64_t p0 = 1, p1 = 0;
-        int64_t q0 = 0, q1 = 1;
-
-        for (int i = 0; i < kMaxIterations && f > 1e-9; ++i) {
-            int64_t a = static_cast<int64_t>(std::floor(f));
-
-            int64_t p = a * p1 + p0;
-            int64_t q = a * q1 + q0;
-
-            if (p > std::numeric_limits<int>::max() || q > std::numeric_limits<int>::max()) {
-                break;
-            }
-
-            if (q > 0) {
-                double error = std::abs((double)p / (double)q - std::abs(value));
-                if (error < bestError) {
-                    bestError = error;
-                    bestNum = p;
-                    bestDen = q;
-                }
-            }
-
-            p0 = p1;
-            p1 = p;
-            q0 = q1;
-            q1 = q;
-
-            if (f == a) break;
-            f = 1.0 / (f - a);
-        }
-
-        if (value < 0) bestNum = -bestNum;
-
-        if (ok) {
-            *ok = bestError < 1e-6 || bestError / std::abs(value) < 1e-6;
-        }
-
-        return Rational(static_cast<int>(bestNum), static_cast<int>(bestDen));
+        const AVRational fraction = av_d2q(value, std::numeric_limits<int>::max());
+        if (fraction.den <= 0) return NaN;
+        const Rational result(fraction);
+        const double error = std::abs(result.toDouble() - value);
+        if (ok) *ok = error <= 1e-6 ||
+            (value != 0.0 && error / std::abs(value) <= 1e-6);
+        return result;
     }
 
     static Rational fromString(const std::string &str, bool *ok = nullptr) {
@@ -281,13 +244,16 @@ private:
 
     void reduce()
     {
+        // A zero denominator is the invalid sentinel, including 0/0.
+        if (den_ == 0) return;
         if (num_ == 0) {
             den_ = 1;
             return;
         }
-        int g = std::gcd(std::abs(num_), std::abs(den_));
-        num_ /= g;
-        den_ /= g;
+        const int64_t g = std::gcd(static_cast<int64_t>(num_),
+                                   static_cast<int64_t>(den_));
+        num_ = static_cast<int>(num_ / g);
+        den_ = static_cast<int>(den_ / g);
     }
 
     int num_;

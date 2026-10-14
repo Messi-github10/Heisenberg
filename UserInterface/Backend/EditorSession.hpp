@@ -1,6 +1,7 @@
 #pragma once
 
-#include <Editor/EditorViewModel.hpp>
+#include <Project/VideoProject.hpp>
+#include <Editor/ProjectSettings.hpp>
 #include <QObject>
 #include <QStringList>
 
@@ -11,9 +12,12 @@ class EditorSession final : public QObject {
     Q_OBJECT
 public:
     explicit EditorSession(QObject* parent = nullptr);
-    const EditorViewModel& editor() const { return editor_; }
+    const EditorViewModel& editor() const { return project_.editor(); }
+    const VideoProject& videoProject() const { return project_; }
+    ProjectSnapshot snapshot() const { return project_.snapshot(); }
+    EditResult applyTimelineSettings(const TimelineSettings& settings);
     const QString& token() const { return token_; }
-    bool isDirty() const { return dirty_; }
+    bool isDirty() const { return project_.isDirty(); }
     bool loadPackage(const QString& path, QString* error = nullptr);
     bool savePackage(const QString& path, QString* error = nullptr);
     QStringList importFiles(const QStringList& paths);
@@ -31,8 +35,8 @@ signals:
     void dirtyChanged(bool dirty);
 
 private:
-    void setDirty(bool dirty);
-    EditorViewModel editor_;
+    void syncDirty();
+    VideoProject project_;
     QString token_;
     bool dirty_ = false;
 };

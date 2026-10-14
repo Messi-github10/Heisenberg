@@ -208,10 +208,8 @@ bool AudioDecoder::decode(AudioFrame& frame, int64_t position, double fps) {
 bool AudioDecoder::seek(double timeSeconds) {
     if (!isOpen()) return false;
 
-    // TODO: 当前为预解码模式，seek 由上层 PlaybackController 直接
-    //       修改 audioSamplePos 完成，此方法为占位实现。
-    //       切换到流式解码后，需要在此处调用 ma_decoder_seek_to_pcm_frame()
-    //       将 decoder 的文件读取位置跳到目标采样帧，并清空内部 buffer。
+    // This predecoded adapter does not reposition a streaming decoder.
+    // VideoEngine seeks through its independent demux/decoder sessions.
     (void)timeSeconds;
     return true;
 }

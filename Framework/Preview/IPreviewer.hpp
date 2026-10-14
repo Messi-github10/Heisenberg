@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Preview/VideoEngine.hpp>
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -12,23 +14,16 @@ class MediaManifest;
 
 class IPreviewer {
 public:
-    enum class State {
-        Idle,
-        Loading,
-        Playing,
-        Paused,
-        Scrubbing,
-        Ended
-    };
-
-    using Task = std::function<void()>;
-    using TaskDispatcher = std::function<void(Task)>;
+    using State = VideoEngine::State;
+    using Task = VideoEngine::Task;
+    using TaskDispatcher = VideoEngine::TaskDispatcher;
 
     class Listener {
     public:
         virtual ~Listener() = default;
         virtual void onStateChanged(State /*state*/) {}
         virtual void onPositionChanged(double /*seconds*/) {}
+        virtual void onFramePresented(double /*seconds*/) {}
         virtual void onDurationChanged(double /*seconds*/) {}
         virtual void onEndOfStream() {}
         virtual void onOpenFailed(const std::string& /*reason*/) {}
@@ -84,7 +79,7 @@ public:
     virtual bool isSeekable() const = 0;
     virtual double fps() const = 0;
     virtual int64_t frameCount() const = 0;
-    virtual const std::string& filterGraphPath() const = 0;
+    virtual std::string filterGraphPath() const = 0;
 };
 
 } // namespace heisenberg

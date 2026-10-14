@@ -1,5 +1,7 @@
 #pragma once
 
+#include "VideoFrame.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -33,8 +35,8 @@ struct FrameMetadata {
 };
 
 using PacketPtr = std::shared_ptr<const Packet>;
-using VideoFramePtr = std::shared_ptr<AVFrame>;
-using OwnedVideoFrame = std::shared_ptr<VideoFrame>;
+using VideoFramePtr = std::shared_ptr<VideoFrame>;
+using OwnedVideoFrame = VideoFramePtr;
 using AudioFramePtr = std::shared_ptr<AudioFrame>;
 using MediaPayload = std::variant<std::monostate, PacketPtr, VideoFramePtr,
                                   AudioFramePtr>;
@@ -47,6 +49,12 @@ struct MediaFrame {
     static MediaFrame video(VideoFramePtr frame, uint64_t generation = 0) {
         MediaFrame result;
         result.type = MediaFrameType::Video;
+        if (frame) {
+            result.metadata.pts = frame->pts();
+            result.metadata.duration = frame->duration();
+            result.metadata.timeBaseNum = frame->timeBase().numerator();
+            result.metadata.timeBaseDen = frame->timeBase().denominator();
+        }
         result.payload = std::move(frame);
         result.metadata.generation = generation;
         return result;
@@ -85,7 +93,14 @@ struct MediaFrame {
 
     VideoFramePtr videoFrame() const {
         if (type != MediaFrameType::Video) return {};
-        return std::get<VideoFramePtr>(payload);
+        const auto* frame = std::get_if<VideoFramePtr>(&payload);
+        return frame ? *frame : VideoFramePtr{};
+    }
+
+    // Explicit backend boundary; video payloads themselves are never AVFrames.
+    std::shared_ptr<AVFrame> nativeVideoFrame() const {
+        const auto frame = videoFrame();
+        return frame ? frame->native() : std::shared_ptr<AVFrame>{};
     }
 
     AudioFramePtr audioFrame() const {

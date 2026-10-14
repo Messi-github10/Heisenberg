@@ -2,8 +2,9 @@
 
 #include <Models/MediaManifest.hpp>
 #include <Models/MediaResolver.hpp>
-#include <Models/Timeline.hpp>
-#include <Profiles/Profile.hpp>
+#include "EditorViewModelTimelines.hpp"
+#include <Models/TimelineSettings.hpp>
+#include <functional>
 
 #include <cstdint>
 #include <memory>
@@ -31,7 +32,11 @@ public:
     EditorViewModel& operator=(const EditorViewModel&) = delete;
 
     void setHardwareDecode(bool enabled);
-    void setProfile(Profile profile);
+    // Compatibility spelling; settings are a value and changes enter undo history.
+    void setProfile(TimelineSettings settings);
+    EditResult applyTimelineSettings(const TimelineSettings& settings);
+    const EditorViewModelTimelines& timelines() const;
+    uint64_t revision() const;
     bool importMedia(const std::string& path, std::string* error = nullptr);
 
     EditResult placeClip(const std::string& mediaRef, int64_t startFrame,
@@ -43,21 +48,22 @@ public:
     bool undo();
     bool redo();
 
-    bool loadPackage(const std::string& packageDir, std::string* error = nullptr);
-    bool savePackage(const std::string& packageDir, std::string* error = nullptr);
+    // In-memory document installation. No package I/O belongs to the editor.
+    bool replaceDocument(ProjectFile project, MediaManifest manifest,
+                         std::string packageDir = {}, std::string* error = nullptr);
 
     const ProjectFile& project() const;
     const MediaManifest& manifest() const;
     MediaResolver resolver() const;
     const Timeline* activeTimeline() const;
-    Timeline* activeTimeline();
     const Track* activeTrack() const;
-    Track* activeTrack();
     std::vector<MediaAsset> assets() const;
     const std::string& projectDir() const;
     ProjectCompatibility compatibility() const;
 
 private:
+    friend class VideoProject;
+    void setProjectDir(std::string root);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

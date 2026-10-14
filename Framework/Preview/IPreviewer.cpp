@@ -1,6 +1,10 @@
 #include "IPreviewer.hpp"
 
-#include "PlaybackController.hpp"
+#include "VideoEngine.hpp"
+#include <Compositing/FrameRenderer.hpp>
+
+#include <atomic>
+#include <mutex>
 #include "MultiMedia/Video/Renderer/RenderThread.hpp"
 #include "Platform/D3D11/D3D11Context.hpp"
 #include "Platform/GpuContext.hpp"
@@ -25,29 +29,17 @@ extern "C" {
 namespace heisenberg {
 namespace {
 
-IPreviewer::State toPreviewerState(ctrl::PlaybackController::State state) {
-    switch (state) {
-        case ctrl::PlaybackController::Idle:      return IPreviewer::State::Idle;
-        case ctrl::PlaybackController::Loading:   return IPreviewer::State::Loading;
-        case ctrl::PlaybackController::Playing:   return IPreviewer::State::Playing;
-        case ctrl::PlaybackController::Paused:    return IPreviewer::State::Paused;
-        case ctrl::PlaybackController::Scrubbing: return IPreviewer::State::Scrubbing;
-        case ctrl::PlaybackController::Ended:     return IPreviewer::State::Ended;
-    }
-    return IPreviewer::State::Idle;
-}
-
 class Previewer final : public IPreviewer {
 public:
     Previewer() {
-        playback_ = std::make_unique<ctrl::PlaybackController>();
+        playback_ = std::make_unique<VideoEngine>();
         bindPlayback();
         render_.start([this] {
             if (!playback_) return 2;
             int waitMs = 2;
             const auto pump = playback_->pumpFrame(waitMs);
-            if (pump == ctrl::PlaybackController::Pump::Paused
-                || pump == ctrl::PlaybackController::Pump::Ended) {
+            if (pump == VideoEngine::Pump::Paused
+                || pump == VideoEngine::Pump::Ended) {
                 return -1;
             }
             return waitMs;
@@ -59,12 +51,12 @@ public:
     }
 
     void setTaskDispatcher(TaskDispatcher dispatcher) override {
-        dispatcher_ = std::move(dispatcher);
-        if (playback_) playback_->setTaskDispatcher(dispatcher_);
+        std::lock_guard lock(events_->mutex);
+        events_->dispatcher = std::move(dispatcher);
     }
 
     void setListener(Listener* listener) override {
-        listener_ = listener;
+        events_->listener.store(listener, std::memory_order_release);
     }
 
     void attachWindow(void* nativeSurface, int w, int h) override {
@@ -74,7 +66,7 @@ public:
         }
         const int width = w > 0 ? w : 640;
         const int height = h > 0 ? h : 360;
-        render_.postSync([this, nativeSurface, width, height] {
+        render_.post([this, nativeSurface, width, height] {
             attachWindowOnRenderThread(nativeSurface, width, height);
         });
     }
@@ -92,42 +84,32 @@ public:
     }
 
     void open(const std::string& path) override {
-        clearTimelineGraph();
         if (playback_) playback_->open(path);
+        resetPresentation();
     }
 
     void openPlaylist(const std::string& path) override {
-        clearTimelineGraph();
-        if (!playback_) return;
-        playback_->openPlaylist(path);
-        const auto& filters = playback_->timelineFilters();
-        if (!filters.empty()) {
-            pendingTimelineGraph_ = filters.front().graph;
-            if (filters.size() > 1) {
-                LOG_WARN("IPreviewer: v1 applies only the first Playlist filter");
-            }
-            loadPlaylistFilters();
-        }
+        if (playback_) playback_->openPlaylist(path);
+        resetPresentation();
     }
 
     void openTimeline(const Timeline& timeline, const MediaManifest& manifest,
                       const std::string& projectDir) override {
-        clearTimelineGraph();
-        lastFrame_.reset();
         if (playback_) playback_->openTimeline(timeline, manifest, projectDir);
+        resetPresentation();
     }
 
     void close() override {
         if (playback_) playback_->close();
-        clearTimelineGraph();
-        lastFrame_.reset();
-        videoWidth_ = 0;
-        videoHeight_ = 0;
+        resetPresentation();
     }
 
     void play() override {
-        if (playback_) playback_->play();
-        render_.setPlaying(playback_ && playback_->isPlaying());
+        if (playback_) {
+            playback_->play();
+            events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
+        }
+        render_.setPlaying(playback_ && playback_->snapshot().state == State::Playing);
     }
 
     void pause() override {
@@ -136,12 +118,18 @@ public:
     }
 
     void togglePlayPause() override {
-        if (playback_) playback_->togglePlayPause();
-        render_.setPlaying(playback_ && playback_->isPlaying());
+        if (playback_) {
+            playback_->togglePlayPause();
+            events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
+        }
+        render_.setPlaying(playback_ && playback_->snapshot().state == State::Playing);
     }
 
     void seek(double seconds) override {
-        if (playback_) playback_->seek(seconds);
+        if (playback_) {
+            playback_->seek(seconds);
+            events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
+        }
     }
 
     void beginScrub() override {
@@ -149,27 +137,45 @@ public:
     }
 
     void scrubToFrame(int64_t frameIndex) override {
-        if (playback_) playback_->scrubToFrame(frameIndex);
+        if (playback_) {
+            playback_->scrubToFrame(frameIndex);
+            events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
+        }
     }
 
     void endScrub(int64_t frameIndex) override {
-        if (playback_) playback_->endScrub(frameIndex);
+        if (playback_) {
+            playback_->endScrub(frameIndex);
+            events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
+        }
     }
 
     void stepForward(int frames) override {
-        if (playback_) playback_->stepForward(frames);
+        if (playback_) {
+            playback_->stepForward(frames);
+            events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
+        }
     }
 
     void stepBackward(int frames) override {
-        if (playback_) playback_->stepBackward(frames);
+        if (playback_) {
+            playback_->stepBackward(frames);
+            events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
+        }
     }
 
     void goToStart() override {
-        if (playback_) playback_->goToStart();
+        if (playback_) {
+            playback_->goToStart();
+            events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
+        }
     }
 
     void goToEnd() override {
-        if (playback_) playback_->goToEnd();
+        if (playback_) {
+            playback_->goToEnd();
+            events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
+        }
     }
 
     void setHardwareDecode(bool enabled) override {
@@ -177,17 +183,11 @@ public:
     }
 
     void openFilterGraph(const std::string& path) override {
-        render_.postSync([this, path] {
+        render_.post([this, path] {
             std::string error;
             if (!loadFilterGraph(path, &error)) {
                 LOG_ERROR("IPreviewer: filter graph load failed: {}", error);
-                if (dispatcher_) {
-                    dispatcher_([this, error] {
-                        if (listener_) listener_->onFilterGraphFailed(error);
-                    });
-                } else if (listener_) {
-                    listener_->onFilterGraphFailed(error);
-                }
+                notifyListener([error](Listener& listener) { listener.onFilterGraphFailed(error); });
                 return;
             }
             LOG_INFO("IPreviewer: loaded filter graph '{}'", path);
@@ -197,18 +197,18 @@ public:
     bool setNodeParameter(uint64_t nodeId,
                           const std::string& name,
                           float value) override {
-        if (!filterGraph_) return false;
-        filtergraph::VulkanGraphParameter patch;
-        patch[name] = value;
-        if (!graphDocument_.updateParameter(nodeId, patch)) return false;
-        const auto* node = findDocumentNode(nodeId);
-        if (!node) return false;
-        const auto parameter = node->parameter;
-        render_.post([this, nodeId, parameter] {
+        bool success = false;
+        render_.postSync([this, nodeId, name, value, &success] {
             if (!filterGraph_) return;
-            if (filterGraph_->setParameters(nodeId, parameter)) presentCurrentFrame();
+            filtergraph::VulkanGraphParameter patch;
+            patch[name] = value;
+            if (!graphDocument_.updateParameter(nodeId, patch)) return;
+            const auto* node = findDocumentNode(nodeId);
+            if (!node) return;
+            success = filterGraph_->setParameters(nodeId, node->parameter);
+            if (success) presentCurrentFrame();
         });
-        return true;
+        return success;
     }
 
     bool setFilterParameter(const std::string& filterId,
@@ -221,40 +221,42 @@ public:
     bool getFilterParameter(const std::string& filterId,
                             const std::string& name,
                             float& value) const override {
-        const auto* node = findDocumentNode(findNodeByFilterId(filterId));
-        if (!node) return false;
-        const auto found = node->parameter.find(name);
-        if (found == node->parameter.end()) return false;
-        if (const auto* number = std::get_if<float>(&found->second)) {
-            value = *number;
-            return true;
-        }
-        if (const auto* number = std::get_if<int32_t>(&found->second)) {
-            value = static_cast<float>(*number);
-            return true;
-        }
-        return false;
+        bool success = false;
+        render_.postSync([this, &success, &value, filterId, name] {
+            for (const auto& node : graphDocument_.nodes()) {
+                if (node.filterId != filterId) continue;
+                const auto found = node.parameter.find(name);
+                if (found == node.parameter.end()) return;
+                if (const auto* number = std::get_if<float>(&found->second)) { value = *number; success = true; }
+                else if (const auto* number = std::get_if<int32_t>(&found->second)) { value = static_cast<float>(*number); success = true; }
+                return;
+            }
+        });
+        return success;
     }
 
     uint64_t findNodeByFilterId(const std::string& filterId) const override {
-        for (const auto& node : graphDocument_.nodes()) {
-            if (node.filterId == filterId) return node.id;
-        }
-        return 0;
+        uint64_t result = 0;
+        render_.postSync([this, filterId, &result] {
+            for (const auto& node : graphDocument_.nodes())
+                if (node.filterId == filterId) { result = node.id; return; }
+        });
+        return result;
     }
 
     void shutdown() override {
         if (shutdownDone_) return;
         shutdownDone_ = true;
 
-        listener_ = nullptr;
-        if (playback_) playback_->close();
+        events_->alive.store(false, std::memory_order_release);
+        events_->listener.store(nullptr, std::memory_order_release);
+        if (playback_) playback_->shutdown();
         render_.postSync([this] {
             detachWindowOnRenderThread();
-            clearTimelineGraph();
             filterGraph_.reset();
             graphDocument_ = {};
-            timelineGraph_.reset();
+            if (frameRenderer_) { frameRenderer_->shutdown(); frameRenderer_.reset(); }
+            lastPacket_.reset();
             gpuCtx_.reset();
         });
         render_.stop();
@@ -262,35 +264,37 @@ public:
     }
 
     State state() const override {
-        return playback_ ? toPreviewerState(playback_->state()) : State::Idle;
+        return playback_ ? playback_->snapshot().state : State::Idle;
     }
 
     bool isPlaying() const override {
-        return playback_ && playback_->isPlaying();
+        return playback_ && playback_->snapshot().state == State::Playing;
     }
 
     double currentTime() const override {
-        return playback_ ? playback_->currentTime() : 0.0;
+        return playback_ ? playback_->snapshot().currentTime : 0.0;
     }
 
     double duration() const override {
-        return playback_ ? playback_->duration() : 0.0;
+        return playback_ ? playback_->snapshot().duration : 0.0;
     }
 
     bool isSeekable() const override {
-        return playback_ && playback_->isSeekable();
+        return playback_ && playback_->snapshot().seekable;
     }
 
     double fps() const override {
-        return playback_ ? playback_->fps() : 0.0;
+        return playback_ ? playback_->snapshot().fps : 0.0;
     }
 
     int64_t frameCount() const override {
-        return playback_ ? playback_->frameCount() : 0;
+        return playback_ ? playback_->snapshot().frameCount : 0;
     }
 
-    const std::string& filterGraphPath() const override {
-        return filterGraphPath_;
+    std::string filterGraphPath() const override {
+        std::string result;
+        render_.postSync([this, &result] { result = filterGraphPath_; });
+        return result;
     }
 
 private:
@@ -319,26 +323,90 @@ private:
         }
     }
 
-    void bindPlayback() {
-        playback_->setTaskDispatcher(dispatcher_);
-        playback_->onStateChanged = [this](ctrl::PlaybackController::State state) {
-            if (listener_) listener_->onStateChanged(toPreviewerState(state));
+    struct Events {
+        std::mutex mutex;
+        TaskDispatcher dispatcher;
+        std::atomic<Listener*> listener{nullptr};
+        std::atomic<bool> alive{true};
+        std::atomic<uint64_t> generation{0};
+    };
+    template<class F> void notifyListener(F callback, uint64_t generation = 0) {
+        auto events = events_;
+        TaskDispatcher dispatcher;
+        { std::lock_guard lock(events->mutex); dispatcher = events->dispatcher; }
+        auto task = [events, generation, callback = std::move(callback)] {
+            if (!events->alive.load(std::memory_order_acquire)
+                || (generation != 0 && events->generation.load(std::memory_order_acquire) != generation)) return;
+            if (auto* listener = events->listener.load(std::memory_order_acquire)) callback(*listener);
         };
-        playback_->onFrameDecoded = [this](std::shared_ptr<AVFrame> frame) {
-            presentDecodedFrame(std::move(frame));
+        if (dispatcher) dispatcher(std::move(task)); else task();
+    }
+
+    template<class F> void forwardListener(F callback) {
+        if (!events_->alive.load(std::memory_order_acquire)) return;
+        if (auto* listener = events_->listener.load(std::memory_order_acquire)) callback(*listener);
+    }
+
+    void bindPlayback() {
+        const auto events = events_;
+        playback_->setTaskDispatcher([events](Task task) {
+            TaskDispatcher dispatcher;
+            { std::lock_guard lock(events->mutex); dispatcher = events->dispatcher; }
+            auto guarded = [events, task = std::move(task)] {
+                if (events->alive.load(std::memory_order_acquire)) task();
+            };
+            if (dispatcher) dispatcher(std::move(guarded)); else guarded();
+        });
+        playback_->onStateChanged = [this](State state) {
+            forwardListener([state](Listener& listener) { listener.onStateChanged(state); });
+        };
+        playback_->onWakeRender = [this] { render_.setPlaying(true); };
+        playback_->onFrameDecoded = [this](DecodedFrame packet) {
+            if (!playback_->isCurrentGeneration(packet.generation)) return;
+            lastPacket_ = std::move(packet);
+            renderPacket();
         };
         playback_->onPositionChanged = [this](double seconds) {
-            if (listener_) listener_->onPositionChanged(seconds);
+            forwardListener([seconds](Listener& listener) { listener.onPositionChanged(seconds); });
         };
         playback_->onDurationChanged = [this](double seconds) {
-            if (listener_) listener_->onDurationChanged(seconds);
+            forwardListener([seconds](Listener& listener) { listener.onDurationChanged(seconds); });
         };
         playback_->onEndOfStream = [this] {
-            if (listener_) listener_->onEndOfStream();
+            forwardListener([](Listener& listener) { listener.onEndOfStream(); });
         };
         playback_->onOpenFailed = [this](const std::string& reason) {
-            if (listener_) listener_->onOpenFailed(reason);
+            forwardListener([reason](Listener& listener) { listener.onOpenFailed(reason); });
         };
+    }
+
+    void resetPresentation() {
+        const uint64_t generation = playback_->snapshot().generation;
+        events_->generation.store(generation, std::memory_order_release);
+        render_.post([this, generation] {
+            if (!playback_->isCurrentGeneration(generation)) return;
+            lastFrame_.reset();
+            if (lastPacket_ && lastPacket_->generation != generation) lastPacket_.reset();
+            if (frameRenderer_) { frameRenderer_->shutdown(); frameRenderer_.reset(); }
+            if (lastPacket_) renderPacket();
+        });
+        render_.setPlaying(true);
+    }
+
+    void renderPacket() {
+        if (!lastPacket_ || !presenter_ || !playback_->isCurrentGeneration(lastPacket_->generation)) return;
+        const auto& packet = *lastPacket_;
+        std::shared_ptr<VideoFrame> image;
+        if (packet.sourceMode && !packet.blank) image = packet.source;
+        else {
+            if (!frameRenderer_) frameRenderer_ = std::make_unique<FrameRenderer>(packet.settings);
+            else frameRenderer_->setSettings(packet.settings);
+            std::string error;
+            image = packet.blank ? frameRenderer_->background(packet.targetPosition, &error)
+                : frameRenderer_->render(packet.source, packet.targetPosition, &error);
+            if (!image) { LOG_ERROR("IPreviewer: render conversion failed: {}", error); return; }
+        }
+        if (image) presentDecodedFrame(image->native());
     }
 
     void presentDecodedFrame(std::shared_ptr<AVFrame> frame) {
@@ -425,132 +493,33 @@ private:
         graphDocument_ = std::move(graphDocument);
         filterGraphVerificationFrame_ = 0;
         filterGraphPath_ = path;
-        if (listener_) listener_->onFilterGraphChanged(path);
+        notifyListener([path](Listener& listener) { listener.onFilterGraphChanged(path); });
         presentCurrentFrame();
         return true;
     }
 
-    void loadPlaylistFilters() {
-        if (!playback_) return;
-        const auto& filters = playback_->timelineFilters();
-        if (filters.empty()) return;
-        if (filters.size() > 1) {
-            LOG_WARN("IPreviewer: v1 applies only the first Playlist filter");
-        }
-        std::string error;
-        if (!loadTimelineGraph(filters.front().graph, &error)) {
-            LOG_ERROR("IPreviewer: playlist filter graph load failed: {}", error);
-            if (listener_) listener_->onFilterGraphFailed(error);
-            return;
-        }
-        LOG_INFO("IPreviewer: loaded playlist filter graph '{}' in={} out={}",
-                 filters.front().graph, filters.front().in, filters.front().out);
-    }
-
-    bool loadTimelineGraph(const std::string& path, std::string* error) {
-        if (path.empty()) {
-            if (error) *error = "Filter graph path is empty";
-            return false;
-        }
-        if (!gpuCtx_) {
-            pendingTimelineGraph_ = path;
-            return true;
-        }
-        if (!presenter_) {
-            pendingTimelineGraph_ = path;
-            return true;
-        }
-
-        auto& vkCtx = renderer::VulkanContext::instance();
-        filtergraph::VulkanGraphContext graphContext;
-        graphContext.instance = static_cast<VkInstance>(vkCtx.vkInstance());
-        graphContext.physicalDevice =
-            static_cast<VkPhysicalDevice>(vkCtx.physicalDevice());
-        graphContext.device = static_cast<VkDevice>(vkCtx.device());
-        graphContext.queue = static_cast<VkQueue>(vkCtx.graphicsQueue());
-        graphContext.queueFamilyIndex = vkCtx.graphicsQueueFamily();
-
-        filtergraph::VulkanGraphDocument graphDocument;
-        std::string graphError;
-        if (!graphDocument.loadFromJsonFile(path, &graphError)) {
-            if (error) *error = graphError;
-            return false;
-        }
-
-        std::unique_ptr<filtergraph::VulkanFilterGraph> nextGraph;
-        try {
-            nextGraph = std::make_unique<filtergraph::VulkanFilterGraph>(
-                graphContext, graphDocument);
-        } catch (const std::exception& exception) {
-            if (error) *error = exception.what();
-            return false;
-        }
-
-        vkCtx.device().waitIdle();
-        presenter_->setFilterGraph(nullptr, nullptr, nullptr);
-        attachedGraph_ = nullptr;
-        timelineGraph_.reset();
-        timelineGraph_ = std::move(nextGraph);
-        timelineDocument_ = std::move(graphDocument);
-        timelineGraphPath_ = path;
-        pendingTimelineGraph_.clear();
-        return true;
-    }
-
-    void clearTimelineGraph() {
-        if (presenter_ && attachedGraph_ && attachedGraph_ == timelineGraph_.get()) {
-            presenter_->setFilterGraph(nullptr, nullptr, nullptr);
-        }
-        attachedGraph_ = nullptr;
-        timelineGraph_.reset();
-        timelineDocument_ = {};
-        timelineGraphPath_.clear();
-        pendingTimelineGraph_.clear();
-        timelineGraphEnabled_ = false;
-    }
-
-    filtergraph::VulkanFilterGraph* graphForFrame(const AVFrame* frame) {
-        if (timelineGraph_ && playback_ && frame) {
-            const auto& filters = playback_->timelineFilters();
-            if (!filters.empty() && filters.front().covers(frame->pts)) {
-                return timelineGraph_.get();
-            }
-        }
-        if (filterGraph_) return filterGraph_.get();
-        return nullptr;
-    }
-
-    void applyGraphForFrame(const AVFrame* frame) {
+    void applyGraphForFrame(const AVFrame*) {
         if (!presenter_) return;
-        if (!timelineGraph_ && !pendingTimelineGraph_.empty()) {
-            std::string error;
-            loadTimelineGraph(pendingTimelineGraph_, &error);
-        }
-        filtergraph::VulkanFilterGraph* wanted = graphForFrame(frame);
+        auto* wanted = filterGraph_.get();
         if (wanted == attachedGraph_) return;
-        if (wanted) {
-            presenter_->setFilterGraph(wanted->graph(), wanted->input(),
-                                       wanted->output());
-        } else {
-            presenter_->setFilterGraph(nullptr, nullptr, nullptr);
-        }
-        const bool enabled = wanted == timelineGraph_.get() && wanted != nullptr;
-        if (enabled != timelineGraphEnabled_) {
-            timelineGraphEnabled_ = enabled;
-            LOG_INFO("IPreviewer: playlist filter {} at frame {}",
-                     enabled ? "on" : "off",
-                     frame ? frame->pts : -1);
-        }
+        if (wanted) presenter_->setFilterGraph(wanted->graph(), wanted->input(), wanted->output());
+        else presenter_->setFilterGraph(nullptr, nullptr, nullptr);
         attachedGraph_ = wanted;
     }
 
     void presentCurrentFrame() {
-        if (!presenter_ || !lastFrame_ || !lastFrame_->data[0]) return;
+        if (!presenter_ || !lastFrame_ || !lastFrame_->data[0] || !lastPacket_
+            || !playback_->isCurrentGeneration(lastPacket_->generation)) return;
         applyGraphForFrame(lastFrame_.get());
         if (!presenter_->presentFrame(lastFrame_.get())) {
             LOG_WARN("IPreviewer: presentFrame failed (format={}, {}x{})",
                      lastFrame_->format, lastFrame_->width, lastFrame_->height);
+            return;
         }
+        const auto generation = lastPacket_->generation;
+        const double seconds = lastPacket_->targetPosition * lastPacket_->targetTimeBase.toDouble();
+        events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
+        notifyListener([seconds](Listener& listener) { listener.onFramePresented(seconds); }, generation);
     }
 
     const filtergraph::VulkanGraphNodeDesc* findDocumentNode(
@@ -589,8 +558,8 @@ private:
             videoHeight_ = resizedHeight;
         });
         attachedGraph_ = nullptr;
-        if (!timelineGraph_ && !pendingTimelineGraph_.empty()) loadPlaylistFilters();
         applyGraphForFrame(lastFrame_.get());
+        renderPacket();
 
         nativeSurface_ = nativeSurface;
         videoWidth_ = width;
@@ -612,22 +581,18 @@ private:
         videoHeight_ = 0;
     }
 
-    renderer::RenderThread render_;
-    TaskDispatcher dispatcher_;
-    Listener* listener_ = nullptr;
-    std::unique_ptr<ctrl::PlaybackController> playback_;
+    mutable renderer::RenderThread render_;
+    std::shared_ptr<Events> events_ = std::make_shared<Events>();
+    std::unique_ptr<VideoEngine> playback_;
+    std::unique_ptr<FrameRenderer> frameRenderer_;
+    std::optional<DecodedFrame> lastPacket_;
     std::unique_ptr<renderer::GpuContext> gpuCtx_;
     std::unique_ptr<renderer::VideoPresenter> presenter_;
     std::unique_ptr<filtergraph::VulkanFilterGraph> filterGraph_;
     filtergraph::VulkanGraphDocument graphDocument_;
-    std::unique_ptr<filtergraph::VulkanFilterGraph> timelineGraph_;
-    filtergraph::VulkanGraphDocument timelineDocument_;
     filtergraph::VulkanFilterGraph* attachedGraph_ = nullptr;
     std::shared_ptr<AVFrame> lastFrame_;
     std::string filterGraphPath_;
-    std::string timelineGraphPath_;
-    std::string pendingTimelineGraph_;
-    bool timelineGraphEnabled_ = false;
     void* nativeSurface_ = nullptr;
     int videoWidth_ = 0;
     int videoHeight_ = 0;

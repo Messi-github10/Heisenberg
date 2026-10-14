@@ -1,6 +1,9 @@
 #include <Editor/EditorViewModel.hpp>
+#include <Project/VideoProject.hpp>
+#include <Editor/ProjectSettings.hpp>
 #include <Models/MediaResolver.hpp>
 
+#include <Models/ProjectCodec.hpp>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -82,7 +85,7 @@ std::unique_ptr<heisenberg::EditorViewModel> loadEditor(
     std::filesystem::create_directories(root / "media");
     auto editor = std::make_unique<heisenberg::EditorViewModel>();
     std::string error;
-    EXPECT_TRUE(editor->loadPackage(utf8(root), &error)) << error;
+    EXPECT_TRUE(editor->replaceDocument(project, manifest, utf8(root), &error)) << error;
     return editor;
 }
 
@@ -337,7 +340,7 @@ TEST(EditorViewModelTest, MultiTrackTimelineIsPreservedButUnsupportedForEditing)
 TEST(EditorViewModelTest, PackageSaveAsPreservesUnknownFiles) {
     const auto source = tempPackage("save-source");
     const auto destination = tempPackage("save-copy");
-    heisenberg::EditorViewModel editor;
+    heisenberg::VideoProject editor;
     std::string error;
     ASSERT_TRUE(editor.savePackage(utf8(source), &error)) << error;
     writeText(source / "thumbnail.png", "thumbnail-bytes");
@@ -353,12 +356,114 @@ TEST(EditorViewModelTest, PackageSaveAsPreservesUnknownFiles) {
     EXPECT_TRUE(std::filesystem::exists(destination / "custom" / "unknown.bin"));
     EXPECT_TRUE(std::filesystem::exists(destination / "media" / "keep.dat"));
 
-    heisenberg::EditorViewModel loaded;
+    heisenberg::VideoProject loaded;
     ASSERT_TRUE(loaded.loadPackage(utf8(destination), &error)) << error;
-    EXPECT_EQ(loaded.project().timelines.size(), 1u);
+    EXPECT_EQ(loaded.editor().project().timelines.size(), 1u);
     std::error_code code;
     std::filesystem::remove_all(source, code);
     std::filesystem::remove_all(destination, code);
+}
+
+TEST(ProjectSettingsTest, AppliesOneUndoTransactionAndRejectsUnpersistableSettings) {
+    heisenberg::VideoProject project;
+    heisenberg::ProjectSettings settings(project);
+    const auto before = project.editor().project();
+    const auto revision = project.revision();
+    const auto value = heisenberg::TimelineSettings::fromTimelineSettings(1280, 720, 25);
+    ASSERT_TRUE(settings.applyTimelineSettings(value).changed());
+    EXPECT_EQ(project.revision(), revision + 1);
+    EXPECT_TRUE(project.isDirty());
+    EXPECT_EQ(settings.timelineSettings(), value);
+    EXPECT_EQ(settings.applyTimelineSettings(value).status, heisenberg::EditStatus::NoOp);
+    EXPECT_EQ(project.revision(), revision + 1);
+    ASSERT_TRUE(project.editor().undo());
+    EXPECT_EQ(project.editor().project(), before);
+    EXPECT_FALSE(project.editor().undo());
+    ASSERT_TRUE(project.editor().redo());
+    EXPECT_EQ(settings.timelineSettings(), value);
+    const auto after = project.editor().project();
+    EXPECT_EQ(settings.applyTimelineSettings(*heisenberg::TimelineSettings::findPreset("hd_1080p_2997")).status,
+              heisenberg::EditStatus::Invalid);
+    auto custom = value;
+    auto audio = custom.audioSpec();
+    audio.sampleRate = 96000;
+    custom.setAudioSpec(audio);
+    EXPECT_EQ(settings.applyTimelineSettings(custom).status, heisenberg::EditStatus::Invalid);
+    EXPECT_EQ(project.editor().project(), after);
+}
+
+TEST(VideoProjectTest, ImmutableSnapshotOwnsDocumentAndOlderSaveDoesNotClearNewerRevision) {
+    const auto root = tempPackage("snapshot-checkpoint");
+    heisenberg::VideoProject project;
+    std::string error;
+    ASSERT_TRUE(project.savePackage(utf8(root), &error)) << error;
+    const auto* stableEditor = &project.editor();
+    ASSERT_TRUE(project.editor().applyTimelineSettings(
+        heisenberg::TimelineSettings::fromTimelineSettings(1280, 720, 25)).changed());
+    const auto capture = project.snapshot();
+    ASSERT_TRUE(project.editor().applyTimelineSettings(
+        heisenberg::TimelineSettings::fromTimelineSettings(640, 360, 30)).changed());
+    EXPECT_EQ(capture.activeTimeline()->width, 1280);
+    ASSERT_TRUE(project.saveSnapshot(capture, utf8(root), &error)) << error;
+    EXPECT_TRUE(project.isDirty());
+    EXPECT_EQ(project.savedRevision(), capture.revision());
+    EXPECT_EQ(project.editor().activeTimeline()->width, 640);
+    heisenberg::VideoProject loaded;
+    ASSERT_TRUE(loaded.loadPackage(utf8(root), &error)) << error;
+    EXPECT_EQ(loaded.editor().activeTimeline()->width, 1280);
+    EXPECT_FALSE(loaded.isDirty());
+    ASSERT_TRUE(project.save(&error)) << error;
+    EXPECT_FALSE(project.isDirty());
+    ASSERT_TRUE(project.loadPackage(utf8(root), &error)) << error;
+    EXPECT_EQ(&project.editor(), stableEditor);
+    EXPECT_FALSE(project.saveSnapshot(capture, utf8(root), &error));
+    heisenberg::VideoProject other;
+    EXPECT_FALSE(other.saveSnapshot(project.snapshot(), utf8(root), &error));
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+TEST(VideoProjectTest, FailedSecondDocumentStagingPreservesOriginalPairAndCheckpoint) {
+    const auto root = tempPackage("failed-staging");
+    heisenberg::VideoProject project;
+    std::string error;
+    ASSERT_TRUE(project.savePackage(utf8(root), &error)) << error;
+    const auto checkpoint = project.savedRevision();
+    const auto originalProject = heisenberg::ProjectCodec::encode(project.editor().project());
+    const auto originalManifest = project.editor().manifest().toJson();
+    // An unwritable document path fails after project.json has been staged.
+    std::filesystem::remove(root / "media.json");
+    std::filesystem::create_directory(root / "media.json");
+    writeText(root / "media.json" / "preserved.txt", originalManifest);
+    ASSERT_TRUE(project.editor().applyTimelineSettings(
+        heisenberg::TimelineSettings::fromTimelineSettings(1280, 720, 25)).changed());
+    EXPECT_FALSE(project.save(&error));
+    EXPECT_TRUE(project.isDirty());
+    EXPECT_EQ(project.savedRevision(), checkpoint);
+    std::ifstream stream(root / "project.json", std::ios::binary);
+    const std::string diskProject{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    EXPECT_EQ(diskProject, originalProject);
+    EXPECT_TRUE(std::filesystem::exists(root / "media.json" / "preserved.txt"));
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+TEST(VideoProjectTest, FailedLoadKeepsLiveHistoryAndSnapshotRoot) {
+    const auto root = tempPackage("failed-load");
+    heisenberg::VideoProject project;
+    std::string error;
+    ASSERT_TRUE(project.savePackage(utf8(root), &error)) << error;
+    ASSERT_TRUE(project.editor().applyTimelineSettings(
+        heisenberg::TimelineSettings::fromTimelineSettings(1280, 720, 25)).changed());
+    const auto capture = project.snapshot();
+    writeText(root / "media.json", "invalid JSON");
+    EXPECT_FALSE(project.loadPackage(utf8(root), &error));
+    EXPECT_EQ(project.revision(), capture.revision());
+    EXPECT_EQ(project.editor().project(), capture.project());
+    EXPECT_EQ(project.editor().projectDir(), capture.packageRoot());
+    EXPECT_TRUE(project.editor().undo());
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
 }
 
 TEST(EditorViewModelTest, MissingMediaAndNoOpsDoNotCreateHistory) {

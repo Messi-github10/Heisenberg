@@ -1,5 +1,5 @@
 include(GoogleTest)
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent)
 
 add_executable(HeisenbergEditorUiTests
     media_pool_test.cpp
@@ -8,6 +8,12 @@ add_executable(HeisenbergEditorUiTests
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/EditorSession.hpp
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/PlayerController.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/PlayerController.hpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/Backend/MediaInfoProbe.cpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/Backend/MediaInfoProbe.hpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/MediaInfoPanel.cpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/MediaInfoPanel.hpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/RoundedPanel.cpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/RoundedPanel.hpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/MediaPoolWidget.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/MediaPoolWidget.hpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/TimelineWidget.cpp
@@ -24,7 +30,7 @@ set_target_properties(HeisenbergEditorUiTests PROPERTIES
 add_dependencies(HeisenbergEditorUiTests MainApp HeisenbergFrameworkTestMedia)
 target_include_directories(HeisenbergEditorUiTests PRIVATE ${CMAKE_SOURCE_DIR}/UserInterface)
 target_link_libraries(HeisenbergEditorUiTests PRIVATE
-    HeisenbergFramework GTest::gtest Qt6::Core Qt6::Gui Qt6::Widgets)
+    HeisenbergFramework GTest::gtest Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Concurrent)
 target_compile_definitions(HeisenbergEditorUiTests PRIVATE
     HEISENBERG_TEST_MEDIA="${CMAKE_BINARY_DIR}/Tests/Framework/media/playlist_clip_a.mp4")
 if(MSVC)

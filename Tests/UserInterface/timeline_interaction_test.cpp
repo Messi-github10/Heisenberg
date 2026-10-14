@@ -1,4 +1,5 @@
 #include <Backend/EditorSession.hpp>
+#include <Models/ProjectCodec.hpp>
 #include <Backend/PlayerController.hpp>
 #include <MainWidget/MainWindow.hpp>
 #include <MainWidget/TimelineWidget.hpp>

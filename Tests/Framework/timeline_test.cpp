@@ -1,12 +1,18 @@
 #include <Models/Timeline.hpp>
 #include <Models/MediaManifest.hpp>
-#include <Preview/TimelineProducer.hpp>
+#include <Preview/VideoEngine.hpp>
+#include <Compositing/CompositionBuilder.hpp>
+#include <Compositing/FrameRenderer.hpp>
 
+#include <Models/ProjectCodec.hpp>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <string>
+#include <chrono>
+#include <thread>
+#include <optional>
 
 extern "C" {
 #include <libavutil/frame.h>
@@ -39,10 +45,25 @@ heisenberg::Timeline timelineWithTrack(std::vector<heisenberg::Clip> clips) {
     return timeline;
 }
 
-bool isBlackCanvas(const heisenberg::ProducerFrame& frame) {
-    if (!frame.hasVideo() || frame.video->format != AV_PIX_FMT_RGBAF16 || !frame.video->data[0]) return false;
-    const auto* pixel = reinterpret_cast<const uint16_t*>(frame.video->data[0]);
+bool isBlackCanvas(const std::shared_ptr<heisenberg::VideoFrame>& frame) {
+    if (!frame || !frame->get() || frame->spec().format != AV_PIX_FMT_RGBAF16 || !frame->get()->data[0]) return false;
+    const auto* pixel = reinterpret_cast<const uint16_t*>(frame->get()->data[0]);
     return pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 0x3C00;
+}
+
+std::optional<heisenberg::DecodedFrame> pumpUntilFrame(heisenberg::VideoEngine& engine, int64_t position) {
+    std::optional<heisenberg::DecodedFrame> output;
+    engine.onFrameDecoded = [&](heisenberg::DecodedFrame frame) {
+        if (frame.targetPosition == position) output = std::move(frame);
+    };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!output && std::chrono::steady_clock::now() < deadline) {
+        int waitMs = 0;
+        engine.pumpFrame(waitMs);
+        if (!output) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    engine.onFrameDecoded = {};
+    return output;
 }
 
 } // namespace
@@ -110,7 +131,7 @@ TEST(TimelineModelTest, ValidationRejectsOverlapDuplicateIdsAndOverflow) {
     EXPECT_FALSE(heisenberg::validateTimeline(timeline, &error));
 }
 
-TEST(TimelineProducerTest, GapsAndOfflineMediaProduceBlackFramesAndWarnings) {
+TEST(VideoEngineTimelineTest, GapsAndOfflineMediaProduceBlackFramesAndWarnings) {
     heisenberg::Timeline timeline = timelineWithTrack({clip("a", "missing", 3, 2)});
     heisenberg::MediaManifest manifest;
     heisenberg::MediaManifestEntry entry;
@@ -119,20 +140,42 @@ TEST(TimelineProducerTest, GapsAndOfflineMediaProduceBlackFramesAndWarnings) {
     entry.source = {heisenberg::MediaSource::Kind::External, "C:/definitely-not-here.mp4"};
     entry.duration = 1.0;
     ASSERT_TRUE(manifest.add(entry));
-    heisenberg::TimelineProducer producer(timeline, manifest);
-    producer.setHardwareDecode(false);
+    heisenberg::CompositionPlan plan;
     std::string error;
-    ASSERT_TRUE(producer.open(&error)) << error;
-    ASSERT_EQ(producer.length(), 5);
-    EXPECT_FALSE(producer.warnings().empty());
-    EXPECT_TRUE(isBlackCanvas(producer.getFrame(0)));
-    EXPECT_TRUE(isBlackCanvas(producer.getFrame(3)));
-    EXPECT_TRUE(producer.seek(99));
-    EXPECT_EQ(producer.position(), 4);
-    EXPECT_TRUE(producer.getFrame(5).eof);
+    ASSERT_TRUE(heisenberg::CompositionBuilder::build(timeline, manifest, {}, plan, &error)) << error;
+    ASSERT_EQ(plan.frameCount, 5);
+    // Building captures paths without probing disk availability.
+    EXPECT_TRUE(plan.warnings.empty());
+    EXPECT_FALSE(plan.sampleAt(0));
+    heisenberg::VideoEngine engine;
+    engine.setHardwareDecode(false);
+    ASSERT_TRUE(engine.openTimeline(timeline, manifest, {}));
+    const auto gap = pumpUntilFrame(engine, 0);
+    ASSERT_TRUE(gap);
+    EXPECT_TRUE(gap->blank);
+    heisenberg::FrameRenderer renderer(gap->settings);
+    EXPECT_TRUE(isBlackCanvas(renderer.background(gap->targetPosition, &error))) << error;
+    engine.seek(3.0 / timeline.fps);
+    const auto offline = pumpUntilFrame(engine, 3);
+    ASSERT_TRUE(offline);
+    EXPECT_TRUE(offline->blank);
+    EXPECT_FALSE(engine.snapshot().warnings.empty());
+    EXPECT_TRUE(isBlackCanvas(renderer.background(offline->targetPosition, &error))) << error;
+    engine.seek(99.0);
+    ASSERT_TRUE(pumpUntilFrame(engine, 4));
+    EXPECT_DOUBLE_EQ(engine.snapshot().currentTime, 4.0 / timeline.fps);
+    engine.play();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (engine.snapshot().state != heisenberg::VideoEngine::State::Ended &&
+           std::chrono::steady_clock::now() < deadline) {
+        int waitMs = 0;
+        engine.pumpFrame(waitMs);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EXPECT_EQ(engine.snapshot().state, heisenberg::VideoEngine::State::Ended);
 }
 
-TEST(TimelineProducerTest, ReadsRealMediaAcrossCutWithTrimAndSpeed) {
+TEST(VideoEngineTimelineTest, ReadsRealMediaAcrossCutWithTrimAndSpeed) {
     heisenberg::Timeline timeline = timelineWithTrack({clip("a", "media-a", 0, 4), clip("b", "media-a", 4, 3)});
     timeline.tracks[0].clips[0].trimStartFrame = 2;
     timeline.tracks[0].clips[1].trimStartFrame = 4;
@@ -144,14 +187,25 @@ TEST(TimelineProducerTest, ReadsRealMediaAcrossCutWithTrimAndSpeed) {
     entry.source = {heisenberg::MediaSource::Kind::External, HEISENBERG_PLAYLIST_CLIP_A};
     entry.duration = 1.0;
     ASSERT_TRUE(manifest.add(entry));
-    heisenberg::TimelineProducer producer(timeline, manifest);
-    producer.setHardwareDecode(false);
+    heisenberg::CompositionPlan plan;
     std::string error;
-    ASSERT_TRUE(producer.open(&error)) << error;
-    for (int64_t frame = 0; frame < producer.length(); ++frame) {
-        const auto value = producer.getFrame(frame);
-        EXPECT_FALSE(value.eof) << frame;
-        EXPECT_TRUE(value.hasVideo()) << frame;
-        EXPECT_EQ(value.position, frame);
+    ASSERT_TRUE(heisenberg::CompositionBuilder::build(timeline, manifest, {}, plan, &error)) << error;
+    ASSERT_EQ(plan.frameCount, 7);
+    ASSERT_TRUE(plan.sampleAt(0));
+    EXPECT_DOUBLE_EQ(plan.sampleAt(0)->sourceSeconds, 2.0 / timeline.fps);
+    EXPECT_DOUBLE_EQ(plan.sampleAt(3)->sourceSeconds, 5.0 / timeline.fps);
+    EXPECT_DOUBLE_EQ(plan.sampleAt(4)->sourceSeconds, 4.0 / timeline.fps);
+    EXPECT_DOUBLE_EQ(plan.sampleAt(6)->sourceSeconds, 8.0 / timeline.fps);
+    heisenberg::VideoEngine engine;
+    engine.setHardwareDecode(false);
+    ASSERT_TRUE(engine.openTimeline(timeline, manifest, {}));
+    for (int64_t frame = 0; frame < plan.frameCount; ++frame) {
+        if (frame > 0) engine.seek(static_cast<double>(frame) / timeline.fps);
+        const auto value = pumpUntilFrame(engine, frame);
+        ASSERT_TRUE(value) << frame;
+        EXPECT_FALSE(value->blank) << frame;
+        ASSERT_TRUE(value->source) << frame;
+        EXPECT_EQ(value->targetPosition, frame);
+        EXPECT_EQ(value->targetTimeBase, timeline.settings().timeBase());
     }
 }

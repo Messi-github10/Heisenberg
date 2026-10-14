@@ -45,11 +45,15 @@ static const StaticFormatEntry kStaticFormats[] = {
     { AV_PIX_FMT_YUV420P,     {0, 1, 2, -1},  8, 1, 1 },
     { AV_PIX_FMT_NV12,        {0, 1, 1, -1},  8, 1, 1 },
     { AV_PIX_FMT_YUV420P10LE, {0, 1, 2, -1}, 10, 1, 1 },
+    { AV_PIX_FMT_RGBA,        {0, 0, 0,  0},  8, 0, 0 },
     { AV_PIX_FMT_RGBAF16,     {0, 0, 0,  0}, 16, 0, 0 },
+    { AV_PIX_FMT_RGBAF32,     {0, 0, 0,  0}, 32, 0, 0 },
 };
 
 static const char* getPlaneFormatName(int bytesPerComp, int components) {
+    if (components == 4 && bytesPerComp == 1) return "rgba8";
     if (components == 4 && bytesPerComp == 2) return "rgba16hf";
+    if (components == 4 && bytesPerComp == 4) return "rgba32f";
     if (components < 1 || components > 2) return nullptr;
     if (bytesPerComp < 1 || bytesPerComp > 2) return nullptr;
     static const char* table[2][2] = {
@@ -70,7 +74,7 @@ static FormatMeta deriveFromStaticEntry(const StaticFormatEntry& entry) {
     }
     meta.numPlanes = maxPlane + 1;
 
-    int bytes = (entry.bitDepth > 8) ? 2 : 1;
+    int bytes = (entry.bitDepth + 7) / 8;
 
     for (int p = 0; p < meta.numPlanes; ++p) {
         PlaneMeta& pm = meta.planes[p];
@@ -128,17 +132,11 @@ static FormatMeta deriveFromFFmpeg(const AVPixFmtDescriptor* desc, AVPixelFormat
 }
 
 static bool getFormatMeta(AVPixelFormat avfmt, FormatMeta& out) {
-    int lo = 0, hi = static_cast<int>(sizeof(kStaticFormats) / sizeof(kStaticFormats[0])) - 1;
-    while (lo <= hi) {
-        int mid = (lo + hi) / 2;
-        if (kStaticFormats[mid].avFormat == avfmt) {
-            out = deriveFromStaticEntry(kStaticFormats[mid]);
+    for (const auto& entry : kStaticFormats) {
+        if (entry.avFormat == avfmt) {
+            out = deriveFromStaticEntry(entry);
             return true;
         }
-        if (kStaticFormats[mid].avFormat < avfmt)
-            lo = mid + 1;
-        else
-            hi = mid - 1;
     }
 
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(avfmt);
