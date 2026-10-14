@@ -14,11 +14,12 @@ EditorViewModelTimelines::EditorViewModelTimelines() {
 }
 const Track* EditorViewModelTimelines::activeTrack() const {
     const auto* timeline = activeTimeline();
-    return timeline && timeline->tracks.size() == 1 ? &timeline->tracks.front() : nullptr;
+    if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported) return nullptr;
+    for (const auto& track : timeline->tracks) if (track.type == ClipType::Video) return &track;
+    return timeline->tracks.empty() ? nullptr : &timeline->tracks.front();
 }
 Track* EditorViewModelTimelines::activeTrack() {
-    auto* timeline = activeTimeline();
-    return timeline && timeline->tracks.size() == 1 ? &timeline->tracks.front() : nullptr;
+    return const_cast<Track*>(static_cast<const EditorViewModelTimelines&>(*this).activeTrack());
 }
 void EditorViewModelTimelines::replace(ProjectFile project) {
     project_ = std::move(project);

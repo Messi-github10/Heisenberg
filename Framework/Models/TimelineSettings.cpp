@@ -1,4 +1,5 @@
 #include "TimelineSettings.hpp"
+#include <Common/MediaMath.hpp>
 
 #include <cmath>
 #include <limits>
@@ -160,14 +161,10 @@ double TimelineSettings::displayAspect() const { return static_cast<double>(widt
 double TimelineSettings::secondsFromFrame(int64_t frame) const { return static_cast<double>(frame) * timeBase().toDouble(); }
 int64_t TimelineSettings::frameFromSeconds(double seconds) const { return boundedRound(static_cast<long double>(seconds) * fps()); }
 int64_t TimelineSettings::audioSamplePosition(int64_t frame) const {
-    if (frame <= 0 || sampleRate() <= 0 || frameRate().numerator() <= 0 || frameRate().denominator() <= 0) return 0;
-    const long double value = static_cast<long double>(frame) * sampleRate() * frameRate().denominator() / frameRate().numerator();
-    if (value >= static_cast<long double>(std::numeric_limits<int64_t>::max())) return std::numeric_limits<int64_t>::max();
-    return static_cast<int64_t>(value);
+    return samplesToPosition(frameRate(), sampleRate(), frame);
 }
 int64_t TimelineSettings::audioSamplesForFrame(int64_t frame) const {
-    if (frame == std::numeric_limits<int64_t>::max()) return 0;
-    return audioSamplePosition(frame + 1) - audioSamplePosition(frame);
+    return samplesForFrame(frameRate(), sampleRate(), frame);
 }
 bool TimelineSettings::valid(std::string* error) const {
     if (width() < kMinDimension || width() > kMaxDimension || height() < kMinDimension || height() > kMaxDimension ||

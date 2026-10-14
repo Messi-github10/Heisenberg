@@ -128,7 +128,7 @@ int D3D11Decoder::open(const Stream& stream) {
     impl_->ctx->time_base = {stream.codec.tbNum(), stream.codec.tbDen()};
     impl_->ctx->pkt_timebase = impl_->ctx->time_base;
     impl_->ctx->framerate = {stream.codec.fpsNum(), stream.codec.fpsDen()};
-    impl_->startTime = stream.startTime;
+    impl_->startTime = stream.originKnown ? stream.originTime : stream.startTime;
     if (stream.codec.extradata() && stream.codec.extradataSize() > 0) {
         impl_->ctx->extradata = static_cast<uint8_t*>(
             av_mallocz(stream.codec.extradataSize() + AV_INPUT_BUFFER_PADDING_SIZE));

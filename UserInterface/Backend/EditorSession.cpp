@@ -72,8 +72,9 @@ QStringList EditorSession::importFiles(const QStringList& paths) {
     return errors;
 }
 
-EditResult EditorSession::placeMedia(const QString& mediaRef, qint64 frame) {
-    auto result = project_.editor().placeClip(mediaRef.toUtf8().toStdString(), frame);
+EditResult EditorSession::placeMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId) {
+    auto result = project_.editor().placeClip(mediaRef.toUtf8().toStdString(), frame, -1, 0,
+                                            targetTrackId.toUtf8().toStdString());
     if (result.changed()) {
         syncDirty();
         emit timelineChanged(frame);
@@ -81,9 +82,32 @@ EditResult EditorSession::placeMedia(const QString& mediaRef, qint64 frame) {
     return result;
 }
 
+EditResult EditorSession::setClipAudio(const QString& clipId, double volume,
+                                      qint64 fadeInFrames, qint64 fadeOutFrames) {
+    auto result = project_.editor().setClipAudio(clipId.toUtf8().toStdString(), volume,
+                                               fadeInFrames, fadeOutFrames);
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
+EditResult EditorSession::setTrackMuted(const QString& trackId, bool muted) {
+    auto result = project_.editor().setTrackMuted(trackId.toUtf8().toStdString(), muted);
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
+EditResult EditorSession::removeClips(const QStringList& clipIds) {
+    std::vector<std::string> ids;
+    ids.reserve(clipIds.size());
+    for (const auto& id : clipIds) ids.push_back(id.toUtf8().toStdString());
+    auto result = project_.editor().removeClips(ids);
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
 EditResult EditorSession::moveClip(const QString& clipId, qint64 frame) {
     if (project_.editor().compatibility().level == CompatibilityLevel::Unsupported)
-        return {EditStatus::Unsupported, {}, "active timeline is not a single video track"};
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
     auto result = project_.editor().moveClip(clipId.toUtf8().toStdString(), frame);
     if (result.changed()) {
         syncDirty();
@@ -94,7 +118,7 @@ EditResult EditorSession::moveClip(const QString& clipId, qint64 frame) {
 
 EditResult EditorSession::trimClip(const QString& clipId, TrimEdge edge, qint64 deltaFrames) {
     if (project_.editor().compatibility().level == CompatibilityLevel::Unsupported)
-        return {EditStatus::Unsupported, {}, "active timeline is not a single video track"};
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
     auto result = project_.editor().trimClip(clipId.toUtf8().toStdString(), edge, deltaFrames);
     if (result.changed()) {
         syncDirty();
@@ -106,7 +130,7 @@ EditResult EditorSession::trimClip(const QString& clipId, TrimEdge edge, qint64 
 
 EditResult EditorSession::splitClip(const QString& clipId, qint64 frame) {
     if (project_.editor().compatibility().level == CompatibilityLevel::Unsupported)
-        return {EditStatus::Unsupported, {}, "active timeline is not a single video track"};
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
     auto result = project_.editor().splitClip(clipId.toUtf8().toStdString(), frame);
     if (result.changed()) {
         syncDirty();

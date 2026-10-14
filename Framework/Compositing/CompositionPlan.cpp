@@ -1,10 +1,12 @@
 #include "CompositionPlan.hpp"
 #include <algorithm>
+#include <iterator>
 
 namespace heisenberg {
-
-std::optional<CompositionSample> CompositionPlan::sampleAt(int64_t frame) const {
-    if (frame < 0 || frame >= frameCount) return {};
+namespace {
+std::optional<CompositionSample> sample(const CompositionPlan& plan,
+    const std::vector<CompositionClip>& clips, int64_t frame, bool hidden, bool muted) {
+    if (frame < 0 || frame >= plan.frameCount) return {};
     const auto next = std::upper_bound(clips.begin(), clips.end(), frame,
         [](int64_t position, const CompositionClip& clip) { return position < clip.startFrame; });
     if (next == clips.begin()) return {};
@@ -13,20 +15,22 @@ std::optional<CompositionSample> CompositionPlan::sampleAt(int64_t frame) const 
     if (relative < 0 || relative >= found->durationFrames) return {};
     CompositionSample result;
     result.clipIndex = static_cast<size_t>(found - clips.begin());
-    // Trim offsets are in timeline-rate units, not the decoder's native rate.
-    // Keep fractional positions until the decoder maps seconds to native PTS.
-    result.sourceSeconds = settings.secondsFromFrame(found->trimStartFrame)
-        + settings.secondsFromFrame(relative) * found->speed;
+    result.sourceSeconds = plan.settings.secondsFromFrame(found->trimStartFrame)
+        + plan.settings.secondsFromFrame(relative) * found->speed;
     result.speed = found->speed;
+    // The mixer applies clip fades at output-sample resolution, exactly once.
     result.gain = found->volume;
-    if (found->fadeInFrames > 0)
-        result.gain *= std::min(1.0, static_cast<double>(relative) / found->fadeInFrames);
-    if (found->fadeOutFrames > 0)
-        result.gain *= std::min(1.0, static_cast<double>(found->durationFrames - relative - 1)
-                                   / found->fadeOutFrames);
     result.hidden = hidden;
     result.muted = muted;
     return result;
+}
+}
+
+std::optional<CompositionSample> CompositionPlan::videoSampleAt(int64_t frame) const {
+    return sample(*this, clips, frame, hidden, muted);
+}
+std::optional<CompositionSample> CompositionPlan::audioSampleAt(int64_t frame) const {
+    return sample(*this, audioClips, frame, false, audioMuted);
 }
 
 } // namespace heisenberg

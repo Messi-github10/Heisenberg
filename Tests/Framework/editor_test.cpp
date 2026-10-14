@@ -58,8 +58,8 @@ heisenberg::ProjectFile testProject(const heisenberg::Clip& initial, bool second
     timeline.tracks.push_back(track);
     if (secondTrack) {
         heisenberg::Track another;
-        another.id = "track-audio";
-        another.type = heisenberg::ClipType::Audio;
+        another.id = "track-second-video";
+        another.type = heisenberg::ClipType::Video;
         timeline.tracks.push_back(another);
     }
     project.timelines.push_back(timeline);
@@ -325,7 +325,7 @@ TEST(EditorViewModelTest, ExtremeTrimDeltasAreRejectedWithoutHistory) {
     std::filesystem::remove_all(root, code);
 }
 
-TEST(EditorViewModelTest, MultiTrackTimelineIsPreservedButUnsupportedForEditing) {
+TEST(EditorViewModelTest, DuplicateVideoTracksArePreservedButUnsupportedForEditing) {
     const auto root = tempPackage("multi-track");
     const auto project = testProject(initialClip(), true);
     auto editor = loadEditor(root, project, testManifest());
@@ -469,6 +469,6 @@ TEST(VideoProjectTest, FailedLoadKeepsLiveHistoryAndSnapshotRoot) {
 TEST(EditorViewModelTest, MissingMediaAndNoOpsDoNotCreateHistory) {
     heisenberg::EditorViewModel editor;
     EXPECT_EQ(editor.placeClip("missing", 0, 4).status, heisenberg::EditStatus::Invalid);
-    EXPECT_EQ(editor.removeClips({"missing"}).status, heisenberg::EditStatus::Unsupported);
+    EXPECT_EQ(editor.removeClips({"missing"}).status, heisenberg::EditStatus::NoOp);
     EXPECT_FALSE(editor.undo());
 }

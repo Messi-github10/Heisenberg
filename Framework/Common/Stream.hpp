@@ -22,6 +22,11 @@ public:
     int index = -1;
     int demuxerId = -1;
     int64_t startTime = 0; // In stream time-base units.
+    int64_t originTime = 0; // Shared source origin, rescaled to this stream.
+    bool originKnown = false;
+    int64_t duration = 0;
+    bool durationKnown = false;
+    bool attachedPicture = false;
     Type type = VIDEO;
 
     CodecParams codec;

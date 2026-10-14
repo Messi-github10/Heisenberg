@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace heisenberg::ui { class EditorSession; }
 namespace heisenberg { enum class TrimEdge; }
@@ -20,6 +21,7 @@ class QWheelEvent;
 class QColor;
 class QMimeData;
 class QKeyEvent;
+class QContextMenuEvent;
 
 class TimelineWidget final : public QWidget {
     Q_OBJECT
@@ -35,6 +37,8 @@ public:
     void setSnappingEnabled(bool enabled);
     bool snappingEnabled() const { return snappingEnabled_; }
     void splitSelectedClip();
+    void removeSelectedClip();
+    void editSelectedClipAudio();
     void setFrameCount(qint64 frameCount);
     void setCurrentFrame(qint64 frame);
     void setPlaying(bool playing);
@@ -53,6 +57,7 @@ signals:
     void editFailed(const QString& reason);
 
 protected:
+    void contextMenuEvent(QContextMenuEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -84,12 +89,22 @@ private:
     QString formatTimecode(qint64 frame) const;
     QString mediaFromMime(const QMimeData* mime) const;
     qint64 dropFrameAtX(double x) const;
-    bool canDropAt(const QPointF& point) const;
+    struct Lane {
+        const heisenberg::Track* track = nullptr;
+        heisenberg::ClipType type = heisenberg::ClipType::Video;
+        double top = 0.0;
+        double height = 44.0;
+    };
+    std::vector<Lane> lanes() const;
+    std::optional<Lane> laneAt(const QPointF& point) const;
+    std::optional<Lane> laneForTrack(const std::string& trackId) const;
+    bool canDropAt(const QPointF& point, const QString& mediaRef = {}) const;
     void updateClipMove(const QPointF& point, Qt::KeyboardModifiers modifiers);
     std::optional<heisenberg::TrimEdge> trimEdgeAt(const heisenberg::Clip& clip, double x) const;
 
     struct ClipMove {
         std::string clipId;
+        std::string trackId;
         QPointF pressPosition;
         QPointF lastPosition;
         double grabOffsetFrames = 0.0;
@@ -116,6 +131,7 @@ private:
     std::unordered_set<std::string> missingMedia_;
     QString draggedMedia_;
     qint64 dropFrame_ = 0;
+    std::optional<Lane> dropLane_;
     qint64 playbackFrameCount_ = 0;
     qint64 currentFrame_ = 0;
     double pixelsPerFrame_ = 4.0;

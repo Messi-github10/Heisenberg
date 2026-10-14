@@ -121,6 +121,50 @@ TEST(TimelineModelTest, UsesHalfOpenRangesAndMaximumTrackEnd) {
     EXPECT_EQ(timeline.totalFrames(), 13);
 }
 
+TEST(TimelineModelTest, IndependentTrackLookupAndCompatibilityRejectOnlyUnsupportedLayouts) {
+    auto timeline = timelineWithTrack({clip("video-clip", "video", 0, 24)});
+    heisenberg::Track audio;
+    audio.id = "audio-track"; audio.type = heisenberg::ClipType::Audio;
+    auto sound = clip("audio-clip", "audio", 0, 48);
+    sound.mediaType = sound.sourceClipType = heisenberg::ClipType::Audio;
+    audio.clips.push_back(sound);
+    timeline.tracks.push_back(audio);
+    EXPECT_TRUE(heisenberg::validateTimeline(timeline)); // Cross-track overlap is valid.
+    EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Supported);
+    EXPECT_EQ(timeline.trackForClip("audio-clip"), timeline.trackById("audio-track"));
+    const auto& immutable = timeline;
+    EXPECT_EQ(immutable.trackForClip("audio-clip"), immutable.trackById("audio-track"));
+    EXPECT_EQ(immutable.trackForClip("missing"), nullptr);
+    EXPECT_EQ(immutable.trackById("missing"), nullptr);
+    timeline.tracks.back().clips.front().sourceClipType = heisenberg::ClipType::Video;
+    EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Unsupported);
+    timeline.tracks.back().clips.front().sourceClipType = heisenberg::ClipType::Audio;
+    auto duplicate = audio; duplicate.id = "duplicate-audio"; duplicate.clips.clear();
+    timeline.tracks.push_back(duplicate);
+    EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Unsupported);
+}
+
+TEST(ProjectCodecTest, IndependentAudioUsesExistingPalmierWireAndRoundTripsAutomation) {
+    const std::string fixture = R"json({"timelines":[{"id":"timeline","fps":24,"width":320,"height":240,"tracks":[{"id":"video","type":"video","clips":[{"id":"picture","mediaRef":"video-media","startFrame":0,"durationFrames":24}]},{"id":"audio","type":"audio","muted":true,"clips":[{"id":"sound","mediaRef":"audio-media","mediaType":"audio","sourceClipType":"audio","startFrame":3,"durationFrames":48,"volume":1.5,"fadeInFrames":4,"fadeOutFrames":5,"fadeInInterpolation":"smooth","fadeOutInterpolation":"hold","volumeTrack":{"keyframes":[{"frame":2,"value":0.2,"interpolationOut":"smooth"}]}}]}]}],"activeTimelineId":"timeline"})json";
+    heisenberg::ProjectFile project;
+    std::string error;
+    ASSERT_TRUE(heisenberg::ProjectCodec::decode(fixture, project, &error)) << error;
+    ASSERT_EQ(project.timelines.size(), 1u);
+    EXPECT_EQ(project.timelines.front().totalFrames(), 51);
+    EXPECT_EQ(heisenberg::compatibilityFor(project.timelines.front()).level, heisenberg::CompatibilityLevel::Warning);
+    const auto& video = project.timelines.front().tracks.front().clips.front();
+    EXPECT_EQ(video.mediaType, heisenberg::ClipType::Video); // Legacy omitted fields still default to video.
+    EXPECT_EQ(video.sourceClipType, heisenberg::ClipType::Video);
+    const auto encoded = heisenberg::ProjectCodec::encode(project);
+    const auto object = json::parse(encoded);
+    EXPECT_FALSE(object.contains("version"));
+    EXPECT_EQ(object["timelines"][0]["tracks"][1]["type"], "audio");
+    EXPECT_EQ(object["timelines"][0]["tracks"][1]["clips"][0]["fadeOutInterpolation"], "hold");
+    heisenberg::ProjectFile reopened;
+    ASSERT_TRUE(heisenberg::ProjectCodec::decode(encoded, reopened, &error)) << error;
+    EXPECT_EQ(reopened, project);
+}
+
 TEST(TimelineModelTest, ValidationRejectsOverlapDuplicateIdsAndOverflow) {
     heisenberg::Timeline timeline = timelineWithTrack({clip("same", "m", 0, 5), clip("same", "m", 4, 2)});
     std::string error;

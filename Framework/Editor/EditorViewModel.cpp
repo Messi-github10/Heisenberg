@@ -244,24 +244,33 @@ bool EditorViewModel::importMedia(const std::string& path, std::string* error) {
     if (demux->open(path) < 0) { setError(error, "Cannot read media file"); return false; }
     const Stream* video = nullptr;
     bool hasAudio = false;
+    double streamDuration = 0.0;
     for (const auto& stream : demux->streams()) {
-        if (stream.isVideo() && !video) video = &stream;
+        const bool usableVideo = stream.isVideo() && !stream.attachedPicture;
+        if (usableVideo && !video) video = &stream;
         if (stream.isAudio()) hasAudio = true;
+        if ((usableVideo || stream.isAudio()) && stream.durationKnown) {
+            const double seconds = stream.codec.toSeconds(stream.duration);
+            if (std::isfinite(seconds) && seconds > streamDuration) streamDuration = seconds;
+        }
     }
-    if (!video) { setError(error, "Only video files are supported for import"); return false; }
-    const double duration = demux->duration();
+    if (!video && !hasAudio) { setError(error, "Media has no usable video or audio stream"); return false; }
+    double duration = demux->duration();
+    if (!std::isfinite(duration) || duration <= 0.0) duration = streamDuration;
     if (!std::isfinite(duration) || duration <= 0.0) {
         setError(error, "Media duration is unavailable"); return false;
     }
     MediaManifestEntry entry;
     entry.id = makeUuid();
     entry.name = utf8(std::filesystem::u8path(path).stem());
-    entry.type = ClipType::Video;
+    entry.type = video ? ClipType::Video : ClipType::Audio;
     entry.source = {MediaSource::Kind::External, path};
     entry.duration = duration;
-    entry.sourceWidth = video->codec.width();
-    entry.sourceHeight = video->codec.height();
-    if (video->codec.fps() > 0.0) entry.sourceFPS = video->codec.fps();
+    if (video) {
+        entry.sourceWidth = video->codec.width();
+        entry.sourceHeight = video->codec.height();
+        if (std::isfinite(video->codec.fps()) && video->codec.fps() > 0.0) entry.sourceFPS = video->codec.fps();
+    }
     entry.hasAudio = hasAudio;
     if (!impl_->manifest.add(std::move(entry), error)) return false;
     ++impl_->revision;
@@ -288,47 +297,66 @@ std::vector<MediaAsset> EditorViewModel::assets() const {
 }
 
 EditResult EditorViewModel::placeClip(const std::string& mediaRef, int64_t startFrame,
-                                      int64_t durationFrames, int64_t trimStartFrame) {
+                                      int64_t durationFrames, int64_t trimStartFrame,
+                                      const std::string& targetTrackId) {
     Timeline* timeline = impl_->active();
     const MediaManifestEntry* media = impl_->manifest.find(mediaRef);
     if (!timeline || !media) return {EditStatus::Invalid, {}, "mediaRef was not found"};
-    if (media->type != ClipType::Video) return {EditStatus::Unsupported, {}, "only video media can be placed"};
+    if (media->type != ClipType::Video && media->type != ClipType::Audio)
+        return {EditStatus::Unsupported, {}, "only video and audio media can be placed"};
     if (compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
-        return {EditStatus::Unsupported, {}, "active timeline is not a single video track"};
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
+    if (!targetTrackId.empty()) {
+        const Track* target = timeline->trackById(targetTrackId);
+        if (!target) return {EditStatus::Invalid, {}, "target track was not found"};
+        if (target->type != media->type) return {EditStatus::Invalid, {}, "media type does not match target track"};
+    }
     if (startFrame < 0 || trimStartFrame < 0) return {EditStatus::Invalid, {}, "frame values must be non-negative"};
     const double sourceFrames = media->duration * timeline->fps;
     if (!std::isfinite(sourceFrames) || sourceFrames < 0 ||
-        sourceFrames > static_cast<double>(std::numeric_limits<int64_t>::max()))
+        sourceFrames >= static_cast<double>(std::numeric_limits<int64_t>::max()))
         return {EditStatus::Invalid, {}, "media duration cannot be represented in timeline frames"};
     const int64_t sourceDuration = std::llround(sourceFrames);
+    if (trimStartFrame > sourceDuration) return {EditStatus::Invalid, {}, "clip range exceeds the source duration"};
     if (durationFrames < 0) durationFrames = sourceDuration - trimStartFrame;
     if (durationFrames <= 0) return {EditStatus::Invalid, {}, "clip duration must be positive"};
-    if (trimStartFrame > sourceDuration || durationFrames > sourceDuration - trimStartFrame)
+    if (durationFrames > sourceDuration - trimStartFrame)
         return {EditStatus::Invalid, {}, "clip range exceeds the source duration"};
 
     int64_t endFrame = 0;
     if (!addChecked(startFrame, durationFrames, endFrame))
         return {EditStatus::Invalid, {}, "clip range overflows"};
-    Timeline before = *timeline;
-    if (timeline->tracks.empty()) {
-        Track track; track.id = makeUuid(); track.type = ClipType::Video;
-        timeline->tracks.push_back(std::move(track));
+    Timeline candidate = *timeline;
+    Track* track = targetTrackId.empty() ? nullptr : candidate.trackById(targetTrackId);
+    if (!track) {
+        for (Track& existing : candidate.tracks) if (existing.type == media->type) { track = &existing; break; }
     }
-    Track& track = timeline->tracks.front();
-    std::vector<std::string> affected = clearRegion(track, startFrame, endFrame);
+    if (!track) {
+        Track created; created.id = makeUuid(); created.type = media->type;
+        if (media->type == ClipType::Video) {
+            candidate.tracks.insert(candidate.tracks.begin(), std::move(created));
+            track = &candidate.tracks.front();
+        } else {
+            candidate.tracks.push_back(std::move(created));
+            track = &candidate.tracks.back();
+        }
+    }
+    std::vector<std::string> affected = clearRegion(*track, startFrame, endFrame);
     Clip clip;
     clip.id = makeUuid();
     clip.mediaRef = mediaRef;
-    clip.mediaType = ClipType::Video;
-    clip.sourceClipType = ClipType::Video;
+    clip.mediaType = media->type;
+    clip.sourceClipType = media->type;
     clip.startFrame = startFrame;
     clip.durationFrames = durationFrames;
     clip.trimStartFrame = trimStartFrame;
     clip.trimEndFrame = sourceDuration - trimStartFrame - durationFrames;
-    track.clips.push_back(clip);
-    track.sortClips();
+    track->clips.push_back(clip);
+    track->sortClips();
     std::string error;
-    if (!validateTimeline(*timeline, &error)) { *timeline = std::move(before); return {EditStatus::Invalid, {}, error}; }
+    if (!validateTimeline(candidate, &error)) return {EditStatus::Invalid, {}, error};
+    const Timeline before = *timeline;
+    *timeline = std::move(candidate);
     affected.push_back(clip.id);
     impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Place Clip"});
     impl_->timelines.redo_.clear();
@@ -338,9 +366,10 @@ EditResult EditorViewModel::placeClip(const std::string& mediaRef, int64_t start
 
 EditResult EditorViewModel::moveClip(const std::string& clipId, int64_t startFrame) {
     Timeline* timeline = impl_->active();
-    Track* track = impl_->track();
-    if (!timeline || !track || track->type != ClipType::Video)
-        return {EditStatus::Unsupported, {}, "active timeline is not a single video track"};
+    if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
+    Track* track = timeline->trackForClip(clipId);
+    if (!track) return {EditStatus::Invalid, {}, "clip was not found"};
     Clip* current = track->clipById(clipId);
     if (!current || startFrame < 0) return {EditStatus::Invalid, {}, "clip or target frame is invalid"};
     if (current->startFrame == startFrame) return {EditStatus::NoOp, {clipId}, {}};
@@ -365,16 +394,17 @@ EditResult EditorViewModel::moveClip(const std::string& clipId, int64_t startFra
 
 EditResult EditorViewModel::splitClip(const std::string& clipId, int64_t atFrame) {
     Timeline* timeline = impl_->active();
-    Track* track = impl_->track();
-    if (!timeline || !track || track->type != ClipType::Video)
-        return {EditStatus::Unsupported, {}, "active timeline is not a single video track"};
+    if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
+    Track* track = timeline->trackForClip(clipId);
+    if (!track) return {EditStatus::Invalid, {}, "clip was not found"};
     const Clip* current = track->clipById(clipId);
     if (!current) return {EditStatus::Invalid, {}, "clip was not found"};
     const auto values = splitValue(*current, atFrame);
     if (!values) return {EditStatus::NoOp, {clipId}, "split frame must be inside the clip"};
 
     Timeline candidate = *timeline;
-    Track& candidateTrack = candidate.tracks.front();
+    Track& candidateTrack = *candidate.trackById(track->id);
     const auto found = std::find_if(candidateTrack.clips.begin(), candidateTrack.clips.end(),
                                     [&](const Clip& clip) { return clip.id == clipId; });
     *found = values->first;
@@ -393,9 +423,10 @@ EditResult EditorViewModel::splitClip(const std::string& clipId, int64_t atFrame
 
 EditResult EditorViewModel::trimClip(const std::string& clipId, TrimEdge edge, int64_t deltaFrames) {
     Timeline* timeline = impl_->active();
-    Track* track = impl_->track();
-    if (!timeline || !track || track->type != ClipType::Video)
-        return {EditStatus::Unsupported, {}, "active timeline is not a single video track"};
+    if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
+    Track* track = timeline->trackForClip(clipId);
+    if (!track) return {EditStatus::Invalid, {}, "clip was not found"};
     const Clip* original = track->clipById(clipId);
     if (!original) return {EditStatus::Invalid, {}, "clip was not found"};
     if (deltaFrames == 0) return {EditStatus::NoOp, {clipId}, {}};
@@ -403,7 +434,7 @@ EditResult EditorViewModel::trimClip(const std::string& clipId, TrimEdge edge, i
         return {EditStatus::Invalid, {}, "trim frame arithmetic overflows"};
 
     Timeline candidate = *timeline;
-    Track& candidateTrack = candidate.tracks.front();
+    Track& candidateTrack = *candidate.trackById(track->id);
     Clip snapshot = *candidateTrack.clipById(clipId);
     int64_t newDuration = 0;
     if (!addChecked(snapshot.durationFrames, edge == TrimEdge::Left ? -deltaFrames : deltaFrames, newDuration) ||
@@ -457,24 +488,81 @@ EditResult EditorViewModel::trimClip(const std::string& clipId, TrimEdge edge, i
 
 EditResult EditorViewModel::removeClips(const std::vector<std::string>& clipIds) {
     Timeline* timeline = impl_->active();
-    Track* track = impl_->track();
-    if (!timeline || !track || track->type != ClipType::Video)
-        return {EditStatus::Unsupported, {}, "active timeline is not a single video track"};
+    if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
     const std::unordered_set<std::string> requested(clipIds.begin(), clipIds.end());
     std::vector<std::string> affected;
-    for (const Clip& clip : track->clips) if (requested.count(clip.id)) affected.push_back(clip.id);
+    for (const Track& track : timeline->tracks)
+        for (const Clip& clip : track.clips) if (requested.count(clip.id)) affected.push_back(clip.id);
     if (affected.empty()) return {EditStatus::NoOp, {}, {}};
 
-    const Timeline before = *timeline;
-    track->clips.erase(std::remove_if(track->clips.begin(), track->clips.end(),
-                                     [&](const Clip& clip) { return requested.count(clip.id) != 0; }),
-                       track->clips.end());
+    Timeline candidate = *timeline;
+    for (Track& track : candidate.tracks) {
+        track.clips.erase(std::remove_if(track.clips.begin(), track.clips.end(),
+                                        [&](const Clip& clip) { return requested.count(clip.id) != 0; }),
+                          track.clips.end());
+    }
     std::string error;
-    if (!validateTimeline(*timeline, &error)) { *timeline = before; return {EditStatus::Invalid, {}, error}; }
+    if (!validateTimeline(candidate, &error)) return {EditStatus::Invalid, {}, error};
+    const Timeline before = *timeline;
+    *timeline = std::move(candidate);
     impl_->timelines.undo_.push_back({timeline->id, before, *timeline, affected.size() == 1 ? "Remove Clip" : "Remove Clips"});
     impl_->timelines.redo_.clear();
     ++impl_->revision;
     return {EditStatus::Changed, std::move(affected), {}};
+}
+
+EditResult EditorViewModel::setClipAudio(const std::string& clipId, double volume,
+                                        int64_t fadeInFrames, int64_t fadeOutFrames) {
+    Timeline* timeline = impl_->active();
+    if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
+    const Clip* current = timeline->clipById(clipId);
+    if (!current) return {EditStatus::Invalid, {}, "clip was not found"};
+    if (!std::isfinite(volume) || volume < 0.0 || volume > 2.0 || fadeInFrames < 0 || fadeOutFrames < 0 ||
+        fadeInFrames > current->durationFrames || fadeOutFrames > current->durationFrames - fadeInFrames)
+        return {EditStatus::Invalid, {}, "volume must be between 0 and 2 and fades must fit the clip duration"};
+    if (current->volume == volume && current->fadeInFrames == fadeInFrames && current->fadeOutFrames == fadeOutFrames)
+        return {EditStatus::NoOp, {clipId}, compatibilityFor(*timeline).level == CompatibilityLevel::Warning
+            ? "advanced clip fields are preserved; preview uses base volume and linear fades" : ""};
+    Timeline candidate = *timeline;
+    Clip* clip = candidate.clipById(clipId);
+    clip->volume = volume;
+    if (clip->fadeInFrames != fadeInFrames) clip->fadeInInterpolation = Interpolation::Linear;
+    if (clip->fadeOutFrames != fadeOutFrames) clip->fadeOutInterpolation = Interpolation::Linear;
+    clip->fadeInFrames = fadeInFrames;
+    clip->fadeOutFrames = fadeOutFrames;
+    const bool preservedAutomation = clip->volumeTrack.has_value()
+        || (clip->fadeInFrames > 0 && clip->fadeInInterpolation != Interpolation::Linear)
+        || (clip->fadeOutFrames > 0 && clip->fadeOutInterpolation != Interpolation::Linear);
+    std::string error;
+    if (!validateTimeline(candidate, &error)) return {EditStatus::Invalid, {}, error};
+    const Timeline before = *timeline;
+    *timeline = std::move(candidate);
+    impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Clip Audio"});
+    impl_->timelines.redo_.clear();
+    ++impl_->revision;
+    return {EditStatus::Changed, {clipId}, preservedAutomation
+        ? "audio automation is preserved; preview uses base volume and linear fades" : ""};
+}
+
+EditResult EditorViewModel::setTrackMuted(const std::string& trackId, bool muted) {
+    Timeline* timeline = impl_->active();
+    if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
+    const Track* current = timeline->trackById(trackId);
+    if (!current) return {EditStatus::Invalid, {}, "track was not found"};
+    if (current->muted == muted) return {EditStatus::NoOp, {trackId}, {}};
+    Timeline candidate = *timeline;
+    candidate.trackById(trackId)->muted = muted;
+    std::string error;
+    if (!validateTimeline(candidate, &error)) return {EditStatus::Invalid, {}, error};
+    const Timeline before = *timeline;
+    *timeline = std::move(candidate);
+    impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Track Mute"});
+    impl_->timelines.redo_.clear();
+    ++impl_->revision;
+    return {EditStatus::Changed, {trackId}, {}};
 }
 
 bool EditorViewModel::undo() {

@@ -47,8 +47,60 @@ add_custom_command(
     VERBATIM
 )
 
+set(FRAMEWORK_TEST_MP3 "${FRAMEWORK_TEST_MEDIA_DIR}/audio_44100_mono.mp3")
+set(FRAMEWORK_TEST_WAV "${FRAMEWORK_TEST_MEDIA_DIR}/audio_44100_mono.wav")
+set(FRAMEWORK_TEST_FLOAT_WAV "${FRAMEWORK_TEST_MEDIA_DIR}/audio_float.wav")
+set(FRAMEWORK_TEST_AAC "${FRAMEWORK_TEST_MEDIA_DIR}/audio_aac.m4a")
+set(FRAMEWORK_TEST_FLAC "${FRAMEWORK_TEST_MEDIA_DIR}/audio_flac.flac")
+set(FRAMEWORK_TEST_OGG "${FRAMEWORK_TEST_MEDIA_DIR}/audio_vorbis.ogg")
+set(FRAMEWORK_TEST_LONG_AUDIO "${FRAMEWORK_TEST_MEDIA_DIR}/audio_long.wav")
+set(FRAMEWORK_TEST_COVER "${FRAMEWORK_TEST_MEDIA_DIR}/audio_cover.jpg")
+set(FRAMEWORK_TEST_COVER_MP3 "${FRAMEWORK_TEST_MEDIA_DIR}/audio_cover.mp3")
+
+function(add_audio_fixture output codec sample_rate channels duration)
+    add_custom_command(
+        OUTPUT "${output}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${FRAMEWORK_TEST_MEDIA_DIR}"
+        COMMAND "${FFMPEG_EXE}" -y -hide_banner -loglevel error
+                -f lavfi -i "sine=frequency=880:sample_rate=${sample_rate}:duration=${duration}"
+                -ac "${channels}" -c:a "${codec}" "${output}"
+        VERBATIM
+    )
+endfunction()
+add_audio_fixture("${FRAMEWORK_TEST_MP3}" libmp3lame 44100 1 1.3)
+add_audio_fixture("${FRAMEWORK_TEST_WAV}" pcm_s16le 44100 1 1.3)
+add_audio_fixture("${FRAMEWORK_TEST_FLOAT_WAV}" pcm_f32le 48000 2 1.3)
+add_audio_fixture("${FRAMEWORK_TEST_AAC}" aac 48000 2 1.3)
+add_audio_fixture("${FRAMEWORK_TEST_FLAC}" flac 44100 1 1.3)
+add_audio_fixture("${FRAMEWORK_TEST_OGG}" libvorbis 44100 1 1.3)
+add_audio_fixture("${FRAMEWORK_TEST_LONG_AUDIO}" pcm_s16le 48000 2 3)
+add_custom_command(
+    OUTPUT "${FRAMEWORK_TEST_COVER}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FRAMEWORK_TEST_MEDIA_DIR}"
+    COMMAND "${FFMPEG_EXE}" -y -hide_banner -loglevel error
+            -f lavfi -i color=c=blue:s=64x64 -frames:v 1 -update 1 "${FRAMEWORK_TEST_COVER}"
+    VERBATIM
+)
+add_custom_command(
+    OUTPUT "${FRAMEWORK_TEST_COVER_MP3}"
+    COMMAND "${FFMPEG_EXE}" -y -hide_banner -loglevel error
+            -i "${FRAMEWORK_TEST_MP3}" -i "${FRAMEWORK_TEST_COVER}"
+            -map 0:a -map 1:v -c copy -id3v2_version 3
+            -disposition:v attached_pic "${FRAMEWORK_TEST_COVER_MP3}"
+    DEPENDS "${FRAMEWORK_TEST_MP3}" "${FRAMEWORK_TEST_COVER}"
+    VERBATIM
+)
+
 add_custom_target(HeisenbergFrameworkTestMedia
     DEPENDS
+        "${FRAMEWORK_TEST_MP3}"
+        "${FRAMEWORK_TEST_WAV}"
+        "${FRAMEWORK_TEST_FLOAT_WAV}"
+        "${FRAMEWORK_TEST_AAC}"
+        "${FRAMEWORK_TEST_FLAC}"
+        "${FRAMEWORK_TEST_OGG}"
+        "${FRAMEWORK_TEST_LONG_AUDIO}"
+        "${FRAMEWORK_TEST_COVER_MP3}"
         "${FRAMEWORK_TEST_MEDIA}"
         "${FRAMEWORK_TEST_CLIP_A}"
         "${FRAMEWORK_TEST_CLIP_B}")
@@ -65,6 +117,8 @@ add_executable(HeisenbergFrameworkTests
     audio_mixer_test.cpp
     video_engine_transport_test.cpp
     native_preview_test.cpp
+    independent_audio_editor_test.cpp
+    independent_audio_engine_test.cpp
 )
 add_dependencies(HeisenbergFrameworkTests HeisenbergFrameworkTestMedia)
 target_link_libraries(HeisenbergFrameworkTests PRIVATE
@@ -73,6 +127,14 @@ target_link_libraries(HeisenbergFrameworkTests PRIVATE
 )
 target_compile_definitions(HeisenbergFrameworkTests PRIVATE
     HEISENBERG_TEST_MEDIA="${FRAMEWORK_TEST_MEDIA}"
+    HEISENBERG_TEST_MP3="${FRAMEWORK_TEST_MP3}"
+    HEISENBERG_TEST_WAV="${FRAMEWORK_TEST_WAV}"
+    HEISENBERG_TEST_FLOAT_WAV="${FRAMEWORK_TEST_FLOAT_WAV}"
+    HEISENBERG_TEST_AAC="${FRAMEWORK_TEST_AAC}"
+    HEISENBERG_TEST_FLAC="${FRAMEWORK_TEST_FLAC}"
+    HEISENBERG_TEST_OGG="${FRAMEWORK_TEST_OGG}"
+    HEISENBERG_TEST_LONG_AUDIO="${FRAMEWORK_TEST_LONG_AUDIO}"
+    HEISENBERG_TEST_COVER_MP3="${FRAMEWORK_TEST_COVER_MP3}"
     HEISENBERG_PLAYLIST_CLIP_A="${FRAMEWORK_TEST_CLIP_A}"
     HEISENBERG_PLAYLIST_CLIP_B="${FRAMEWORK_TEST_CLIP_B}"
     HEISENBERG_TEST_FILTER="${CMAKE_SOURCE_DIR}/Framework/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Test/exposure.json"

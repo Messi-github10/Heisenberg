@@ -39,7 +39,6 @@ public:
     QString selectedMedia() const;
 signals:
     void previewRequested(const QString& mediaRef);
-    void mediaActivated();
     void placeRequested(const QString& mediaRef);
     void importFailed(const QString& message);
 private:

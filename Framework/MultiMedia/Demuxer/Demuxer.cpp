@@ -102,13 +102,8 @@ int Demuxer::seek(double seconds, int streamIndex, int flags) {
         AVStream* stream = formatCtx_->streams[streamIndex];
         seekTarget = av_rescale_q(offset, AV_TIME_BASE_Q, stream->time_base);
 
-        if (stream->start_time != AV_NOPTS_VALUE) {
-            seekTarget += stream->start_time;
-        } else if (formatCtx_->start_time != AV_NOPTS_VALUE) {
-            seekTarget += av_rescale_q(formatCtx_->start_time,
-                                       AV_TIME_BASE_Q,
-                                       stream->time_base);
-        }
+        if (const auto* selected = findStream(streamIndex); selected && selected->originKnown)
+            seekTarget += selected->originTime;
     } else if (formatCtx_->start_time != AV_NOPTS_VALUE) {
         seekTarget += formatCtx_->start_time;
     }
@@ -117,10 +112,15 @@ int Demuxer::seek(double seconds, int streamIndex, int flags) {
 }
 
 double Demuxer::duration() const {
-    if (!formatCtx_ || formatCtx_->duration == AV_NOPTS_VALUE) {
-        return -1.0;
+    if (!formatCtx_) return -1.0;
+    double result = formatCtx_->duration == AV_NOPTS_VALUE ? -1.0
+        : static_cast<double>(formatCtx_->duration) / AV_TIME_BASE;
+    for (const auto& stream : streams_) {
+        if (stream.attachedPicture || !stream.durationKnown) continue;
+        result = std::max(result, stream.codec.toSeconds(
+            stream.startTime - stream.originTime + stream.duration));
     }
-    return static_cast<double>(formatCtx_->duration) / AV_TIME_BASE;
+    return result;
 }
 
 bool Demuxer::seekable() const {
@@ -170,6 +170,9 @@ CodecParams Demuxer::avstreamToCodecparams(const AVStream *avstream) {
     }
 
     params.codecId = mapCodecId(codecPar->codec_id);
+    params.nativeCodecId = static_cast<int>(codecPar->codec_id);
+    params.codecTag = codecPar->codec_tag;
+    params.bitRate = codecPar->bit_rate;
 
     if (codecPar->extradata && codecPar->extradata_size > 0) {
         params.setExtradata(codecPar->extradata,
@@ -197,6 +200,10 @@ CodecParams Demuxer::avstreamToCodecparams(const AVStream *avstream) {
     params.video.bitDepth = codecPar->bits_per_raw_sample;
     params.audio.bitDepth = codecPar->bits_per_raw_sample;
     params.audio.blockAlign = codecPar->block_align;
+    params.audio.sampleFormat = codecPar->format;
+    params.audio.codedBitDepth = codecPar->bits_per_coded_sample;
+    if (codecPar->ch_layout.order == AV_CHANNEL_ORDER_NATIVE)
+        params.audio.channelMask = codecPar->ch_layout.u.mask;
 
     params.timeBase = Rational(avstream->time_base.num, avstream->time_base.den);
     params.video.spec.timeBase = params.timeBase;
@@ -206,6 +213,20 @@ CodecParams Demuxer::avstreamToCodecparams(const AVStream *avstream) {
 
 int Demuxer::buildStreams() {
     streams_.clear();
+    // Use one origin for the entire source, not each stream's individual start.
+    // Otherwise delayed audio would incorrectly be shifted to video time zero.
+    int64_t origin = formatCtx_->start_time;
+    if (origin == AV_NOPTS_VALUE) {
+        for (unsigned i = 0; i < formatCtx_->nb_streams; ++i) {
+            const auto* stream = formatCtx_->streams[i];
+            if ((stream->disposition & AV_DISPOSITION_ATTACHED_PIC) ||
+                (stream->codecpar->codec_type != AVMEDIA_TYPE_VIDEO &&
+                 stream->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) ||
+                stream->start_time == AV_NOPTS_VALUE) continue;
+            const auto start = av_rescale_q(stream->start_time, stream->time_base, AV_TIME_BASE_Q);
+            if (origin == AV_NOPTS_VALUE || start < origin) origin = start;
+        }
+    }
 
     for (unsigned i = 0; i < formatCtx_->nb_streams; i++) {
         AVStream *avs = formatCtx_->streams[i];
@@ -220,6 +241,11 @@ int Demuxer::buildStreams() {
         s.demuxerId = avs->id;
         s.type = (avType == AVMEDIA_TYPE_VIDEO) ? Stream::VIDEO : Stream::AUDIO;
         s.codec = avstreamToCodecparams(avs);
+        s.attachedPicture = (avs->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0;
+        s.originKnown = origin != AV_NOPTS_VALUE;
+        s.originTime = s.originKnown ? av_rescale_q(origin, AV_TIME_BASE_Q, avs->time_base) : 0;
+        s.durationKnown = avs->duration != AV_NOPTS_VALUE;
+        s.duration = s.durationKnown ? avs->duration : 0;
         if (avs->start_time != AV_NOPTS_VALUE) {
             s.startTime = avs->start_time;
         } else if (formatCtx_->start_time != AV_NOPTS_VALUE) {
@@ -269,6 +295,11 @@ std::shared_ptr<Packet> Demuxer::avpacketToPacket(const AVPacket *avpkt) {
     packet->streamIndex = avpkt->stream_index;
     packet->keyframe = (avpkt->flags & AV_PKT_FLAG_KEY) != 0;
     packet->filePos = avpkt->pos;
+    for (int i = 0; i < avpkt->side_data_elems; ++i) {
+        const auto& data = avpkt->side_data[i];
+        packet->sideData.push_back({static_cast<int>(data.type),
+            std::vector<uint8_t>(data.data, data.data + data.size)});
+    }
 
     return packet;
 }

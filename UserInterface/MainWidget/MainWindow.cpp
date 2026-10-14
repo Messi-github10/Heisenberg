@@ -83,7 +83,7 @@ void MainWindow::setupUi() {
         style()->standardIcon(QStyle::SP_DirOpenIcon), tr("Open Palmier Project..."));
     openProjectAction->setShortcut(QKeySequence::Open);
     auto* openVideoAction = fileMenu->addAction(
-        style()->standardIcon(QStyle::SP_FileIcon), tr("Open Video..."));
+        style()->standardIcon(QStyle::SP_FileIcon), tr("Open Media..."));
     auto* openGraphAction = fileMenu->addAction(tr("Open Filter Graph..."));
     auto* importAction = fileMenu->addAction(tr("Import Media..."));
     importAction->setShortcut(QKeySequence("Ctrl+I"));
@@ -223,8 +223,9 @@ void MainWindow::setupUi() {
     });
     connect(openVideoAction, &QAction::triggered, this, [this]() {
         const QString path = QFileDialog::getOpenFileName(
-            this, tr("Open Video"), QString(),
-            tr("Video Files (*.mp4 *.mkv *.avi *.mov *.webm);;All Files (*)"));
+            this, tr("Open Media"), QString(),
+            tr("Media Files (*.mp4 *.mkv *.avi *.mov *.webm *.m4v *.mts *.m2ts *.mp3 *.wav *.aac *.m4a *.flac *.ogg);;"
+               "Audio Files (*.mp3 *.wav *.aac *.m4a *.flac *.ogg);;All Files (*)"));
         if (!path.isEmpty()) {
             emit openFileRequested(path);
         }
@@ -266,10 +267,6 @@ void MainWindow::setupConnections() {
     connect(timelineWidget_, &TimelineWidget::scrubFrameRequested,
             this, &MainWindow::scrubFrameRequested);
     connect(timelineWidget_, &TimelineWidget::scrubFinished, this, &MainWindow::scrubFinished);
-    connect(mediaPool_, &MediaPoolWidget::mediaActivated, this, [this]() {
-        const QString ref = mediaPool_->selectedMedia();
-        if (!ref.isEmpty()) emit previewMediaRequested(ref);
-    });
     connect(timelineWidget_, &TimelineWidget::timelineActivated, this, [this]() {
         if (sourcePreview_) emit timelinePreviewRequested();
     });

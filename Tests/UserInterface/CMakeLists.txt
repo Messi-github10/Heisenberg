@@ -32,7 +32,11 @@ target_include_directories(HeisenbergEditorUiTests PRIVATE ${CMAKE_SOURCE_DIR}/U
 target_link_libraries(HeisenbergEditorUiTests PRIVATE
     HeisenbergFramework GTest::gtest Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Concurrent)
 target_compile_definitions(HeisenbergEditorUiTests PRIVATE
-    HEISENBERG_TEST_MEDIA="${CMAKE_BINARY_DIR}/Tests/Framework/media/playlist_clip_a.mp4")
+    HEISENBERG_TEST_MEDIA="${CMAKE_BINARY_DIR}/Tests/Framework/media/playlist_clip_a.mp4"
+    HEISENBERG_TEST_MP3="${CMAKE_BINARY_DIR}/Tests/Framework/media/audio_44100_mono.mp3"
+    HEISENBERG_TEST_WAV="${CMAKE_BINARY_DIR}/Tests/Framework/media/audio_44100_mono.wav"
+    HEISENBERG_TEST_LONG_AUDIO="${CMAKE_BINARY_DIR}/Tests/Framework/media/audio_long.wav"
+    HEISENBERG_TEST_COVER_MP3="${CMAKE_BINARY_DIR}/Tests/Framework/media/audio_cover.mp3")
 if(MSVC)
     target_compile_options(HeisenbergEditorUiTests PRIVATE /utf-8)
 endif()

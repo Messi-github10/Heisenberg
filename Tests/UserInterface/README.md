@@ -1,22 +1,28 @@
 # Media pool validation
 
 Build `MainApp` and `HeisenbergEditorUiTests`, then run CTest from the build directory.
-The Qt tests use the offscreen platform, generated 24 fps video with audio, and the
-bundled FFmpeg executable; no user media or GPU renderer is needed. The test runner
+The Qt tests use the offscreen platform, generated 24 fps video with audio, MP3
+and longer WAV audio fixtures, and the bundled FFmpeg executable; no user media
+or GPU renderer is needed. The test runner
 must be allowed to launch FFmpeg and create temporary project packages.
 
 ## Manual smoke test
 
 1. Launch `cmake-build-debug/UserInterface/MainApp.exe`.
-2. Use **Ctrl+I** or **Import...** to import videos (multiple selection is supported).
-   Alternatively, drop local video files into the media pool.
-3. Check thumbnails, names, duration/resolution, and search. Importing the same
+2. Use **Ctrl+I** or **Import...** to import video or audio (multiple selection is
+   supported), or drop local files into the media pool. Audio filters include MP3,
+   WAV, AAC, M4A, FLAC and OGG.
+3. Check thumbnails, names, duration/resolution, and search. Audio tiles show an
+   AUDIO label and duration without generating thumbnails. Importing the same
    canonical path twice must not create another asset.
-4. Double-click a tile to preview the source; use **Esc** or **Timeline Preview**
-   to return to the edit. Scrubbing the timeline ruler or empty space also switches back.
-5. Drag a tile onto the video lane. The ghost shows the overwrite position; an
-   empty timeline creates its first video track. The edit can extend beyond the
-   previous duration and plays immediately without saving.
+4. Single-click a tile to preview the source, initially paused; press Play to
+   audition audio using the shared source progress controls. Use **Esc** or
+   **Return to Timeline** to return to the edit. Scrubbing the timeline ruler or
+   empty space also switches back.
+5. Drag a tile onto its matching video/audio lane. The ghost shows the overwrite
+   position; an absent lane creates its track, with video above audio. Audio-only
+   edits are valid. Wrong-type drops are rejected. The edit can extend beyond the
+   previous duration and previews immediately without saving.
 6. Drop another tile over existing content. **Ctrl+Z** and **Ctrl+Shift+Z** must
    undo/redo the whole overwrite in one step. **Add Selected at Playhead** is an
    alternative to drag/drop.
@@ -24,12 +30,13 @@ must be allowed to launch FFmpeg and create temporary project packages.
    with **Ctrl+O** and check both the pool and clips. Save As preserves existing
    package media and unknown files.
 
-This first version imports/previews/places video only. Imported files are external
-references, not copied into the package. Offline assets remain visible but cannot
-be dragged or added; multi-track active timelines are retained but editing is
-explicitly unsupported. Media import itself is not part of timeline undo history.
+Editing supports at most one video track and one independent audio track.
+Imported files are external references, not copied into the package. Offline
+assets remain visible but cannot be dragged or added; duplicate same-type tracks
+and other unsupported layouts are retained but cannot be edited. Media import
+itself is not part of timeline undo history.
 
-## Single-track clip interaction
+## Track-aware clip interaction
 
 - Click a clip body to select it without seeking. Drag its body to move the whole
   clip; the faded original and dashed ghost preview the overwrite position.
@@ -37,22 +44,24 @@ explicitly unsupported. Media import itself is not part of timeline undo history
   of the timeline origin, the playhead, or another clip's start/end. A yellow guide
   marks the snapped boundary. Toggle **Snap** in the toolbar/menu, or hold **Shift**
   to temporarily bypass snapping. The moving clip does not snap to its old edges.
-- Release inside the video lane to commit one overwrite move and one undo step.
+- Release inside the clip's original lane to commit one overwrite move and one
+  undo step. Moving clips between tracks is not supported.
   **Ctrl+Z** undoes it; **Ctrl+Shift+Z** redoes it. The preview reloads the current
   in-memory timeline, so saving is not required before playback.
 - **Esc**, releasing outside the lane, or deactivating the window cancels the draft.
   A click, cancelled move, or move back to the original start does not dirty the
   project or consume redo history. Undo/redo cancels a pending draft first.
 - The ruler/empty space still moves the playhead. Zoom and horizontal scrolling
-  preserve timeline frame mapping. Multi-track documents remain selectable/viewable
-  but moving, trimming, and splitting their clips is explicitly rejected.
+  preserve timeline frame mapping. Both supported lanes use track-aware selection,
+  move/trim ghosts and hit testing; unsupported layouts remain viewable but their
+  editing is rejected.
 
 ## Edge trimming and splitting
 
 - Hover near a clip's left/right edge: the horizontal resize cursor and grips
   indicate trimming. Drag the left edge to change the in-point; drag the right edge
   to change the out-point. The opposite edge stays fixed. The ghost shows the
-  proposed range; the project only changes when released inside the video lane.
+  proposed range; the project only changes when released inside the original lane.
 - Each clip keeps at least one frame. Extending is limited to previously trimmed
   source frames (and never before timeline frame zero). **[Limit]** indicates a
   clamped boundary. Fractional speeds use the same rounded source-frame mapping
@@ -69,5 +78,18 @@ explicitly unsupported. Media import itself is not part of timeline undo history
   payloads. **Ctrl+Z** / **Ctrl+Shift+Z** restores/reapplies each complete edit,
   including generated IDs. Playback updates before saving; save/reopen retains
   the edit. These are non-destructive edits: original media files are unchanged.
+
+## Audio settings, mute and deletion
+
+- Right-click a video or audio clip and choose **Audio Settings...**. Gain is
+  0–200%; linear fade in/out are entered in seconds and rounded to timeline
+  frames. The two fades must fit the clip. Changing controls is only a local
+  draft; OK commits one undo step, while Cancel or unchanged OK commits nothing.
+- Click an existing track header to toggle mute, including a video's original
+  audio. Mute, gain and fades use the existing serialized project fields and
+  survive undo/redo and save/reopen.
+- Delete a selected clip using its context menu or **Delete**/**Backspace** with
+  timeline focus. Those keys do not delete clips while typing in media search.
+  Removal is one undo step and never changes the source file.
 
 Multi-selection, ripple editing, and a separate razor-tool mode are not included.

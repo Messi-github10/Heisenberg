@@ -4,6 +4,9 @@
 #include <MultiMedia/Video/Decoder/DecoderFactory.hpp>
 
 #include <memory>
+#include <deque>
+
+struct AVFrame;
 
 namespace heisenberg {
 
@@ -37,6 +40,9 @@ private:
     bool audio_ = false;
     bool draining_ = false;
     bool eofReturned_ = false;
+    // Frames pulled to satisfy send_packet EAGAIN are returned before newer
+    // decoder output. The input packet is retried, never silently discarded.
+    std::deque<std::shared_ptr<AVFrame>> pendingFrames_;
 };
 
 } // namespace decoder

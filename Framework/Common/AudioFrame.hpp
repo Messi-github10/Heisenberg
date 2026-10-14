@@ -28,7 +28,7 @@ public:
 
     // 此帧在时间轴上的位置。
     int64_t position() const { return position_; }
-    bool hasPosition() const { return position_ >= 0; }
+    bool hasPosition() const { return positionKnown_; }
 
     // 可读写原始平面缓冲区指针
     float* dataRw() { return data_.data(); }
@@ -43,7 +43,7 @@ public:
     void setSamples(int n) { samples_ = n; }
 
     // 设置此帧在时间轴上的位置。
-    void setPosition(int64_t pos) { position_ = pos; }
+    void setPosition(int64_t pos) { position_ = pos; positionKnown_ = true; }
 
     // 调整内部缓冲区大小
     void resize(size_t n) { data_.resize(n); }
@@ -103,6 +103,7 @@ public:
         data_.shrink_to_fit();
         samples_  = 0;
         position_ = -1;
+        positionKnown_ = false;
     }
 
     /// 将另一帧的平面音频数据拷贝到当前帧
@@ -130,6 +131,7 @@ private:
     AudioSpec spec_;
     int samples_ = 0;
     int64_t position_ = -1;
+    bool positionKnown_ = false;
 };
 
 } // namespace heisenberg

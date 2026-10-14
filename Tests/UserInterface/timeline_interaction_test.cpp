@@ -15,6 +15,13 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QWheelEvent>
+#include <QContextMenuEvent>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
+#include <QMenu>
+#include <QPushButton>
+#include <QTimer>
 #include <cmath>
 #include <functional>
 
@@ -623,6 +630,222 @@ TEST_F(TimelineInteractionTest, WindowActionsCancelDraftAndUndoRedoCommittedMove
     redo->trigger();
     EXPECT_EQ(json(), after);
     // Prevent the test window's close prompt; destructor tears it down without saving.
+    window.hide();
+}
+class AudioTimelineInteractionTest : public TimelineInteractionTest {
+protected:
+    void SetUp() override {
+        TimelineInteractionTest::SetUp();
+        ASSERT_TRUE(session.importFiles({HEISENBERG_TEST_LONG_AUDIO}).isEmpty());
+        audioRef = QString::fromStdString(session.editor().manifest().entries().back().id);
+        ASSERT_TRUE(session.placeMedia(audioRef, 30).changed());
+        ASSERT_EQ(session.editor().activeTimeline()->tracks.size(), 2u);
+        audioTrackId = QString::fromStdString(session.editor().activeTimeline()->tracks[1].id);
+        audioId = QString::fromStdString(session.editor().activeTimeline()->tracks[1].clips.front().id);
+        ASSERT_TRUE(session.savePackage(QString::fromStdString(session.editor().projectDir())));
+    }
+    const heisenberg::Clip* audio() const { return session.editor().activeTimeline()->clipById(audioId.toStdString()); }
+    const heisenberg::Track* audioTrack() const { return session.editor().activeTimeline()->trackById(audioTrackId.toStdString()); }
+    QString audioRef, audioId, audioTrackId;
+};
+
+TEST_F(AudioTimelineInteractionTest, SecondLaneMovesOnlyOnOwnTrackSnapsTrimsSplitsAndUndoRedo) {
+    const auto before = json();
+    const auto video = *first();
+    drag(timeline, target(30, 92), target(150, 48)); // Cross-track move is not supported.
+    EXPECT_EQ(json(), before);
+    EXPECT_FALSE(session.isDirty());
+    drag(timeline, target(30, 92), target(118, 92)); // Snap audio start to video end at 120.
+    ASSERT_NE(audio(), nullptr);
+    EXPECT_EQ(audio()->startFrame, 120);
+    EXPECT_EQ(*first(), video);
+    const auto moved = json();
+    session.undo();
+    EXPECT_EQ(json(), before);
+    session.redo();
+    EXPECT_EQ(json(), moved);
+    session.undo();
+    timeline.setSnappingEnabled(false);
+    mouse(timeline, QEvent::MouseButtonPress, {281, 92});
+    mouse(timeline, QEvent::MouseMove, {321, 92});
+    EXPECT_EQ(json(), before);
+    mouse(timeline, QEvent::MouseButtonRelease, {321, 92});
+    EXPECT_EQ(audio()->startFrame, 40);
+    EXPECT_EQ(audio()->durationFrames, 80);
+    EXPECT_EQ(audio()->trimStartFrame, 10);
+    EXPECT_EQ(*first(), video);
+    const auto trimmed = json();
+    drag(timeline, {639, 92}, {599, 48}); // Wrong-lane trim cancels too.
+    EXPECT_EQ(json(), trimmed);
+    timeline.setCurrentFrame(70);
+    timeline.splitSelectedClip();
+    ASSERT_EQ(audioTrack()->clips.size(), 2u);
+    EXPECT_EQ(audio()->durationFrames, 30);
+    const auto rightId = audioTrack()->clips.back().id;
+    EXPECT_EQ(audioTrack()->clips.back().startFrame, 70);
+    EXPECT_EQ(audioTrack()->clips.back().trimStartFrame, 40);
+    const auto split = json();
+    session.undo();
+    EXPECT_EQ(json(), trimmed);
+    session.redo();
+    EXPECT_EQ(json(), split);
+    EXPECT_NE(session.editor().activeTimeline()->clipById(rightId), nullptr);
+    const QString package = QString::fromStdString(session.editor().projectDir());
+    ASSERT_TRUE(session.savePackage(package));
+    ASSERT_TRUE(session.loadPackage(package));
+    EXPECT_EQ(json(), split);
+    EXPECT_FALSE(session.isDirty());
+}
+
+TEST_F(AudioTimelineInteractionTest, SecondLaneGeometryUsesActualTrackHeight) {
+    auto project = session.editor().project();
+    project.timelines.front().tracks[0].displayHeight = 80.0;
+    project.timelines.front().tracks[1].displayHeight = 60.0;
+    ASSERT_TRUE(reloadProject(project));
+    timeline.setSnappingEnabled(false);
+    const auto before = json();
+    drag(timeline, target(30, 130), target(150, 92)); // y92 is now still the video lane.
+    EXPECT_EQ(json(), before);
+    drag(timeline, target(30, 130), target(150, 130));
+    EXPECT_EQ(timeline.selectedClipId(), audioId);
+    ASSERT_NE(audio(), nullptr);
+    EXPECT_EQ(audio()->startFrame, 150);
+    EXPECT_EQ(first()->startFrame, 30);
+    session.undo();
+    EXPECT_EQ(json(), before);
+    mouse(timeline, QEvent::MouseButtonPress, {140, 130});
+    mouse(timeline, QEvent::MouseButtonRelease, {140, 130});
+    EXPECT_TRUE(audioTrack()->muted);
+    EXPECT_FALSE(session.editor().activeTimeline()->tracks[0].muted);
+}
+
+TEST_F(AudioTimelineInteractionTest, AudioSettingsCommitOnceCancelNoOpMuteDeleteAndPersistence) {
+    drag(timeline, target(30, 92), target(30, 92));
+    const auto before = json();
+    int changes = 0;
+    QObject::connect(&session, &heisenberg::ui::EditorSession::timelineChanged, [&](qint64) { ++changes; });
+    // Context menu selects the second-lane clip and exposes the audio dialog action.
+    bool menuSeen = false;
+    QTimer::singleShot(0, [&]() {
+        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        if (menu) {
+            menuSeen = menu->findChild<QAction*>("clipAudioSettings") != nullptr;
+            menu->close();
+        }
+    });
+    const QPoint contextPoint = target(30, 92).toPoint();
+    QContextMenuEvent context(QContextMenuEvent::Mouse, contextPoint, timeline.mapToGlobal(contextPoint));
+    QApplication::sendEvent(&timeline, &context);
+    EXPECT_TRUE(menuSeen);
+    EXPECT_EQ(timeline.selectedClipId(), audioId);
+    bool draftUnchanged = false, dialogSeen = false;
+    QTimer::singleShot(0, [&]() {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        auto* gain = dialog->findChild<QDoubleSpinBox*>("clipAudioGain");
+        auto* fadeIn = dialog->findChild<QDoubleSpinBox*>("clipAudioFadeIn");
+        auto* fadeOut = dialog->findChild<QDoubleSpinBox*>("clipAudioFadeOut");
+        auto* buttons = dialog->findChild<QDialogButtonBox*>();
+        if (!gain || !fadeIn || !fadeOut || !buttons) { dialog->reject(); return; }
+        dialogSeen = true;
+        EXPECT_DOUBLE_EQ(gain->minimum(), 0.0);
+        EXPECT_DOUBLE_EQ(gain->maximum(), 200.0);
+        gain->setValue(150.0);
+        fadeIn->setValue(2.0);
+        fadeOut->setValue(2.0);
+        EXPECT_FALSE(buttons->button(QDialogButtonBox::Ok)->isEnabled());
+        fadeIn->setValue(0.5);
+        fadeOut->setValue(0.25);
+        draftUnchanged = json() == before && changes == 0;
+        buttons->button(QDialogButtonBox::Ok)->click();
+    });
+    timeline.editSelectedClipAudio();
+    ASSERT_TRUE(dialogSeen);
+    EXPECT_TRUE(draftUnchanged);
+    EXPECT_EQ(changes, 1);
+    EXPECT_DOUBLE_EQ(audio()->volume, 1.5);
+    EXPECT_EQ(audio()->fadeInFrames, 15);
+    EXPECT_EQ(audio()->fadeOutFrames, 8);
+    const auto configured = json();
+    session.undo();
+    EXPECT_EQ(json(), before);
+    session.redo();
+    EXPECT_EQ(json(), configured);
+    const int configuredChanges = changes;
+    QTimer::singleShot(0, [&]() {
+        if (auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget())) {
+            dialog->findChild<QDoubleSpinBox*>("clipAudioGain")->setValue(200.0);
+            dialog->reject();
+        }
+    });
+    timeline.editSelectedClipAudio();
+    EXPECT_EQ(json(), configured);
+    EXPECT_EQ(changes, configuredChanges);
+    QTimer::singleShot(0, [&]() {
+        if (auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+            dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+    });
+    timeline.editSelectedClipAudio(); // Unchanged confirmation does not create history.
+    EXPECT_EQ(json(), configured);
+    EXPECT_EQ(changes, configuredChanges);
+    mouse(timeline, QEvent::MouseButtonPress, {140, 92});
+    mouse(timeline, QEvent::MouseButtonRelease, {140, 92});
+    EXPECT_TRUE(audioTrack()->muted);
+    const auto muted = json();
+    session.undo();
+    EXPECT_EQ(json(), configured);
+    session.redo();
+    EXPECT_EQ(json(), muted);
+    QKeyEvent remove(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+    QApplication::sendEvent(&timeline, &remove);
+    EXPECT_EQ(audio(), nullptr);
+    EXPECT_TRUE(audioTrack()->clips.empty());
+    EXPECT_EQ(session.editor().activeTimeline()->tracks[0].clips.size(), 2u);
+    const auto deleted = json();
+    session.undo();
+    EXPECT_EQ(json(), muted);
+    session.redo();
+    EXPECT_EQ(json(), deleted);
+    session.undo();
+    const QString package = QString::fromStdString(session.editor().projectDir());
+    ASSERT_TRUE(session.savePackage(package));
+    ASSERT_TRUE(session.loadPackage(package));
+    EXPECT_EQ(json(), muted);
+    EXPECT_DOUBLE_EQ(audio()->volume, 1.5);
+    EXPECT_TRUE(audioTrack()->muted);
+    EXPECT_FALSE(session.isDirty());
+    int noOpChanges = 0;
+    QObject::connect(&session, &heisenberg::ui::EditorSession::timelineChanged, [&](qint64) { ++noOpChanges; });
+    EXPECT_EQ(session.setTrackMuted(audioTrackId, true).status, heisenberg::EditStatus::NoOp);
+    EXPECT_EQ(session.setClipAudio(audioId, 1.5, 15, 8).status, heisenberg::EditStatus::NoOp);
+    EXPECT_EQ(session.removeClips({"missing"}).status, heisenberg::EditStatus::NoOp);
+    EXPECT_EQ(session.setClipAudio(audioId, 2.01, 0, 0).status, heisenberg::EditStatus::Invalid);
+    EXPECT_EQ(noOpChanges, 0);
+    EXPECT_FALSE(session.isDirty());
+}
+
+TEST_F(AudioTimelineInteractionTest, BackspaceDeletesTimelineSelectionButSearchKeysStayLocal) {
+    MainWindow window(&session);
+    window.show();
+    QCoreApplication::processEvents();
+    auto* widget = window.timelineWidget();
+    drag(*widget, target(30, 92), target(30, 92));
+    const auto before = json();
+    auto* search = window.findChild<QLineEdit*>();
+    ASSERT_NE(search, nullptr);
+    search->setText("audio");
+    search->setFocus();
+    QKeyEvent backspace(QEvent::KeyPress, Qt::Key_Backspace, Qt::NoModifier);
+    QApplication::sendEvent(search, &backspace);
+    EXPECT_EQ(search->text(), "audi");
+    QKeyEvent remove(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+    QApplication::sendEvent(search, &remove);
+    EXPECT_EQ(json(), before);
+    widget->setFocus();
+    QApplication::sendEvent(widget, &backspace);
+    EXPECT_EQ(audio(), nullptr);
+    session.undo();
+    EXPECT_EQ(json(), before);
     window.hide();
 }
 } // namespace

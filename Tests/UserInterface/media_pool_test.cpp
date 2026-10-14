@@ -14,10 +14,12 @@
 #include <QJsonObject>
 #include <QLineEdit>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QThread>
 #include <functional>
+#include <cmath>
 
 using heisenberg::ui::EditorSession;
 
@@ -239,6 +241,135 @@ TEST(MediaPoolUiTest, EditedTimelineSeekKeepsAudioClockAndReplaysAfterEnd) {
     player.play();
     ASSERT_TRUE(waitFor([&]() { return player.isPlaying(); }));
     player.pause();
+}
+
+TEST(MediaPoolUiTest, AudioTilesHaveDurationNoThumbnailAndSingleClickPreview) {
+    EditorSession session;
+    MediaPoolWidget pool(&session);
+    pool.resize(360, 480);
+    pool.show();
+    ASSERT_TRUE(session.importFiles({HEISENBERG_TEST_MP3, HEISENBERG_TEST_MP3}).isEmpty());
+    ASSERT_EQ(session.editor().manifest().entries().size(), 1u);
+    const auto& entry = session.editor().manifest().entries().front();
+    EXPECT_EQ(entry.type, heisenberg::ClipType::Audio);
+    EXPECT_TRUE(entry.hasAudio.value_or(false));
+    EXPECT_GT(entry.duration, 1.0);
+    auto* list = pool.findChild<MediaListWidget*>();
+    ASSERT_NE(list, nullptr);
+    ASSERT_EQ(list->count(), 1);
+    EXPECT_TRUE(list->item(0)->icon().isNull());
+    EXPECT_TRUE(list->item(0)->data(Qt::UserRole + 1).toString().contains("Audio"));
+    EXPECT_TRUE(list->item(0)->data(Qt::UserRole + 1).toString().contains(" s"));
+    EXPECT_TRUE(list->item(0)->flags().testFlag(Qt::ItemIsDragEnabled));
+    int previews = 0;
+    QString previewRef;
+    QObject::connect(&pool, &MediaPoolWidget::previewRequested, [&](const QString& ref) {
+        ++previews; previewRef = ref;
+    });
+    QCoreApplication::processEvents();
+    const QPoint position = list->visualItemRect(list->item(0)).center();
+    for (const auto type : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+        QMouseEvent click(type, QPointF(position), QPointF(list->viewport()->mapToGlobal(position)),
+            Qt::LeftButton, type == QEvent::MouseButtonPress ? Qt::LeftButton : Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(list->viewport(), &click);
+    }
+    EXPECT_EQ(previews, 1);
+    EXPECT_EQ(previewRef.toStdString(), entry.id);
+    EXPECT_TRUE(pool.findChild<QPushButton*>("addSelectedMedia")->isEnabled());
+    std::unique_ptr<QMimeData> mime(list->model()->mimeData({list->model()->index(0, 0)}));
+    EXPECT_TRUE(mime->hasFormat(heisenberg::ui::kMediaMimeType));
+}
+
+TEST(MediaPoolUiTest, AudioOnlyDropCreatesAudioTrackAndRejectsWrongLaneAndExplicitTarget) {
+    EditorSession session;
+    MediaPoolWidget pool(&session);
+    ASSERT_TRUE(session.importFiles({HEISENBERG_TEST_MP3, HEISENBERG_TEST_MEDIA}).isEmpty());
+    const auto audioRef = QString::fromStdString(session.editor().manifest().entries()[0].id);
+    const auto videoRef = QString::fromStdString(session.editor().manifest().entries()[1].id);
+    TimelineWidget timeline;
+    timeline.setSession(&session);
+    timeline.resize(1000, 200);
+    timeline.show();
+    auto* list = pool.findChild<MediaListWidget*>();
+    std::unique_ptr<QMimeData> audioMime(list->model()->mimeData({list->model()->index(0, 0)}));
+    const auto before = heisenberg::ProjectCodec::encode(session.editor().project());
+    EXPECT_FALSE(drop(timeline, audioMime.get(), QPoint(280, 48)));
+    EXPECT_EQ(heisenberg::ProjectCodec::encode(session.editor().project()), before);
+    ASSERT_TRUE(drop(timeline, audioMime.get(), QPoint(280, 92)));
+    ASSERT_EQ(session.editor().activeTimeline()->tracks.size(), 1u);
+    EXPECT_EQ(session.editor().activeTimeline()->tracks[0].type, heisenberg::ClipType::Audio);
+    EXPECT_EQ(session.editor().activeTimeline()->tracks[0].clips[0].startFrame, 30);
+    const QString audioTrackId = QString::fromStdString(session.editor().activeTimeline()->tracks[0].id);
+    const auto audioOnly = heisenberg::ProjectCodec::encode(session.editor().project());
+    EXPECT_EQ(session.placeMedia(videoRef, 0, audioTrackId).status, heisenberg::EditStatus::Invalid);
+    EXPECT_EQ(session.placeMedia(audioRef, 0, "unknown-track").status, heisenberg::EditStatus::Invalid);
+    EXPECT_EQ(heisenberg::ProjectCodec::encode(session.editor().project()), audioOnly);
+    auto videoMime = payload(session, videoRef);
+    EXPECT_FALSE(drop(timeline, videoMime.get(), QPoint(200, 92)));
+    ASSERT_TRUE(drop(timeline, videoMime.get(), QPoint(200, 48)));
+    ASSERT_EQ(session.editor().activeTimeline()->tracks.size(), 2u);
+    EXPECT_EQ(session.editor().activeTimeline()->tracks[0].type, heisenberg::ClipType::Video);
+    EXPECT_EQ(session.editor().activeTimeline()->tracks[1].id, audioTrackId.toStdString());
+    const auto mixed = heisenberg::ProjectCodec::encode(session.editor().project());
+    ASSERT_TRUE(drop(timeline, audioMime.get(), QPoint(440, 92))); // Existing audio track, frame 70.
+    ASSERT_EQ(session.editor().activeTimeline()->tracks.size(), 2u);
+    EXPECT_EQ(session.editor().activeTimeline()->tracks[1].id, audioTrackId.toStdString());
+    EXPECT_EQ(session.editor().activeTimeline()->tracks[1].clips.back().startFrame, 70);
+    session.undo();
+    EXPECT_EQ(heisenberg::ProjectCodec::encode(session.editor().project()), mixed);
+    session.undo();
+    EXPECT_EQ(heisenberg::ProjectCodec::encode(session.editor().project()), audioOnly);
+    QTemporaryDir directory;
+    QString error;
+    ASSERT_TRUE(session.savePackage(directory.path() + "/audio.palmier", &error)) << error.toStdString();
+    EditorSession reopened;
+    ASSERT_TRUE(reopened.loadPackage(directory.path() + "/audio.palmier", &error)) << error.toStdString();
+    EXPECT_EQ(heisenberg::ProjectCodec::encode(reopened.editor().project()), audioOnly);
+}
+
+TEST(MediaPoolUiTest, AudioSourceOpensPausedAuditionsAndReturnsToMixedTimeline) {
+    EditorSession session;
+    heisenberg::ui::PlayerController player(&session);
+    player.setHardwareDecode(false);
+    ASSERT_TRUE(session.importFiles({HEISENBERG_TEST_MEDIA, HEISENBERG_TEST_MP3, HEISENBERG_TEST_LONG_AUDIO}).isEmpty());
+    const auto video = QString::fromStdString(session.editor().manifest().entries()[0].id);
+    const auto mp3 = QString::fromStdString(session.editor().manifest().entries()[1].id);
+    const auto audio = QString::fromStdString(session.editor().manifest().entries()[2].id);
+    ASSERT_TRUE(session.placeMedia(video, 0).changed());
+    ASSERT_TRUE(session.placeMedia(audio, 0).changed());
+    ASSERT_TRUE(waitFor([&]() { return player.isSeekable() && player.frameCount() == 90; }));
+    for (const auto& ref : {mp3, audio}) {
+        player.previewAsset(ref);
+        ASSERT_TRUE(waitFor([&]() { return player.previewingSource() && player.isSeekable() &&
+            player.currentFile() == QString::fromStdString(session.editor().resolver().asset(ref.toStdString()).path) &&
+            player.duration() > 1.2; }));
+        EXPECT_FALSE(player.isPlaying());
+        ASSERT_TRUE(waitFor([&]() { return std::abs(player.currentTime()) < 0.001; }));
+        auto drain = []() {
+            QElapsedTimer timer;
+            timer.start();
+            while (timer.elapsed() < 100) { QCoreApplication::processEvents(); QThread::msleep(5); }
+        };
+        const double paused = player.currentTime();
+        drain();
+        EXPECT_FALSE(player.isPlaying());
+        EXPECT_NEAR(player.currentTime(), paused, 0.001);
+        player.play();
+        ASSERT_TRUE(waitFor([&]() { return player.isPlaying() && player.currentTime() > paused + 0.08; }));
+        player.pause();
+        ASSERT_TRUE(waitFor([&]() { return !player.isPlaying(); }));
+        drain(); // Finish notifications already queued before the acknowledged pause.
+        const double auditionPaused = player.currentTime();
+        drain();
+        EXPECT_FALSE(player.isPlaying());
+        EXPECT_NEAR(player.currentTime(), auditionPaused, 0.001);
+    }
+    player.beginScrub();
+    player.scrubToFrame(45);
+    player.endScrub(45);
+    ASSERT_TRUE(waitFor([&]() { return !player.previewingSource() && player.frameCount() == 90 &&
+        std::abs(player.currentTime() - 1.5) < 0.04; }));
+    EXPECT_NEAR(player.duration(), 3.0, 0.02);
 }
 
 int main(int argc, char** argv) {

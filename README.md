@@ -24,7 +24,8 @@ manifest, package context and revision. Saving checkpoints the captured revision
 newer edits stay dirty. Package writes are staged beside the destination with
 rollback on replacement failure. They are not crash-journaled transactions.
 
-`CompositionBuilder` is a pure single-track planner. It resolves expected source
+`CompositionBuilder` plans at most one video track and one independent audio track.
+It resolves expected source
 paths without probing files, maps half-open clip intervals, trims and speed, and
 captures hide/mute flags. File availability is diagnosed when `VideoEngine` opens
 a decoder session; runtime diagnostics are available in `VideoEngine::Snapshot`.
@@ -42,9 +43,15 @@ intended output position. `TimelineSettings` carries runtime video/audio setting
 JSON remains compatible: integer timeline FPS, dimensions and manifest version 2.
 Settings that cannot be represented by that schema are rejected by project editing.
 
-This version supports the existing single-video-track workflow. It does not add
-multitrack composition or export. Realtime audio speed mapping does not provide
-pitch-preserving time stretching.
+This version supports one video track plus one independent audio track, including
+audio-only projects. Audio clips can be imported, previewed, placed, moved, trimmed,
+split and deleted. Clip audio settings provide 0–200% volume and linear fades;
+track headers toggle mute. All edits use the existing undo history and package
+fields. Video-original audio and the independent audio track are mixed together;
+audio can continue after video ends while the preview presents a black canvas.
+
+There is no video-layer compositing, arbitrary track count, export, waveform cache,
+or pitch-preserving time stretching.
 
 ## Verification
 

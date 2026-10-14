@@ -40,7 +40,14 @@ public:
     bool importMedia(const std::string& path, std::string* error = nullptr);
 
     EditResult placeClip(const std::string& mediaRef, int64_t startFrame,
-                         int64_t durationFrames = -1, int64_t trimStartFrame = 0);
+                         int64_t durationFrames = -1, int64_t trimStartFrame = 0,
+                         const std::string& targetTrackId = {});
+    // Volume is linear amplitude (0..2), fades are timeline frames. Changing a
+    // fade length makes that fade linear; unchanged nonlinear fades and volume
+    // automation remain preserved and are reported as preview warnings.
+    EditResult setClipAudio(const std::string& clipId, double volume,
+                            int64_t fadeInFrames, int64_t fadeOutFrames);
+    EditResult setTrackMuted(const std::string& trackId, bool muted);
     EditResult moveClip(const std::string& clipId, int64_t startFrame);
     EditResult splitClip(const std::string& clipId, int64_t atFrame);
     EditResult trimClip(const std::string& clipId, TrimEdge edge, int64_t deltaFrames);

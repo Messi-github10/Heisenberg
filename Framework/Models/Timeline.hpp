@@ -66,6 +66,8 @@ struct Timeline {
     Clip* clipById(const std::string& id);
     Track* trackById(const std::string& id);
     const Track* trackById(const std::string& id) const;
+    Track* trackForClip(const std::string& clipId);
+    const Track* trackForClip(const std::string& clipId) const;
     bool operator==(const Timeline&) const = default;
 };
 

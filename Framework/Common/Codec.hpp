@@ -22,6 +22,9 @@ struct AudioCodecParams {
     AudioSpec spec;
     int bitDepth = 0;
     int blockAlign = 0;
+    int sampleFormat = -1;
+    int codedBitDepth = 0;
+    uint64_t channelMask = 0;
 };
 
 class CodecParams {
@@ -38,6 +41,10 @@ public:
 
     Type type = VIDEO;
     ID codecId = UNKNOWN;
+    // Backend identity preserves codecs outside the public convenience enum.
+    int nativeCodecId = 0;
+    uint32_t codecTag = 0;
+    int64_t bitRate = 0;
     Rational timeBase{1, 1};
     VideoCodecParams video;
     AudioCodecParams audio;

@@ -27,6 +27,7 @@ constexpr int kRefRole = Qt::UserRole;
 constexpr int kDetailsRole = Qt::UserRole + 1;
 constexpr int kOfflineRole = Qt::UserRole + 2;
 constexpr int kSupportedRole = Qt::UserRole + 3;
+constexpr int kTypeRole = Qt::UserRole + 4;
 
 class MediaTileDelegate : public QStyledItemDelegate {
 public:
@@ -50,7 +51,8 @@ public:
         if (!icon.isNull()) icon.paint(painter, imageRect, Qt::AlignCenter);
         else {
             painter->setPen(QColor(offline ? "#e57a7a" : "#77848e"));
-            painter->drawText(imageRect, Qt::AlignCenter, offline ? "OFFLINE" : "VIDEO");
+            painter->drawText(imageRect, Qt::AlignCenter,
+                              offline ? tr("OFFLINE") : index.data(kTypeRole).toString());
         }
         QFont titleFont = option.font;
         titleFont.setPixelSize(11);
@@ -141,7 +143,7 @@ MediaPoolWidget::MediaPoolWidget(heisenberg::ui::EditorSession* session, QWidget
     layout->addWidget(search_);
     list_ = new MediaListWidget(session, this);
     layout->addWidget(list_, 1);
-    empty_ = new QLabel(tr("Import videos or drop files here.\nDrag a video onto the timeline to edit."), this);
+    empty_ = new QLabel(tr("Import video/audio or drop files here.\nDrag media onto its timeline lane to edit."), this);
     empty_->setWordWrap(true);
     empty_->setStyleSheet("color: #999da8; padding: 4px;");
     layout->addWidget(empty_);
@@ -167,12 +169,8 @@ MediaPoolWidget::MediaPoolWidget(heisenberg::ui::EditorSession* session, QWidget
     connect(list_, &MediaListWidget::filesDropped, this, &MediaPoolWidget::importFiles);
     connect(search_, &QLineEdit::textChanged, this, &MediaPoolWidget::filterMedia);
     connect(list_, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) {
-        if (!item->data(kOfflineRole).toBool() && item->data(kSupportedRole).toBool())
-            emit mediaActivated();
-    });
-    connect(list_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* item) {
         if (item->data(kOfflineRole).toBool()) emit importFailed(tr("This media is offline."));
-        else if (!item->data(kSupportedRole).toBool()) emit importFailed(tr("Preview currently supports video media."));
+        else if (!item->data(kSupportedRole).toBool()) emit importFailed(tr("Preview supports video and audio media."));
         else emit previewRequested(item->data(kRefRole).toString());
     });
     connect(addButton, &QPushButton::clicked, this, [this]() {
@@ -208,8 +206,10 @@ QString MediaPoolWidget::selectedMedia() const {
 }
 
 void MediaPoolWidget::chooseFiles() {
-    const auto files = QFileDialog::getOpenFileNames(this, tr("Import Videos"), QString(),
-        tr("Video Files (*.mp4 *.mkv *.avi *.mov *.webm *.m4v *.mts *.m2ts);;All Files (*)"));
+    const auto files = QFileDialog::getOpenFileNames(this, tr("Import Media"), QString(),
+        tr("Media Files (*.mp4 *.mkv *.avi *.mov *.webm *.m4v *.mts *.m2ts *.mp3 *.wav *.aac *.m4a *.flac *.ogg);;"
+           "Video Files (*.mp4 *.mkv *.avi *.mov *.webm *.m4v *.mts *.m2ts);;"
+           "Audio Files (*.mp3 *.wav *.aac *.m4a *.flac *.ogg);;All Files (*)"));
     if (!files.isEmpty()) importFiles(files);
 }
 
@@ -229,15 +229,17 @@ void MediaPoolWidget::refreshMedia() {
         auto* item = new QListWidgetItem(QString::fromUtf8(asset.name.c_str()), list_);
         item->setData(kRefRole, id);
         item->setData(kOfflineRole, asset.missing);
-        item->setData(kSupportedRole, asset.type == heisenberg::ClipType::Video);
+        const bool supported = asset.type == heisenberg::ClipType::Video || asset.type == heisenberg::ClipType::Audio;
+        item->setData(kSupportedRole, supported);
+        item->setData(kTypeRole, QString::fromUtf8(heisenberg::toString(asset.type)).toUpper());
         QString detail = asset.missing ? tr("Offline") : tr("%1 s").arg(asset.duration, 0, 'f', 2);
+        if (asset.type == heisenberg::ClipType::Audio) detail = tr("Audio  %1").arg(detail);
         if (entry && entry->sourceWidth && entry->sourceHeight)
             detail += QString("  %1 x %2").arg(*entry->sourceWidth).arg(*entry->sourceHeight);
-        if (asset.type != heisenberg::ClipType::Video)
-            detail += tr("  Preview unavailable");
+        if (!supported) detail += tr("  Preview unavailable");
         item->setData(kDetailsRole, detail);
         item->setToolTip(item->text() + '\n' + detail + '\n' + QDir::toNativeSeparators(path));
-        if (asset.missing || asset.type != heisenberg::ClipType::Video)
+        if (asset.missing || !supported)
             item->setFlags(item->flags() & ~Qt::ItemIsDragEnabled);
         if (thumbnails_.contains(id)) item->setIcon(QIcon(thumbnails_.value(id)));
         else if (!asset.missing && asset.type == heisenberg::ClipType::Video && !attemptedThumbnails_.contains(id)) {

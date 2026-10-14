@@ -69,7 +69,8 @@ SoftwareDecoder::~SoftwareDecoder() {
 int SoftwareDecoder::open(const Stream& stream) {
     impl_->close();
 
-    AVCodecID avCodecId = toAVCodecID(stream.codec.codecId);
+    AVCodecID avCodecId = stream.codec.nativeCodecId != 0
+        ? static_cast<AVCodecID>(stream.codec.nativeCodecId) : toAVCodecID(stream.codec.codecId);
     if (avCodecId == AV_CODEC_ID_NONE) {
         return -1;
     }
@@ -90,16 +91,22 @@ int SoftwareDecoder::open(const Stream& stream) {
     impl_->ctx->pix_fmt = AV_PIX_FMT_NONE;
     if (stream.isAudio()) {
         impl_->ctx->sample_rate = stream.codec.sampleRate();
-        if (stream.codec.channels() > 0) {
-            av_channel_layout_default(&impl_->ctx->ch_layout,
-                                      stream.codec.channels());
-        }
+        if (stream.codec.audio.channelMask)
+            av_channel_layout_from_mask(&impl_->ctx->ch_layout, stream.codec.audio.channelMask);
+        else if (stream.codec.channels() > 0)
+            av_channel_layout_default(&impl_->ctx->ch_layout, stream.codec.channels());
+        impl_->ctx->sample_fmt = static_cast<AVSampleFormat>(stream.codec.audio.sampleFormat);
+        impl_->ctx->block_align = stream.codec.audio.blockAlign;
+        impl_->ctx->bits_per_coded_sample = stream.codec.audio.codedBitDepth;
+        impl_->ctx->bits_per_raw_sample = stream.codec.audio.bitDepth;
     }
+    impl_->ctx->codec_tag = stream.codec.codecTag;
+    impl_->ctx->bit_rate = stream.codec.bitRate;
 
     impl_->ctx->time_base = {stream.codec.tbNum(), stream.codec.tbDen()};
     impl_->ctx->pkt_timebase = impl_->ctx->time_base;
     impl_->ctx->framerate = {stream.codec.fpsNum(), stream.codec.fpsDen()};
-    impl_->startTime_ = stream.startTime;
+    impl_->startTime_ = stream.originKnown ? stream.originTime : stream.startTime;
 
     if (stream.codec.extradata() && stream.codec.extradataSize() > 0) {
         impl_->ctx->extradata = static_cast<uint8_t*>(
@@ -177,7 +184,17 @@ int SoftwareDecoder::sendPacket(std::shared_ptr<const Packet> packet) {
         avpkt.flags |= AV_PKT_FLAG_KEY;
     }
 
-    return avcodec_send_packet(impl_->ctx, &avpkt);
+    // FFmpeg consumes skip/discard sample side data itself (including MP3/AAC
+    // encoder delay). Keep it attached on EAGAIN retries as well.
+    for (const auto& data : packet->sideData) {
+        auto* copy = av_packet_new_side_data(&avpkt,
+            static_cast<AVPacketSideDataType>(data.type), data.data.size());
+        if (!copy) { av_packet_free_side_data(&avpkt); return AVERROR(ENOMEM); }
+        std::memcpy(copy, data.data.data(), data.data.size());
+    }
+    const int result = avcodec_send_packet(impl_->ctx, &avpkt);
+    av_packet_free_side_data(&avpkt);
+    return result;
 }
 
 std::shared_ptr<AVFrame> SoftwareDecoder::receiveFrame() {

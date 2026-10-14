@@ -21,7 +21,10 @@ public:
     bool loadPackage(const QString& path, QString* error = nullptr);
     bool savePackage(const QString& path, QString* error = nullptr);
     QStringList importFiles(const QStringList& paths);
-    EditResult placeMedia(const QString& mediaRef, qint64 frame);
+    EditResult placeMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId = {});
+    EditResult setClipAudio(const QString& clipId, double volume, qint64 fadeInFrames, qint64 fadeOutFrames);
+    EditResult setTrackMuted(const QString& trackId, bool muted);
+    EditResult removeClips(const QStringList& clipIds);
     EditResult moveClip(const QString& clipId, qint64 frame);
     EditResult trimClip(const QString& clipId, TrimEdge edge, qint64 deltaFrames);
     EditResult splitClip(const QString& clipId, qint64 frame);

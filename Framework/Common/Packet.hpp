@@ -9,6 +9,11 @@
 
 namespace heisenberg {
 
+struct PacketSideData {
+    int type = 0;
+    std::vector<uint8_t> data;
+};
+
 class Packet {
 public:
     Packet() = default;
@@ -42,6 +47,7 @@ public:
     int streamIndex = -1;
     bool keyframe = false;
     int64_t filePos = -1;
+    std::vector<PacketSideData> sideData;
 
 private:
     std::vector<uint8_t> data_;

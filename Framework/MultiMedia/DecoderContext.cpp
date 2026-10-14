@@ -10,6 +10,7 @@
 
 extern "C" {
 #include <libavutil/channel_layout.h>
+#include <libavutil/error.h>
 #include <libavutil/frame.h>
 #include <libavutil/mathematics.h>
 #include <libswresample/swresample.h>
@@ -158,6 +159,7 @@ void DecoderContext::close() {
     audio_ = false;
     draining_ = false;
     eofReturned_ = false;
+    pendingFrames_.clear();
 }
 
 void DecoderContext::flush() {
@@ -165,32 +167,35 @@ void DecoderContext::flush() {
     if (audio_) audioConverter_ = std::make_unique<AudioConverter>();
     draining_ = false;
     eofReturned_ = false;
+    pendingFrames_.clear();
 }
 
 bool DecoderContext::push(const MediaFrame& input) {
     if (!decoder_) return false;
 
+    PacketPtr packet;
+    const bool drain = input.type == MediaFrameType::Eof;
     if (input.type == MediaFrameType::Packet) {
-        const auto packet = std::get<PacketPtr>(input.payload);
+        packet = std::get<PacketPtr>(input.payload);
         if (!packet || packet->streamIndex != streamIndex_) return false;
-        draining_ = false;
-        eofReturned_ = false;
-        return decoder_->sendPacket(packet) >= 0;
-    }
+    } else if (!drain) return false;
 
-    if (input.type == MediaFrameType::Eof) {
-        draining_ = decoder_->sendPacket(nullptr) >= 0;
-        eofReturned_ = false;
-        return draining_;
+    int result;
+    while ((result = decoder_->sendPacket(packet)) == AVERROR(EAGAIN)) {
+        auto frame = decoder_->receiveFrame();
+        if (!frame) return false; // The FFmpeg send/receive contract forbids this.
+        pendingFrames_.push_back(std::move(frame));
     }
-
-    return false;
+    draining_ = drain && (result >= 0 || result == AVERROR_EOF);
+    eofReturned_ = false;
+    return result >= 0 || (drain && result == AVERROR_EOF);
 }
 
 MediaFrame DecoderContext::pull(uint64_t generation) {
     if (!decoder_) return {};
 
-    auto frame = decoder_->receiveFrame();
+    auto frame = pendingFrames_.empty() ? decoder_->receiveFrame() : std::move(pendingFrames_.front());
+    if (!pendingFrames_.empty()) pendingFrames_.pop_front();
     if (frame) {
         MediaFrame output;
         if (audio_) {

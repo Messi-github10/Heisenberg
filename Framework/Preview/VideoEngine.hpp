@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Common/VideoFrame.hpp>
+#include <Common/AudioFrame.hpp>
 #include <Compositing/CompositionPlan.hpp>
 #include <functional>
 #include <memory>
@@ -34,6 +35,8 @@ public:
         double fps = 0.0;
         int64_t frameCount = 0;
         bool seekable = false;
+        bool hasVideo = false;
+        bool audioOnly = false;
         uint64_t generation = 0;
         std::vector<std::string> warnings;
     };
@@ -62,6 +65,12 @@ public:
     void goToStart();
     void goToEnd();
     void setHardwareDecode(bool enabled);
+    // Configure while closed/paused. Disabled output still prepares real mixed
+    // PCM, but uses the presentation clock and never queues device audio.
+    void setAudioOutputEnabled(bool enabled);
+    // Optional externally advanced monotonic clock for deterministic consumers.
+    // No timer, callback or extra thread is created. Configure before open().
+    void setManualClock(double monotonicSeconds);
     Snapshot snapshot() const;
     bool isCurrentGeneration(uint64_t generation) const;
 
@@ -69,6 +78,10 @@ public:
     // originate here. A negative wait stops the render clock until onWakeRender.
     Pump pumpFrame(int& waitMs);
     std::function<void(DecodedFrame)> onFrameDecoded;
+    // Decode-worker observer/sink of the actual post-mix PCM, including silence.
+    // Install before opening; do not mutate callbacks while decoding. The sink
+    // must not block and must reject old generations after seek/close.
+    std::function<void(std::shared_ptr<const AudioFrame>, uint64_t)> onAudioPrepared;
     std::function<void()> onWakeRender;
     std::function<void(State)> onStateChanged;
     std::function<void(double)> onPositionChanged;

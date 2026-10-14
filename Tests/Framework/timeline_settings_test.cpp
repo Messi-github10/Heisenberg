@@ -38,6 +38,8 @@ TEST(TimelineSettingsTest, FractionalFrameRateProducesExactSampleTotals) {
     int64_t accumulated = 0;
     for (int64_t index = 0; index < 30000; ++index) accumulated += ntsc->audioSamplesForFrame(index);
     EXPECT_EQ(accumulated, ntsc->audioSamplePosition(30000));
+    EXPECT_EQ(ntsc->audioSamplePosition(1), heisenberg::samplesToPosition(ntsc->frameRate(), ntsc->sampleRate(), 1));
+    EXPECT_EQ(ntsc->audioSamplePosition(-1), heisenberg::samplesToPosition(ntsc->frameRate(), ntsc->sampleRate(), -1));
 }
 
 TEST(TimelineSettingsTest, InvalidDimensionsAndRatesAreRejected) {
@@ -60,6 +62,20 @@ TEST(RationalTest, ConversionKeepsNumeratorDenominatorOrder) {
     EXPECT_EQ(Rational::fromDouble(0.5), Rational(1, 2));
     EXPECT_EQ(Rational::fromDouble(-2.5), Rational(-5, 2));
     EXPECT_TRUE(Rational(0, 0).isNaN());
+}
+
+TEST(AudioFrameTest, NegativePrerollIsAValidPositionUntilReset) {
+    heisenberg::AudioFrame frame;
+    EXPECT_FALSE(frame.hasPosition());
+    frame.setPosition(-1);
+    EXPECT_TRUE(frame.hasPosition());
+    EXPECT_EQ(frame.position(), -1);
+    frame.setPosition(-1024);
+    const auto copy = frame;
+    EXPECT_TRUE(copy.hasPosition());
+    EXPECT_EQ(copy.position(), -1024);
+    frame.reset();
+    EXPECT_FALSE(frame.hasPosition());
 }
 
 TEST(VideoFrameTest, MetadataOwnershipAndOutputPositionAreSeparate) {

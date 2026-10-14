@@ -201,6 +201,16 @@ const Track* Timeline::trackById(const std::string& value) const {
     return nullptr;
 }
 
+Track* Timeline::trackForClip(const std::string& value) {
+    for (Track& track : tracks) if (track.clipById(value)) return &track;
+    return nullptr;
+}
+
+const Track* Timeline::trackForClip(const std::string& value) const {
+    for (const Track& track : tracks) if (track.clipById(value)) return &track;
+    return nullptr;
+}
+
 std::string makeUuid() {
     std::random_device device;
     std::mt19937_64 random(device());
@@ -266,27 +276,34 @@ bool validateTimeline(const Timeline& timeline, std::string* error) {
 
 ProjectCompatibility compatibilityFor(const Timeline& timeline) {
     ProjectCompatibility result;
-    if (timeline.tracks.empty()) return result;
-    if (timeline.tracks.size() != 1 || timeline.tracks.front().type != ClipType::Video) {
-        result.level = CompatibilityLevel::Unsupported;
-        result.messages.push_back("preview and editing currently require exactly one video track");
-        return result;
-    }
-    for (const Clip& clip : timeline.tracks.front().clips) {
-        if (clip.mediaType != ClipType::Video || clip.sourceClipType != ClipType::Video) {
+    bool hasVideo = false, hasAudio = false;
+    for (const Track& track : timeline.tracks) {
+        if ((track.type != ClipType::Video && track.type != ClipType::Audio) ||
+            (track.type == ClipType::Video && hasVideo) || (track.type == ClipType::Audio && hasAudio)) {
             result.level = CompatibilityLevel::Unsupported;
-            result.messages.push_back("preview currently supports video clips only");
+            result.messages.push_back("preview and editing support at most one video and one audio track");
             return result;
         }
-        if (clip.opacity != 1.0 || clip.volume != 1.0 || clip.fadeInFrames != 0 || clip.fadeOutFrames != 0 ||
-            clip.transform != Transform{} || clip.crop != Crop{} || clip.edgeRounding != 0.0 ||
-            clip.edgeSoftness != 0.0 || clip.opacityTrack || clip.positionTrack || clip.scaleTrack ||
-            clip.rotationTrack || clip.cropTrack || clip.volumeTrack || clip.effects || clip.blendMode) {
-            result.level = CompatibilityLevel::Warning;
+        hasVideo |= track.type == ClipType::Video;
+        hasAudio |= track.type == ClipType::Audio;
+        for (const Clip& clip : track.clips) {
+            if (clip.mediaType != track.type || clip.sourceClipType != track.type) {
+                result.level = CompatibilityLevel::Unsupported;
+                result.messages.push_back("video and audio clips must match their owning track type");
+                return result;
+            }
+            if (clip.opacity != 1.0 || clip.transform != Transform{} || clip.crop != Crop{} ||
+                clip.edgeRounding != 0.0 || clip.edgeSoftness != 0.0 || clip.opacityTrack ||
+                clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack ||
+                clip.volumeTrack || clip.effects || clip.blendMode ||
+                (clip.fadeInFrames != 0 && clip.fadeInInterpolation != Interpolation::Linear) ||
+                (clip.fadeOutFrames != 0 && clip.fadeOutInterpolation != Interpolation::Linear)) {
+                result.level = CompatibilityLevel::Warning;
+            }
         }
     }
     if (result.level == CompatibilityLevel::Warning)
-        result.messages.push_back("advanced Palmier clip appearance is preserved but not rendered");
+        result.messages.push_back("advanced Palmier clip appearance and audio automation are preserved; preview uses base volume and linear fades");
     return result;
 }
 
