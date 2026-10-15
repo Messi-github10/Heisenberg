@@ -10,10 +10,6 @@
 #include <limits>
 #include <vector>
 
-#ifndef HEISENBERG_FILTER_SHADER_BINARY_DIR
-#define HEISENBERG_FILTER_SHADER_BINARY_DIR "."
-#endif
-
 namespace heisenberg::filtergraph {
 namespace {
 
@@ -176,8 +172,7 @@ bool VulkanReadbackNode::initializePipeline() {
     if (vkAllocateDescriptorSets(context_.device, &setInfo, &descriptorSet_)
         != VK_SUCCESS) return false;
 
-    const std::string shaderPath = std::string(HEISENBERG_FILTER_SHADER_BINARY_DIR)
-        + "/" + descriptor_.shaderBinary;
+    const std::string shaderPath = descriptor_.shaderBinary;
     const std::vector<uint32_t> code = loadShaderCode(shaderPath.c_str());
     if (code.empty()) return false;
     VkShaderModuleCreateInfo shaderInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -220,7 +215,7 @@ void VulkanReadbackNode::record(VkCommandBuffer commandBuffer,
     if (!pipeline_ || !readbackBuffer_) return;
     const VulkanImageRef source = input(0);
     if (!source.valid() || !source.view
-        || source.contract != kWorkingImageContract) return;
+        || source.contract != context_.imageContract) return;
     if (descriptor_.clearReadbackBuffer) {
         vkCmdFillBuffer(commandBuffer, readbackBuffer_, 0,
                         static_cast<VkDeviceSize>(descriptor_.readbackSize), 0);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Models/TimelineSettings.hpp>
+#include <Models/ColorSettings.hpp>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -21,11 +22,13 @@ struct CompositionClip {
     double volume = 1.0;
     int64_t fadeInFrames = 0;
     int64_t fadeOutFrames = 0;
+    Clip visualSnapshot; // Owned complete clip appearance/effects/animation snapshot.
 };
 
 struct CompositionSample {
     size_t clipIndex = 0;
     double sourceSeconds = 0.0;
+    int64_t clipLocalFrame = 0;
     double speed = 1.0;
     // Base linear volume only; AudioMixer applies the clip's sample envelopes.
     double gain = 1.0;
@@ -35,6 +38,7 @@ struct CompositionSample {
 
 struct CompositionPlan {
     TimelineSettings settings;
+    ColorSettings colorSettings;
     int64_t frameCount = 0;
     bool hidden = false;
     bool muted = false;

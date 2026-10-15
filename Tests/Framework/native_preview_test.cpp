@@ -2,6 +2,9 @@
 #include <Models/Timeline.hpp>
 #include <Models/MediaManifest.hpp>
 #include <MultiMedia/Video/Renderer/RenderThread.hpp>
+#include <Platform/Vulkan/VulkanContext.hpp>
+#include <Utiles/Logger.hpp>
+#include <spdlog/sinks/base_sink.h>
 
 #include <gtest/gtest.h>
 #include <windows.h>
@@ -11,6 +14,10 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <algorithm>
+#include <map>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -24,11 +31,81 @@ struct PreviewWindow {
     ~PreviewWindow() { if (handle) DestroyWindow(handle); }
 };
 
+class DiagnosticLogSink final : public spdlog::sinks::base_sink<std::mutex> {
+public:
+    std::map<std::string, int> counts() {
+        std::lock_guard lock(mutex_);
+        return counts_;
+    }
+private:
+    void sink_it_(const spdlog::details::log_msg& message) override {
+        if (message.level != spdlog::level::warn) return;
+        const std::string text(message.payload.data(), message.payload.size());
+        if (text.starts_with("IPreviewer: ")) ++counts_[text.substr(12)];
+    }
+    void flush_() override {}
+    std::map<std::string, int> counts_;
+};
+
+class CapturePreviewLogs {
+public:
+    CapturePreviewLogs() {
+        logger_ = heisenberg::Logger::ModuleLogger(
+            "Framework/Preview/IPreviewer.cpp");
+        sinks_ = logger_->sinks();
+        logger_->sinks().push_back(sink);
+    }
+    ~CapturePreviewLogs() { logger_->sinks() = std::move(sinks_); }
+    std::shared_ptr<DiagnosticLogSink> sink = std::make_shared<DiagnosticLogSink>();
+private:
+    spdlog::logger* logger_ = nullptr;
+    std::vector<spdlog::sink_ptr> sinks_;
+};
+
+class RendererColorPathLogSink final : public spdlog::sinks::base_sink<std::mutex> {
+public:
+    std::vector<std::string> paths() {
+        std::lock_guard lock(mutex_);
+        return paths_;
+    }
+private:
+    void sink_it_(const spdlog::details::log_msg& message) override {
+        if (message.level != spdlog::level::info) return;
+        const std::string text(message.payload.data(),message.payload.size());
+        if (text.starts_with("CompositionRenderer color path: ")) paths_.push_back(text);
+    }
+    void flush_() override {}
+    std::vector<std::string> paths_;
+};
+
+class CaptureRendererColorPaths {
+public:
+    CaptureRendererColorPaths() {
+        logger_ = heisenberg::Logger::ModuleLogger(
+            "Framework/MultiMedia/Video/Renderer/CompositionRenderer.cpp");
+        sinks_ = logger_->sinks();
+        level_ = logger_->level();
+        logger_->sinks().push_back(sink);
+        logger_->set_level(spdlog::level::info);
+    }
+    ~CaptureRendererColorPaths() {
+        logger_->sinks() = std::move(sinks_);
+        logger_->set_level(level_);
+    }
+    std::shared_ptr<RendererColorPathLogSink> sink = std::make_shared<RendererColorPathLogSink>();
+private:
+    spdlog::logger* logger_ = nullptr;
+    std::vector<spdlog::sink_ptr> sinks_;
+    spdlog::level::level_enum level_ = spdlog::level::info;
+};
+
 struct PresentationListener final : heisenberg::IPreviewer::Listener {
     int frames = 0;
+    std::map<std::string, int> diagnostics;
     double seconds = -1.0;
     std::thread::id uiThread = std::this_thread::get_id();
     bool allNotificationsOnUi = true;
+    void onFilterGraphFailed(const std::string& message) override { ++diagnostics[message]; }
     void onFramePresented(double value) override {
         ++frames;
         seconds = value;
@@ -67,6 +144,99 @@ private:
 };
 
 } // namespace
+
+TEST(NativePreviewTest, ColorDiagnosticsAreReportedOnceUntilSourceOrColorChanges) {
+    heisenberg::IPreviewer::initLoader();
+    PreviewWindow window;
+    ASSERT_NE(window.handle, nullptr);
+    UiTasks tasks;
+    PresentationListener listener;
+    CapturePreviewLogs logs;
+    auto preview = heisenberg::IPreviewer::create();
+    preview->setTaskDispatcher([&](auto task) { tasks.push(std::move(task)); });
+    preview->setListener(&listener);
+    preview->setHardwareDecode(false);
+    preview->attachWindow(window.handle, 320, 240);
+    preview->open(HEISENBERG_TEST_MEDIA);
+    ASSERT_TRUE(tasks.wait([&] { return listener.frames > 0 && preview->state() == heisenberg::IPreviewer::State::Paused; }));
+    const auto first = logs.sink->counts();
+    ASSERT_FALSE(first.empty());
+    EXPECT_TRUE(std::any_of(first.begin(), first.end(), [](const auto& entry) {
+        return entry.first.find("Unsupported or absent source primaries/transfer") != std::string::npos;
+    }));
+    for (const auto& [message, count] : first) {
+        EXPECT_EQ(count, 1) << message;
+        EXPECT_EQ(listener.diagnostics[message], 1) << message;
+    }
+    auto waitForFrame = [&](const auto& action) {
+        const int before = listener.frames;
+        action();
+        return tasks.wait([&] { return listener.frames > before; });
+    };
+    ASSERT_TRUE(waitForFrame([&] { preview->resize(360, 260); }));
+    ASSERT_TRUE(waitForFrame([&] { preview->seek(0.5); }));
+    preview->play();
+    ASSERT_TRUE(tasks.wait([&] { return preview->state() == heisenberg::IPreviewer::State::Ended; }));
+    EXPECT_EQ(logs.sink->counts(), first);
+    for (const auto& [message, count] : first) EXPECT_EQ(listener.diagnostics[message], count);
+
+    heisenberg::ColorSettings overridden;
+    overridden.inputColorSpaces["asset"] = "Rec.1886 Rec.709 - Display";
+    ASSERT_TRUE(waitForFrame([&] { preview->openSource(HEISENBERG_TEST_MEDIA, overridden, "asset"); }));
+    ASSERT_TRUE(waitForFrame([&] { preview->resize(320, 240); }));
+    EXPECT_EQ(logs.sink->counts(), first);
+
+    ASSERT_TRUE(waitForFrame([&] { preview->open(HEISENBERG_TEST_MEDIA); }));
+    for (const auto& [message, count] : logs.sink->counts()) {
+        EXPECT_EQ(count, 2) << message;
+        EXPECT_EQ(listener.diagnostics[message], 2) << message;
+    }
+    preview->shutdown();
+    tasks.process();
+    EXPECT_EQ(heisenberg::renderer::VulkanContext::instance().validationErrorCount(), 0u);
+}
+
+TEST(NativePreviewTest, OrdinaryProjectSourceWiresCodePreservingSdrIntentToActualRendererOutput) {
+    heisenberg::IPreviewer::initLoader();
+    PreviewWindow window;
+    ASSERT_NE(window.handle,nullptr);
+    UiTasks tasks;
+    PresentationListener listener;
+    // Attach only to the renderer module: existing preview warning counts and
+    // diagnostics remain independent of this INFO-level wiring regression.
+    CaptureRendererColorPaths logs;
+    auto preview = heisenberg::IPreviewer::create();
+    preview->setTaskDispatcher([&](auto task) { tasks.push(std::move(task)); });
+    preview->setListener(&listener);
+    preview->setHardwareDecode(false);
+    preview->attachWindow(window.handle,320,240);
+    constexpr const char* mediaRef = "ordinary-sdr-intent-wiring";
+    preview->openSource(HEISENBERG_TEST_MEDIA,heisenberg::ColorSettings{},mediaRef);
+    const bool presented = tasks.wait([&] {
+        return listener.frames > 0 && preview->state() == heisenberg::IPreviewer::State::Paused;
+    });
+    // Join/drain GPU work before detaching or restoring the logger sinks, even
+    // on a failed presentation. This avoids changing a worker's live sink list.
+    preview->shutdown();
+    tasks.process();
+    preview.reset();
+    const auto paths = logs.sink->paths();
+    ASSERT_TRUE(presented);
+    ASSERT_FALSE(paths.empty());
+    const auto path = std::find_if(paths.begin(),paths.end(),[](const auto& message) {
+        return message.find("source='ordinary-sdr-intent-wiring'") != std::string::npos;
+    });
+    ASSERT_NE(path,paths.end());
+    // The fixture's unknown YUV metadata uses the ordinary policy2 fallback;
+    // this must take the same route as tagged finished Rec709 video.
+    for (const char* field : {"policy=2", "selectionOrigin=fallback",
+             "interpretedInput='Rec.1886 Rec.709 - Display'",
+             "outputDisplay='Rec.1886 Rec.709 - Display'", "outputView='Un-tone-mapped'",
+             "outputColorSpace=''", "presentationIntent=SDR video code-preserving preview"})
+        EXPECT_NE(path->find(field),std::string::npos) << field << "\n" << *path;
+    EXPECT_TRUE(listener.allNotificationsOnUi);
+    EXPECT_EQ(heisenberg::renderer::VulkanContext::instance().validationErrorCount(),0u);
+}
 
 TEST(NativePreviewTest, RealWindowPresentsSourceAndTimelineOnRenderWorker) {
     heisenberg::IPreviewer::initLoader();
@@ -136,6 +306,40 @@ TEST(NativePreviewTest, RealWindowPresentsSourceAndTimelineOnRenderWorker) {
     ASSERT_TRUE(tasks.wait([&] { return listener.frames > frames; }));
     preview->shutdown();
     tasks.process();
+    EXPECT_EQ(heisenberg::renderer::VulkanContext::instance().validationErrorCount(), 0u);
+}
+
+TEST(NativePreviewTest, ProjectSourceColorSnapshotPreservesSourceTiming) {
+    heisenberg::IPreviewer::initLoader();
+    PreviewWindow window;
+    ASSERT_NE(window.handle, nullptr);
+    UiTasks tasks;
+    PresentationListener listener;
+    auto preview = heisenberg::IPreviewer::create();
+    preview->setTaskDispatcher([&](auto task) { tasks.push(std::move(task)); });
+    preview->setListener(&listener);
+    preview->setHardwareDecode(false);
+    preview->attachWindow(window.handle, 320, 240);
+    preview->open(HEISENBERG_TEST_MEDIA);
+    ASSERT_TRUE(tasks.wait([&] { return listener.frames > 0 && preview->state() == heisenberg::IPreviewer::State::Paused; }));
+    const double fps = preview->fps(), duration = preview->duration();
+    const int64_t count = preview->frameCount();
+    int frames = listener.frames;
+    heisenberg::ColorSettings projectColor;
+    projectColor.inputColorSpaces["asset"] = "ACEScg";
+    projectColor.previewOutput = {"Rec.1886 Rec.709 - Display", "ACES 2.0 - SDR 100 nits (Rec.709)"};
+    preview->openSource(HEISENBERG_TEST_MEDIA, projectColor, "asset");
+    ASSERT_TRUE(tasks.wait([&] { return listener.frames > frames && preview->state() == heisenberg::IPreviewer::State::Paused; }));
+    EXPECT_DOUBLE_EQ(preview->fps(), fps);
+    EXPECT_DOUBLE_EQ(preview->duration(), duration);
+    EXPECT_EQ(preview->frameCount(), count);
+    frames = listener.frames;
+    preview->seek(0.5);
+    ASSERT_TRUE(tasks.wait([&] { return listener.frames > frames && listener.seconds >= 0.49; }));
+    EXPECT_TRUE(listener.allNotificationsOnUi);
+    preview->shutdown();
+    tasks.process();
+    EXPECT_EQ(heisenberg::renderer::VulkanContext::instance().validationErrorCount(), 0u);
 }
 
 TEST(NativePreviewTest, AudioSourceAndAudioTailReplaceVideoWithBlackCanvas) {
@@ -209,4 +413,5 @@ TEST(NativePreviewTest, AudioSourceAndAudioTailReplaceVideoWithBlackCanvas) {
     EXPECT_TRUE(listener.allNotificationsOnUi);
     preview->shutdown();
     tasks.process();
+    EXPECT_EQ(heisenberg::renderer::VulkanContext::instance().validationErrorCount(), 0u);
 }

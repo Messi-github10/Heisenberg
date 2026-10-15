@@ -126,7 +126,7 @@ int DecoderContext::open(const Stream& stream,
         effectiveConfig.allowFallback = false;
     }
     decoder_ = decoder::createDecoder(effectiveConfig);
-    if (!decoder_) return -1;
+    if (!decoder_) { lastError_ = AVERROR(ENOMEM); return lastError_; }
 
     int result = decoder_->open(stream);
     if (result < 0 && effectiveConfig.allowFallback
@@ -142,6 +142,7 @@ int DecoderContext::open(const Stream& stream,
     }
     if (result < 0) {
         decoder_.reset();
+        lastError_ = result;
         return result;
     }
 
@@ -156,6 +157,7 @@ void DecoderContext::close() {
     decoder_.reset();
     audioConverter_.reset();
     streamIndex_ = -1;
+    lastError_ = 0;
     audio_ = false;
     draining_ = false;
     eofReturned_ = false;
@@ -163,6 +165,7 @@ void DecoderContext::close() {
 }
 
 void DecoderContext::flush() {
+    lastError_ = 0;
     if (decoder_) decoder_->flush();
     if (audio_) audioConverter_ = std::make_unique<AudioConverter>();
     draining_ = false;
@@ -171,7 +174,8 @@ void DecoderContext::flush() {
 }
 
 bool DecoderContext::push(const MediaFrame& input) {
-    if (!decoder_) return false;
+    if (!decoder_) { lastError_ = AVERROR(EINVAL); return false; }
+    if (lastError_ < 0) return false;
 
     PacketPtr packet;
     const bool drain = input.type == MediaFrameType::Eof;
@@ -183,24 +187,35 @@ bool DecoderContext::push(const MediaFrame& input) {
     int result;
     while ((result = decoder_->sendPacket(packet)) == AVERROR(EAGAIN)) {
         auto frame = decoder_->receiveFrame();
-        if (!frame) return false; // The FFmpeg send/receive contract forbids this.
+        if (!frame || decoder_->lastError() < 0) {
+            lastError_ = decoder_->lastError() < 0 ? decoder_->lastError() : AVERROR_BUG;
+            return false; // The FFmpeg send/receive contract forbids two EAGAINs.
+        }
         pendingFrames_.push_back(std::move(frame));
     }
+    if (result < 0 && result != AVERROR(EAGAIN) && result != AVERROR_EOF) lastError_ = result;
+    if (decoder_->lastError() < 0) lastError_ = decoder_->lastError();
     draining_ = drain && (result >= 0 || result == AVERROR_EOF);
     eofReturned_ = false;
-    return result >= 0 || (drain && result == AVERROR_EOF);
+    return lastError_ == 0 && (result >= 0 || (drain && result == AVERROR_EOF));
 }
 
 MediaFrame DecoderContext::pull(uint64_t generation) {
-    if (!decoder_) return {};
+    if (!decoder_) { lastError_ = AVERROR(EINVAL); return {}; }
+    if (lastError_ < 0) return {};
 
     auto frame = pendingFrames_.empty() ? decoder_->receiveFrame() : std::move(pendingFrames_.front());
     if (!pendingFrames_.empty()) pendingFrames_.pop_front();
+    if (decoder_->lastError() < 0) { lastError_ = decoder_->lastError(); return {}; }
     if (frame) {
+        if (frame->decode_error_flags || (frame->flags & AV_FRAME_FLAG_CORRUPT)) {
+            lastError_ = AVERROR_INVALIDDATA;
+            return {};
+        }
         MediaFrame output;
         if (audio_) {
             auto audioFrame = audioConverter_->convert(*frame);
-            if (!audioFrame) return {};
+            if (!audioFrame) { lastError_ = AVERROR_INVALIDDATA; return {}; }
             output = MediaFrame::audio(std::move(audioFrame), generation);
         } else {
             output = MediaFrame::video(VideoFrame::wrap(frame), generation);

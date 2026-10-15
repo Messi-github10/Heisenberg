@@ -47,6 +47,9 @@ struct GraphEdge {
 class VulkanGraphDocument {
 public:
     VulkanGraphDocument() = default;
+    // Empty stage has fixed endpoints but no edge; passthrough is runnable.
+    static VulkanGraphDocument emptyStage();
+    static VulkanGraphDocument passthrough();
 
     bool loadFromJsonFile(const std::string& path,
                           std::string* error = nullptr);

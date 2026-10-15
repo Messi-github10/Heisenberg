@@ -20,7 +20,11 @@ public:
 
 private:
     friend class EditorViewModel;
-    struct UndoEntry { std::string timelineId; Timeline before; Timeline after; std::string name; };
+    struct UndoEntry {
+        std::string timelineId; Timeline before; Timeline after; std::string name;
+        std::optional<ColorSettings> colorBefore;
+        std::optional<ColorSettings> colorAfter;
+    };
     void replace(ProjectFile project);
     bool undo();
     bool redo();

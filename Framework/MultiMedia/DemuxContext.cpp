@@ -15,6 +15,7 @@ int DemuxContext::open(const std::string& url) {
     demuxer_ = demuxer::createDemuxer();
     if (!demuxer_) return -1;
 
+    demuxer_->setInterrupt(cancelled_);
     const int result = demuxer_->open(url);
     if (result < 0) demuxer_.reset();
     eofReturned_ = false;
@@ -27,22 +28,31 @@ void DemuxContext::close() {
     eofReturned_ = false;
 }
 
+void DemuxContext::setInterrupt(std::function<bool()> cancelled) {
+    cancelled_ = std::move(cancelled);
+    if (demuxer_) demuxer_->setInterrupt(cancelled_);
+}
 MediaFrame DemuxContext::read(uint64_t generation) {
-    if (!demuxer_ || eofReturned_) return {};
-
-    auto packet = demuxer_->readPacket();
-    if (!packet) {
+    return readResult(generation).frame;
+}
+DemuxContext::ReadResult DemuxContext::readResult(uint64_t generation) {
+    if (!demuxer_) return {ReadStatus::Failure, {}, -1};
+    if (eofReturned_) return {ReadStatus::End, {}, 0};
+    auto result = demuxer_->readPacketResult();
+    if (result.status == ReadStatus::End) {
         eofReturned_ = true;
-        return MediaFrame::eof(generation);
+        return {ReadStatus::End, MediaFrame::eof(generation), result.error};
     }
-
+    if (result.status != ReadStatus::Packet)
+        return {result.status, {}, result.error};
+    auto packet = std::move(result.packet);
     MediaFrame frame = MediaFrame::packet(packet, generation);
     frame.metadata.pts = packet->pts;
     frame.metadata.duration = packet->duration;
     frame.metadata.timeBaseNum = packet->timeBaseNum;
     frame.metadata.timeBaseDen = packet->timeBaseDen;
     frame.metadata.streamIndex = packet->streamIndex;
-    return frame;
+    return {ReadStatus::Packet, std::move(frame), 0};
 }
 
 int DemuxContext::seek(double seconds, int streamIndex, int flags) {

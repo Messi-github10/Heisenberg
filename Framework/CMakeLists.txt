@@ -149,6 +149,8 @@ target_link_libraries(HeisenbergFramework PUBLIC
     volk
     d3d11
     dxgi
+    OpenColorIO::OpenColorIO
+    heisenberg_shaderc
 )
 
 target_compile_definitions(HeisenbergFramework PUBLIC
@@ -161,8 +163,6 @@ target_compile_definitions(HeisenbergFramework PUBLIC
 
 target_compile_definitions(HeisenbergFramework PRIVATE
     ${FILTER_SHADER_DEFINITIONS}
-    HEISENBERG_SHADER_MANIFEST_PATH="${SHADER_CONTRACT_MANIFEST}"
-    HEISENBERG_FILTER_SHADER_BINARY_DIR="${FILTER_SHADER_BINARY_DIR}"
 )
 
 if(MSVC)

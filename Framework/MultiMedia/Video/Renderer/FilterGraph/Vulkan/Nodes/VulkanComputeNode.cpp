@@ -151,7 +151,8 @@ std::vector<ResourceAccess> VulkanComputeNode::declareResourceAccess() const {
         ResourceAccess access;
         access.resource = resId;
         access.mode = ResourceAccessMode::Read;
-        access.expectedState.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        access.expectedState.layout = isSampled(inputBinding(index))
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
         access.expectedState.stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
         access.expectedState.access = VK_ACCESS_SHADER_READ_BIT;
         accesses.push_back(access);
@@ -190,7 +191,7 @@ VulkanComputeNode::declareResourceRequests() const {
         request.extent = {static_cast<uint32_t>(format.width),
                           static_cast<uint32_t>(format.height)};
         request.usage = usage;
-        request.contract = kWorkingImageContract;
+        request.contract = context_.imageContract;
         request.outputPin = index;
         requests.push_back(std::move(request));
     }
@@ -618,7 +619,7 @@ void VulkanComputeNode::record(
     for (int32_t index = 0; index < inputCount(); ++index) {
         const VulkanImageRef source = input(index);
         if (!source.valid() || !source.view
-            || source.contract != kWorkingImageContract) {
+            || source.contract != context_.imageContract) {
             LOG_ERROR("FilterGraph: compute input {} violates the working contract",
                       index);
             return;
@@ -629,7 +630,7 @@ void VulkanComputeNode::record(
     for (int32_t index = 0; index < extraInputCount(); ++index) {
         const VulkanImageRef source = extraInput(index);
         if (!source.valid() || !source.view
-            || source.contract != kWorkingImageContract) {
+            || source.contract != context_.imageContract) {
             LOG_ERROR("FilterGraph: extra compute input {} violates the working contract",
                       index);
             return;

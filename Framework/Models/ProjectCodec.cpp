@@ -263,7 +263,9 @@ TimelineViewState parseViewState(const json& object) {
 std::string ProjectCodec::encode(const ProjectFile& project) {
     json timelines = json::array();
     for (const Timeline& timeline : project.timelines) timelines.push_back(timelineJson(timeline));
-    json root;
+    json root = project.unknownFields;
+    root["extensions"] = project.extensions;
+    root["extensions"]["org.heisenberg.color"] = encodeColorSettings(project.colorSettings);
     root["timelines"] = std::move(timelines);
     putOptional(root, "activeTimelineId", project.activeTimelineId);
     putOptional(root, "openTimelineIds", project.openTimelineIds);
@@ -293,6 +295,22 @@ bool ProjectCodec::decode(const std::string& text, ProjectFile& result, std::str
         if (!root.is_object() || !root.contains("timelines") || !root["timelines"].is_array())
             throw std::runtime_error("project root must contain timelines");
         ProjectFile parsed;
+        parsed.unknownFields = root;
+        for (const char* key : {"timelines", "activeTimelineId", "openTimelineIds", "viewStates", "speakers", "multicamGroups", "extensions"})
+            parsed.unknownFields.erase(key);
+        if (root.contains("extensions")) {
+            if (!root["extensions"].is_object()) throw std::runtime_error("extensions must be an object");
+            parsed.extensions = root["extensions"];
+        }
+        if (parsed.extensions.contains("org.heisenberg.color")) {
+            if (!decodeColorSettings(parsed.extensions["org.heisenberg.color"], parsed.colorSettings, error)) return false;
+            parsed.extensions.erase("org.heisenberg.color");
+        } else {
+            // Only packages without the color extension migrate to the new SDR policy.
+            // An explicit extension, including incomplete v1 settings, keeps its saved semantics.
+            parsed.colorSettings = ColorSettings{};
+            parsed.colorSettings.legacyDefaultsApplied = true;
+        }
         for (const json& value : root["timelines"]) parsed.timelines.push_back(parseTimeline(value));
         parsed.activeTimelineId = optionalValue<std::string>(root, "activeTimelineId");
         parsed.openTimelineIds = optionalValue<std::vector<std::string>>(root, "openTimelineIds");

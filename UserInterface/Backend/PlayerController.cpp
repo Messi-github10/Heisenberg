@@ -1,6 +1,7 @@
 #include "PlayerController.hpp"
 #include "EditorSession.hpp"
 
+#include <Compositing/CompositionBuilder.hpp>
 #include <MainWidget/VideoWidget.hpp>
 #include <Utiles/Logger.hpp>
 
@@ -63,6 +64,13 @@ void PlayerController::setHardwareDecode(bool enabled) {
     if (previewer_) previewer_->setHardwareDecode(enabled);
 }
 
+std::optional<filtergraph::VulkanGraphDocument> PlayerController::filterGraphSnapshot() const {
+    if (!previewer_) return std::nullopt;
+    auto graph = previewer_->filterGraphSnapshot();
+    if (graph.nodes().empty() && graph.edges().empty()) return std::nullopt;
+    return graph;
+}
+
 void PlayerController::openFilterGraph(const QString& path) {
     if (previewer_) previewer_->openFilterGraph(path.toStdString());
 }
@@ -83,7 +91,9 @@ bool PlayerController::getFilterParameter(const QString& filterId,
                                           name.toStdString(), value);
 }
 
-bool PlayerController::openFile(const QString& path) {
+bool PlayerController::openFile(const QString& path) { return openSource(path); }
+
+bool PlayerController::openSource(const QString& path, const std::string& mediaRef) {
     if (!previewer_) return false;
     pendingPosition_ = -1.0;
     scrubRequested_ = false;
@@ -100,7 +110,7 @@ bool PlayerController::openFile(const QString& path) {
     emit frameCountChanged();
     emit isSeekableChanged();
     emit isPlayingChanged();
-    previewer_->open(path.toUtf8().toStdString());
+    previewer_->openSource(path.toUtf8().toStdString(), session_->editor().project().colorSettings, mediaRef);
     currentFile_ = path;
     emit currentFileChanged();
     return true;
@@ -116,7 +126,7 @@ bool PlayerController::openPlaylist(const QString& path) {
 void PlayerController::previewAsset(const QString& mediaRef) {
     const auto asset = session_->editor().resolver().asset(mediaRef.toStdString());
     if (asset.missing) { emit playbackFailed(tr("This media is offline.")); return; }
-    openFile(QString::fromUtf8(asset.path.c_str()));
+    openSource(QString::fromUtf8(asset.path.c_str()), mediaRef.toUtf8().toStdString());
 }
 
 void PlayerController::showTimeline(qint64 focusFrame) {
@@ -140,7 +150,14 @@ void PlayerController::showTimeline(qint64 focusFrame) {
         closeFile();
         return;
     }
-    previewer_->openTimeline(*timeline, snapshot.manifest(), snapshot.projectDir());
+    CompositionPlan plan;
+    std::string error;
+    if (!CompositionBuilder::build(snapshot, plan, &error)) {
+        pendingPosition_ = -1.0;
+        emit playbackFailed(QString::fromUtf8(error.c_str()));
+        return;
+    }
+    previewer_->openComposition(plan);
 }
 
 void PlayerController::closeFile() {

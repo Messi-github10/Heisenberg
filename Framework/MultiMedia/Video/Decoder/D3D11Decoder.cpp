@@ -52,7 +52,14 @@ struct D3D11Decoder::Impl {
     int pixelFormat = AV_PIX_FMT_NONE;
     int64_t startTime = 0;
 
+    int lastError = 0;
+    int record(int result) {
+        if (result < 0 && result != AVERROR(EAGAIN) && result != AVERROR_EOF) lastError = result;
+        return result;
+    }
+
     void close() {
+        lastError = 0;
         if (ctx) avcodec_free_context(&ctx);
         if (hwFramesCtx) av_buffer_unref(&hwFramesCtx);
         if (hwDeviceCtx) av_buffer_unref(&hwDeviceCtx);
@@ -176,8 +183,8 @@ void D3D11Decoder::close() { impl_->close(); }
 bool D3D11Decoder::isOpen() const { return impl_->open; }
 
 int D3D11Decoder::sendPacket(std::shared_ptr<const Packet> packet) {
-    if (!impl_->open) return -1;
-    if (!packet || packet->empty()) return avcodec_send_packet(impl_->ctx, nullptr);
+    if (!impl_->open) return impl_->record(AVERROR(EINVAL));
+    if (!packet || packet->empty()) return impl_->record(avcodec_send_packet(impl_->ctx, nullptr));
     AVPacket avPacket{};
     avPacket.data = const_cast<uint8_t*>(packet->data());
     avPacket.size = packet->size();
@@ -194,14 +201,14 @@ int D3D11Decoder::sendPacket(std::shared_ptr<const Packet> packet) {
                                      impl_->ctx->pkt_timebase);
     avPacket.pos = packet->filePos;
     if (packet->keyframe) avPacket.flags |= AV_PKT_FLAG_KEY;
-    return avcodec_send_packet(impl_->ctx, &avPacket);
+    return impl_->record(avcodec_send_packet(impl_->ctx, &avPacket));
 }
 
 std::shared_ptr<AVFrame> D3D11Decoder::receiveFrame() {
-    if (!impl_->open) return nullptr;
+    if (!impl_->open) { impl_->record(AVERROR(EINVAL)); return nullptr; }
     AVFrame* raw = av_frame_alloc();
-    if (!raw) return nullptr;
-    if (avcodec_receive_frame(impl_->ctx, raw) < 0) {
+    if (!raw) { impl_->record(AVERROR(ENOMEM)); return nullptr; }
+    if (impl_->record(avcodec_receive_frame(impl_->ctx, raw)) < 0) {
         av_frame_free(&raw);
         return nullptr;
     }
@@ -212,7 +219,10 @@ std::shared_ptr<AVFrame> D3D11Decoder::receiveFrame() {
     return std::shared_ptr<AVFrame>(raw, avframeDeleter);
 }
 
+int D3D11Decoder::lastError() const { return impl_->lastError; }
+
 void D3D11Decoder::flush() {
+    impl_->lastError = 0;
     if (impl_->ctx) avcodec_flush_buffers(impl_->ctx);
 }
 

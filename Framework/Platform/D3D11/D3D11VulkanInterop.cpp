@@ -9,6 +9,7 @@
 #include <dxgi1_2.h>
 
 #include <volk.h>
+#include <Platform/Vulkan/VulkanQueueSync.hpp>
 
 extern "C" {
 #include <libplacebo/d3d11.h>
@@ -227,7 +228,7 @@ struct D3D11VulkanInterop::Impl {
         submitInfo.pCommandBuffers = &acquireCommand;
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = &readySemaphore;
-        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, acquireFence)
+        if (synchronizedQueueSubmit(graphicsQueue, 1, &submitInfo, acquireFence)
             != VK_SUCCESS) {
             return false;
         }
@@ -242,7 +243,10 @@ struct D3D11VulkanInterop::Impl {
         out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         out.queueFamilyIndex = graphicsQueueFamily;
         out.ready = {readySemaphore, nextReady};
-        out.contract = filtergraph::kWorkingImageContract;
+        // This is encoded source RGB, not ACEScg. Metadata/IDT is applied by Color.
+        out.contract = {filtergraph::toFormatId(filtergraph::ImageType::rgba16f),
+            filtergraph::ColorPrimaries::unknown, filtergraph::ColorTransfer::unknown,
+            filtergraph::AlphaMode::straight};
         return true;
     }
 
@@ -289,9 +293,9 @@ struct D3D11VulkanInterop::Impl {
                 nullptr, GENERIC_ALL, nullptr, &frame.fenceHandle))) {
             return false;
         }
-        if (!createTimelineSemaphore(
-                vkDevice, &frame.d3dDoneSemaphore,
-                VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT)) {
+        // This semaphore only imports a D3D-created fence. Requesting export
+        // capability is unnecessary and unsupported on import-only adapters.
+        if (!createTimelineSemaphore(vkDevice, &frame.d3dDoneSemaphore)) {
             return false;
         }
 
@@ -629,8 +633,8 @@ bool D3D11VulkanInterop::init(ID3D11Device* device,
 void D3D11VulkanInterop::shutdown() {
     if (!impl_) return;
     if (impl_->vkDevice) {
-        if (impl_->graphicsQueue) vkQueueWaitIdle(impl_->graphicsQueue);
-        vkDeviceWaitIdle(impl_->vkDevice);
+        if (impl_->graphicsQueue) synchronizedQueueWaitIdle(impl_->graphicsQueue);
+        synchronizedDeviceWaitIdle(impl_->vkDevice);
     }
     for (auto& frame : impl_->frames) impl_->destroyFrame(frame);
     impl_->frames.clear();
@@ -684,7 +688,9 @@ bool D3D11VulkanInterop::processFrame(const AVFrame* hwFrame,
 
     auto* decoderTexture = reinterpret_cast<ID3D11Texture2D*>(hwFrame->data[0]);
     const int arraySlice = static_cast<int>(reinterpret_cast<intptr_t>(hwFrame->data[1]));
-    bool is10Bit = false;
+    D3D11_TEXTURE2D_DESC decoderDesc{};
+    decoderTexture->GetDesc(&decoderDesc);
+    bool is10Bit = decoderDesc.Format == DXGI_FORMAT_P010;
     if (hwFrame->hw_frames_ctx) {
         auto* framesContext = reinterpret_cast<AVHWFramesContext*>(
             hwFrame->hw_frames_ctx->data);
@@ -755,7 +761,16 @@ bool D3D11VulkanInterop::processFrame(const AVFrame* hwFrame,
     source.planes[1].components = 2;
     source.planes[1].component_mapping[0] = 1;
     source.planes[1].component_mapping[1] = 2;
-    pl_frame_set_chroma_location(&source, PL_CHROMA_LEFT);
+    pl_chroma_location chroma = PL_CHROMA_LEFT;
+    switch (hwFrame->chroma_location) {
+        case AVCHROMA_LOC_CENTER: chroma = PL_CHROMA_CENTER; break;
+        case AVCHROMA_LOC_TOPLEFT: chroma = PL_CHROMA_TOP_LEFT; break;
+        case AVCHROMA_LOC_TOP: chroma = PL_CHROMA_TOP_CENTER; break;
+        case AVCHROMA_LOC_BOTTOMLEFT: chroma = PL_CHROMA_BOTTOM_LEFT; break;
+        case AVCHROMA_LOC_BOTTOM: chroma = PL_CHROMA_BOTTOM_CENTER; break;
+        default: break;
+    }
+    pl_frame_set_chroma_location(&source, chroma);
     if (is10Bit) {
         source.repr.bits.sample_depth = 16;
         source.repr.bits.color_depth = 10;
@@ -791,7 +806,9 @@ bool D3D11VulkanInterop::processFrame(const AVFrame* hwFrame,
     // Keep the imported image in the same scene-linear working space used by
     // the software upload path. Display conversion is deferred until the
     // final swapchain render.
-    target.color = workingColorSpace();
+    // Only unpack matrix/range/chroma: OCIO owns transfer/gamut conversion.
+    source.color = workingColorSpace();
+    target.color = source.color;
     target.crop = {0, 0, static_cast<float>(impl_->width),
                    static_cast<float>(impl_->height)};
 
@@ -901,7 +918,7 @@ void D3D11VulkanInterop::releaseFrame(
     submitInfo.pCommandBuffers = &impl_->releaseCommand;
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &frame.reuseSemaphore;
-    if (vkQueueSubmit(impl_->graphicsQueue, 1, &submitInfo,
+    if (synchronizedQueueSubmit(impl_->graphicsQueue, 1, &submitInfo,
                       impl_->releaseFence) == VK_SUCCESS) {
         impl_->currentSlot = -1;
     }

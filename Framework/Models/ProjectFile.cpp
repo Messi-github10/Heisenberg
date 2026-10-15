@@ -21,6 +21,10 @@ const Timeline* ProjectFile::activeTimeline() const {
 
 bool validateProject(const ProjectFile& project, std::string* error) {
     if (project.timelines.empty()) { setError(error, "project has no timelines"); return false; }
+    if (!validateColorSettings(project.colorSettings, error)) return false;
+    if (!project.extensions.is_object() || !project.unknownFields.is_object()) {
+        setError(error, "project extension fields must be objects"); return false;
+    }
     std::unordered_set<std::string> ids;
     for (const Timeline& timeline : project.timelines) {
         if (!ids.insert(timeline.id).second) { setError(error, "timeline ids must be unique"); return false; }

@@ -1,4 +1,4 @@
-# FFmpeg — pre-built Windows binaries (LGPL licensed)
+# This distribution enables GPLv3 components, including libx264 and libx265.
 add_library(ffmpeg INTERFACE)
 
 target_include_directories(ffmpeg INTERFACE

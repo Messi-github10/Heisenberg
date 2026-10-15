@@ -90,6 +90,24 @@ EditResult EditorSession::setClipAudio(const QString& clipId, double volume,
     return result;
 }
 
+EditResult EditorSession::setColorSettings(const ColorSettings& settings) {
+    auto result = project_.editor().setColorSettings(settings);
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
+EditResult EditorSession::setMediaInputColorSpace(const QString& mediaRef, const QString& space) {
+    auto result = project_.editor().setMediaInputColorSpace(mediaRef.toUtf8().toStdString(), space.toUtf8().toStdString());
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
+EditResult EditorSession::setClipEffects(const QString& clipId, std::optional<JsonValue> effects) {
+    auto result = project_.editor().setClipEffects(clipId.toUtf8().toStdString(), std::move(effects));
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
 EditResult EditorSession::setTrackMuted(const QString& trackId, bool muted) {
     auto result = project_.editor().setTrackMuted(trackId.toUtf8().toStdString(), muted);
     if (result.changed()) { syncDirty(); emit timelineChanged(-1); }

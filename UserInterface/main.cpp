@@ -7,6 +7,7 @@
 #include <MainWidget/MainWindow.hpp>
 #include <Backend/PlayerController.hpp>
 #include <Backend/EditorSession.hpp>
+#include <Backend/QtExportController.hpp>
 
 #include <Preview/IPreviewer.hpp>
 #include <Utiles/Logger.hpp>
@@ -26,6 +27,13 @@ int main(int argc, char* argv[])
     playerCtrl.setHardwareDecode(true);
 
     MainWindow mainWindow(&editorSession);
+    heisenberg::ui::QtExportController exportCtrl(&editorSession, &playerCtrl);
+    QObject::connect(&mainWindow, &MainWindow::exportTimelineRequested, &exportCtrl,
+                     [&]() { exportCtrl.chooseAndExport(&mainWindow); });
+    QObject::connect(&exportCtrl, &heisenberg::ui::QtExportController::finished,
+                     &mainWindow, [&](bool, const QString& message) { mainWindow.showError(message); });
+    QObject::connect(&mainWindow, &MainWindow::aboutToClose, &exportCtrl,
+                     &heisenberg::ui::QtExportController::shutdown, Qt::DirectConnection);
 
     // Stop playback and release GPU resources while the native video window
     // is still alive (MainWindow emits this before the base close handling).
@@ -96,6 +104,7 @@ int main(int argc, char* argv[])
 
     int ret = app.exec();
 
+    exportCtrl.shutdown();
     playerCtrl.shutdown();
     heisenberg::Logger::Shutdown();
     return ret;

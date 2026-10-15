@@ -11,12 +11,15 @@ EditorSession -> VideoProject
                   |- EditorViewModel -> ProjectFile / MediaManifest / edit history
                   `- ProjectPackageCoordinator -> ProjectCodec / package files
 
-PlayerController -> IPreviewer -> VideoEngine
-                                 |- CompositionBuilder -> CompositionPlan
-                                 |- one decode worker -> DemuxContext / DecoderContext
-                                 |                       AudioResampler / AudioMixer
-                                 `- render/clock worker -> FrameRenderer / VideoNormalizer
-                                                          VideoPresenter / swapchain
+PlayerController -> IPreviewer -> VideoEngine (real-time clock / queues)
+                                 `- CompositionExecutor (decode / sample / mix)
+ExportController -> ExportEngine `- CompositionExecutor (independent instance)
+
+VideoProject snapshot -> CompositionBuilder -> CompositionPlan
+CompositionRenderer -> Color (OCIO / ACEScg) -> Grade -> FilterGraph
+                    -> output transform -> VideoPresenter / swapchain
+                    -> output transform -> VideoEncoder -> Muxer
+AudioMixer -> AudioDevice (preview) / AudioEncoder -> Muxer (export)
 ```
 
 `VideoProject` owns the sole editor and creates value snapshots of the project,
@@ -27,9 +30,10 @@ rollback on replacement failure. They are not crash-journaled transactions.
 `CompositionBuilder` plans at most one video track and one independent audio track.
 It resolves expected source
 paths without probing files, maps half-open clip intervals, trims and speed, and
-captures hide/mute flags. File availability is diagnosed when `VideoEngine` opens
-a decoder session; runtime diagnostics are available in `VideoEngine::Snapshot`.
-Source preview and timeline preview use the same decode worker and transport.
+captures hide/mute flags, visual effects and versioned color settings. File availability
+is diagnosed by the instance-local `CompositionExecutor`; preview diagnostics are
+available in `VideoEngine::Snapshot`. Source preview and timeline preview use the
+same decode worker and transport.
 
 The UI thread controls the engine and receives dispatched notifications. The decode
 worker owns all demux/decoder sessions and prepares video/audio data. The renderer
@@ -50,8 +54,24 @@ track headers toggle mute. All edits use the existing undo history and package
 fields. Video-original audio and the independent audio track are mixed together;
 audio can continue after video ends while the preview presents a black canvas.
 
-There is no video-layer compositing, arbitrary track count, export, waveform cache,
-or pitch-preserving time stretching.
+Shared windowless composition uses OCIO's fixed ACES 2.0 Studio configuration:
+ACEScg working images, ACEScct grading stages, and separate preview/export output
+transforms. Offline MP4 export uses software H.264/H.265 and AAC, independent of the
+playback clock and window. See [composition, color and export](docs/composition-color-export.md)
+for input policies, effect semantics, deployment and output-safety details.
+
+There is no video-layer compositing, arbitrary track count, hardware encoding, HDR
+output, waveform cache, or pitch-preserving time stretching.
+
+## Third-party dependencies
+
+Precompiled SDKs are managed under `Dependence/`, including
+[OpenColorIO](Dependence/OpenColorIO/README.md) and
+[shaderc](Dependence/Shaderc/README.md), with separate Debug/Release libraries and
+runtime files. No external vcpkg installation is required for those dependencies.
+Fetch binary contents with Git LFS after cloning, and verify the snapshots with
+`python scripts/verify_dependency_snapshots.py`. Qt, MSVC and Vulkan shader build
+tools remain development prerequisites.
 
 ## Verification
 

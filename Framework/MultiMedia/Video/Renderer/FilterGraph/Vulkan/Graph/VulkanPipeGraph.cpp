@@ -5,6 +5,7 @@
 #include <MultiMedia/Video/Renderer/FilterGraph/Core/BaseNode.hpp>
 #include <Utiles/Logger.hpp>
 #include <volk.h>
+#include <Platform/Vulkan/VulkanQueueSync.hpp>
 #include <algorithm>
 #include <stdexcept>
 
@@ -74,7 +75,7 @@ bool VulkanPipeGraph::initialize() {
 void VulkanPipeGraph::shutdown() {
     if (!context_.device) return;
     if (submitted_) waitForPreviousSubmission();
-    if (context_.queue) vkQueueWaitIdle(context_.queue);
+    if (context_.queue) renderer::synchronizedQueueWaitIdle(context_.queue);
     if (timeline_) vkDestroySemaphore(context_.device, timeline_, nullptr);
     if (fence_) vkDestroyFence(context_.device, fence_, nullptr);
     if (commandPool_) vkDestroyCommandPool(context_.device, commandPool_, nullptr);
@@ -103,7 +104,7 @@ bool VulkanPipeGraph::onGraphRebuilt() {
 
     // Structural changes are rare. Waiting here keeps old node images alive
     // until libplacebo has returned every borrowed graph output.
-    vkQueueWaitIdle(context_.queue);
+    renderer::synchronizedQueueWaitIdle(context_.queue);
 
     // 开始 rebuild，把所有 Logical 条目标记为 stale
     resourceManager_->beginRebuild();
@@ -136,7 +137,7 @@ bool VulkanPipeGraph::onGraphRebuilt() {
 }
 
 void VulkanPipeGraph::onGraphCleared() {
-    if (context_.queue) vkQueueWaitIdle(context_.queue);
+    if (context_.queue) renderer::synchronizedQueueWaitIdle(context_.queue);
     resourceManager_->clear();
     transitionScheduler_->clear();
 }
@@ -176,22 +177,10 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
         return false;
     }
 
+    std::vector<std::pair<LogicalResourceId, LogicalResourceState>> importedStates;
     for (int32_t nodeIndex : executionOrder()) {
         auto* node = static_cast<VulkanNode*>(
             nodes()[static_cast<size_t>(nodeIndex)]);
-
-        // 在 Node 执行前插入状态转换
-        const auto& transitions = transitionScheduler_->getTransitionsBefore(
-            static_cast<uint32_t>(nodeIndex));
-        for (const auto& transition : transitions) {
-            VulkanImageRef imageRef = resourceManager_->getResource(transition.resource);
-            if (imageRef.valid()) {
-                StateTransitionScheduler::executeTransition(
-                    commandBuffer_, imageRef.image, transition);
-                // 更新资源管理器中的状态
-                resourceManager_->setState(transition.resource, transition.newState);
-            }
-        }
 
         for (int32_t pin = 0; pin < node->inputCount(); ++pin) {
             const RuntimeGraphEdge* edge = inputEdge(nodeIndex, pin);
@@ -201,7 +190,25 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
             const LogicalResourceId id = source->logicalOutputResource(edge->fromPin);
             if (!id.valid() || !resourceManager_->getResource(id).valid()) return false;
         }
-        if (node->beginFrame(frame)) {
+        const bool active = node->beginFrame(frame);
+        if (active) {
+            for (const auto& access : node->declareResourceAccess()) {
+                if (!access.resource.valid()) continue;
+                const auto image = resourceManager_->getResource(access.resource);
+                if (!image.valid()) return false;
+                const auto state = resourceManager_->getState(access.resource);
+                const auto* desc = resourceManager_->description(access.resource);
+                if (desc && desc->kind == LogicalResourceKind::External
+                    && std::none_of(importedStates.begin(), importedStates.end(),
+                        [&](const auto& item) { return item.first == access.resource; }))
+                    importedStates.emplace_back(access.resource, state);
+                // Recompute per frame: compiled UNDEFINED layouts must never
+                // be replayed against reused images or a newly imported image.
+                StateTransition transition{access.resource, state, access.expectedState,
+                    static_cast<uint32_t>(nodeIndex)};
+                StateTransitionScheduler::executeTransition(commandBuffer_, image.image, transition);
+                resourceManager_->setState(access.resource, access.expectedState);
+            }
             node->record(commandBuffer_, frame);
         }
 
@@ -210,6 +217,12 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
         }
     }
 
+    for (const auto& [id, original] : importedStates) {
+        const auto current = resourceManager_->getState(id);
+        StateTransition transition{id, current, original, 0};
+        StateTransitionScheduler::executeTransition(commandBuffer_, resourceManager_->getResource(id).image, transition);
+        resourceManager_->setState(id, original);
+    }
     if (vkEndCommandBuffer(commandBuffer_) != VK_SUCCESS) return false;
 
     std::vector<VkSemaphore> waitSemaphores;
@@ -245,7 +258,7 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
     submitInfo.pSignalSemaphores = &timeline_;
 
     const VkResult submitResult =
-        vkQueueSubmit(context_.queue, 1, &submitInfo, fence_);
+        renderer::synchronizedQueueSubmit(context_.queue, 1, &submitInfo, fence_);
     if (submitResult != VK_SUCCESS) {
         LOG_ERROR("FilterGraph: vkQueueSubmit failed ({})",
                   static_cast<int>(submitResult));
@@ -332,10 +345,9 @@ bool VulkanPipeGraph::buildTransitionPlan() {
             auto transition = transitionScheduler_->recordAccess(
                 static_cast<uint32_t>(nodeIndex), access, currentState);
 
-            // 如果需要状态转换，更新资源状态
-            if (transition.oldState != transition.newState) {
-                resourceManager_->setState(access.resource, transition.newState);
-            }
+            // Compilation does not mutate runtime layouts. onRun computes
+            // barriers against actual states after each import and each frame.
+            (void)transition;
         }
     }
 

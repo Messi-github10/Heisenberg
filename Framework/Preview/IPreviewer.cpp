@@ -1,7 +1,7 @@
 #include "IPreviewer.hpp"
 
 #include "VideoEngine.hpp"
-#include <Compositing/FrameRenderer.hpp>
+#include <MultiMedia/Video/Renderer/CompositionRenderer.hpp>
 
 #include <atomic>
 #include <mutex>
@@ -17,6 +17,7 @@
 #include <Utiles/Logger.hpp>
 
 #include <cstdint>
+#include <set>
 #include <stdexcept>
 #include <utility>
 #include <variant>
@@ -84,8 +85,27 @@ public:
     }
 
     void open(const std::string& path) override {
-        if (playback_) playback_->open(path);
-        resetPresentation();
+        openSource(path, ColorSettings{}, {});
+    }
+
+    void openSource(const std::string& path, const ColorSettings& settings,
+                    const std::string& mediaRef) override {
+        std::string error;
+        if (!validateColorSettings(settings, &error) || !supportedColorSettings(settings)) {
+            if (error.empty()) error = "Unsupported preview source color settings";
+            notifyListener([error](Listener& listener) { listener.onOpenFailed(error); });
+            return;
+        }
+        // One render-worker transaction closes the old generation before any
+        // newly decoded source can be paired with this project's color snapshot.
+        // Async also lets the UI service Win32 messages if attach/resize is queued.
+        render_.post([this, path, settings, mediaRef] {
+            if (playback_) playback_->open(path);
+            sourceColorSettings_ = settings;
+            sourceMediaRef_ = mediaRef;
+            sourceColorGeneration_ = playback_ ? playback_->snapshot().generation : 0;
+            resetPresentation();
+        });
     }
 
     void openPlaylist(const std::string& path) override {
@@ -96,6 +116,11 @@ public:
     void openTimeline(const Timeline& timeline, const MediaManifest& manifest,
                       const std::string& projectDir) override {
         if (playback_) playback_->openTimeline(timeline, manifest, projectDir);
+        resetPresentation();
+    }
+
+    void openComposition(const CompositionPlan& plan) override {
+        if (playback_) playback_->openComposition(plan);
         resetPresentation();
     }
 
@@ -199,13 +224,9 @@ public:
                           float value) override {
         bool success = false;
         render_.postSync([this, nodeId, name, value, &success] {
-            if (!filterGraph_) return;
-            filtergraph::VulkanGraphParameter patch;
-            patch[name] = value;
-            if (!graphDocument_.updateParameter(nodeId, patch)) return;
-            const auto* node = findDocumentNode(nodeId);
-            if (!node) return;
-            success = filterGraph_->setParameters(nodeId, node->parameter);
+            if (!compositionRenderer_) return;
+            success = compositionRenderer_->setNodeParameter(nodeId, name, value);
+            if (success) graphDocument_ = compositionRenderer_->filterGraphSnapshot();
             if (success) presentCurrentFrame();
         });
         return success;
@@ -253,9 +274,9 @@ public:
         if (playback_) playback_->shutdown();
         render_.postSync([this] {
             detachWindowOnRenderThread();
-            filterGraph_.reset();
             graphDocument_ = {};
-            if (frameRenderer_) { frameRenderer_->shutdown(); frameRenderer_.reset(); }
+            lastRendered_ = {};
+            if (compositionRenderer_) { compositionRenderer_->shutdown(); compositionRenderer_.reset(); }
             lastPacket_.reset();
             gpuCtx_.reset();
         });
@@ -297,6 +318,12 @@ public:
         return result;
     }
 
+    filtergraph::VulkanGraphDocument filterGraphSnapshot() const override {
+        filtergraph::VulkanGraphDocument snapshot;
+        render_.postSync([this, &snapshot] { snapshot = graphDocument_; });
+        return snapshot;
+    }
+
 private:
     bool ensureGpu() {
         if (gpuCtx_) return true;
@@ -314,6 +341,8 @@ private:
             vkRes.graphicsQF = vkCtx.graphicsQueueFamily();
             vkRes.graphicsQueue = vkCtx.graphicsQueue();
             vkRes.getProcAddr = vkCtx.getInstanceProcAddr();
+            vkRes.enabledFeatures = vkCtx.enabledDeviceFeatures();
+            vkRes.enabledExtensions = vkCtx.enabledDeviceExtensions();
             gpuCtx_ = std::make_unique<renderer::GpuContext>(vkRes);
             return true;
         } catch (const std::exception& error) {
@@ -385,69 +414,80 @@ private:
         events_->generation.store(generation, std::memory_order_release);
         render_.post([this, generation] {
             if (!playback_->isCurrentGeneration(generation)) return;
-            lastFrame_.reset();
+            reportedDiagnostics_.clear();
+            lastRendered_ = {};
             if (lastPacket_ && lastPacket_->generation != generation) lastPacket_.reset();
-            if (frameRenderer_) { frameRenderer_->shutdown(); frameRenderer_.reset(); }
             if (lastPacket_) renderPacket();
         });
         render_.setPlaying(true);
     }
 
     void renderPacket() {
-        if (!lastPacket_ || !presenter_ || !playback_->isCurrentGeneration(lastPacket_->generation)) return;
+        if (!lastPacket_ || !presenter_ || !compositionRenderer_
+            || !playback_->isCurrentGeneration(lastPacket_->generation)) return;
         const auto& packet = *lastPacket_;
-        std::shared_ptr<VideoFrame> image;
-        if (packet.sourceMode && !packet.blank) image = packet.source;
-        else {
-            if (!frameRenderer_) frameRenderer_ = std::make_unique<FrameRenderer>(packet.settings);
-            else frameRenderer_->setSettings(packet.settings);
-            std::string error;
-            image = packet.blank ? frameRenderer_->background(packet.targetPosition, &error)
-                : frameRenderer_->render(packet.source, packet.targetPosition, &error);
-            if (!image) { LOG_ERROR("IPreviewer: render conversion failed: {}", error); return; }
+        const bool projectSourceColor = packet.sourceMode && sourceColorGeneration_ != 0
+            && packet.generation >= sourceColorGeneration_;
+        CompositionPlan sourcePlan;
+        if (projectSourceColor) {
+            if (packet.plan) sourcePlan = *packet.plan;
+            sourcePlan.settings = packet.settings;
+            sourcePlan.colorSettings = sourceColorSettings_;
         }
-        if (image) presentDecodedFrame(image->native());
-    }
-
-    void presentDecodedFrame(std::shared_ptr<AVFrame> frame) {
-        if (!frame || !frame->data[0] || !presenter_) return;
-
-        lastFrame_ = frame;
-        if (videoWidth_ <= 0 || videoHeight_ <= 0) {
-            videoWidth_ = frame->width;
-            videoHeight_ = frame->height;
+        renderer::CompositionRenderRequest request;
+        request.plan = projectSourceColor ? &sourcePlan : packet.plan.get(); request.source = packet.source;
+        if (projectSourceColor) {
+            const auto overrideSpace = sourceColorSettings_.inputColorSpaces.find(sourceMediaRef_);
+            if (overrideSpace != sourceColorSettings_.inputColorSpaces.end()) request.inputColorSpace = overrideSpace->second;
         }
-
-        const bool hardware = frame->format == AV_PIX_FMT_D3D11;
-        if (frame->pts != AV_NOPTS_VALUE && frame->time_base.num > 0
-            && frame->time_base.den > 0) {
-            const int64_t ptsUs = av_rescale_q(
-                frame->pts, frame->time_base, AVRational{1, 1'000'000});
-            LOG_DEBUG("IPreviewer: decoded frame mode={} pts={} ptsUs={} "
-                      "timeBase={}/{} format={} size={}x{} range={} colorspace={} "
-                      "primaries={} transfer={} chromaLocation={}",
-                      hardware ? "hardware" : "software", frame->pts, ptsUs,
-                      frame->time_base.num, frame->time_base.den, frame->format,
-                      frame->width, frame->height,
-                      static_cast<int>(frame->color_range),
-                      static_cast<int>(frame->colorspace),
-                      static_cast<int>(frame->color_primaries),
-                      static_cast<int>(frame->color_trc),
-                      static_cast<int>(frame->chroma_location));
+        request.sourceId = projectSourceColor ? sourceMediaRef_ : packet.mediaRef;
+        request.settings = packet.settings; request.targetFrame = packet.targetPosition;
+        request.clipId = packet.clipId; request.clipLocalFrame = packet.clipLocalFrame;
+        request.sourceMode = packet.sourceMode; request.blank = packet.blank;
+        std::vector<std::string> diagnostics; request.diagnostics = &diagnostics;
+        std::string error;
+        lastRendered_ = {};
+        auto working = compositionRenderer_->render(request, &error);
+        if (!working) {
+            LOG_ERROR("IPreviewer: composition render failed: {}", error);
+            notifyListener([error](Listener& listener) { listener.onFilterGraphFailed(error); });
+            // Do not leave a stale successful frame visible after a failed request.
+            request.blank = true; request.source.reset();
+            working = compositionRenderer_->render(request, nullptr);
         }
-
-        presentCurrentFrame();
-
-        filtergraph::VulkanFilterGraph* active = attachedGraph_;
-        if (!active || (++filterGraphVerificationFrame_ % 60) != 0) return;
-
-        filtergraph::VulkanImageRef output;
-        if (!active->output()->getVulkanOutput(output)) {
-            LOG_WARN("FilterGraph verify: output is unavailable");
+        renderer::ColorOutputRequest output;
+        if (request.plan) {
+            output.display = request.plan->colorSettings.previewOutput.display;
+            output.view = request.plan->colorSettings.previewOutput.view;
+            if (request.plan->colorSettings.inputPolicyVersion == 2 &&
+                output.display == "sRGB - Display" && output.view == "Un-tone-mapped")
+                output.intent = renderer::ColorOutputIntent::SdrVideoPreview;
+        } else output.intent = renderer::ColorOutputIntent::SdrVideoPreview;
+        if (working) lastRendered_ = compositionRenderer_->output(working, output, &error);
+        if (!lastRendered_) {
+            LOG_ERROR("IPreviewer: output transform failed: {}", error);
+            notifyListener([error](Listener& listener) { listener.onFilterGraphFailed(error); });
             return;
         }
-        LOG_INFO("FilterGraph verify: output={}x{} is ready",
-                 output.extent.width, output.extent.height);
+        std::string diagnosticSource = projectSourceColor ? sourceMediaRef_ : packet.mediaRef;
+        if (diagnosticSource.empty() && request.plan) {
+            for (const auto& clip : request.plan->clips) {
+                if (packet.sourceMode || clip.id == packet.clipId) {
+                    diagnosticSource = clip.sourcePath;
+                    break;
+                }
+            }
+        }
+        for (const auto& diagnostic : diagnostics) {
+            if (!reportedDiagnostics_.emplace(diagnosticSource, diagnostic).second) continue;
+            LOG_WARN("IPreviewer: {}", diagnostic);
+            notifyListener([diagnostic](Listener& listener) { listener.onFilterGraphFailed(diagnostic); }, packet.generation);
+        }
+        if (!presenter_->presentFrame(lastRendered_)) return;
+        const auto generation = packet.generation;
+        const double seconds = packet.targetPosition * packet.targetTimeBase.toDouble();
+        events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
+        notifyListener([seconds](Listener& listener) { listener.onFramePresented(seconds); }, generation);
     }
 
     bool loadFilterGraph(const std::string& path, std::string* error) {
@@ -460,67 +500,17 @@ private:
             return false;
         }
 
-        auto& vkCtx = renderer::VulkanContext::instance();
-        filtergraph::VulkanGraphContext graphContext;
-        graphContext.instance = static_cast<VkInstance>(vkCtx.vkInstance());
-        graphContext.physicalDevice =
-            static_cast<VkPhysicalDevice>(vkCtx.physicalDevice());
-        graphContext.device = static_cast<VkDevice>(vkCtx.device());
-        graphContext.queue = static_cast<VkQueue>(vkCtx.graphicsQueue());
-        graphContext.queueFamilyIndex = vkCtx.graphicsQueueFamily();
-
         filtergraph::VulkanGraphDocument graphDocument;
-        std::string graphError;
-        if (!graphDocument.loadFromJsonFile(path, &graphError)) {
-            if (error) *error = graphError;
-            return false;
-        }
-
-        std::unique_ptr<filtergraph::VulkanFilterGraph> nextGraph;
-        try {
-            nextGraph = std::make_unique<filtergraph::VulkanFilterGraph>(
-                graphContext, graphDocument);
-        } catch (const std::exception& exception) {
-            if (error) *error = exception.what();
-            return false;
-        }
-
-        vkCtx.device().waitIdle();
-        presenter_->setFilterGraph(nullptr, nullptr, nullptr);
-        attachedGraph_ = nullptr;
-        filterGraph_.reset();
-        filterGraph_ = std::move(nextGraph);
+        if (!graphDocument.loadFromJsonFile(path, error)) return false;
+        if (!compositionRenderer_ || !compositionRenderer_->setFilterGraphSnapshot(graphDocument, error)) return false;
         graphDocument_ = std::move(graphDocument);
-        filterGraphVerificationFrame_ = 0;
         filterGraphPath_ = path;
         notifyListener([path](Listener& listener) { listener.onFilterGraphChanged(path); });
         presentCurrentFrame();
         return true;
     }
 
-    void applyGraphForFrame(const AVFrame*) {
-        if (!presenter_) return;
-        auto* wanted = filterGraph_.get();
-        if (wanted == attachedGraph_) return;
-        if (wanted) presenter_->setFilterGraph(wanted->graph(), wanted->input(), wanted->output());
-        else presenter_->setFilterGraph(nullptr, nullptr, nullptr);
-        attachedGraph_ = wanted;
-    }
-
-    void presentCurrentFrame() {
-        if (!presenter_ || !lastFrame_ || !lastFrame_->data[0] || !lastPacket_
-            || !playback_->isCurrentGeneration(lastPacket_->generation)) return;
-        applyGraphForFrame(lastFrame_.get());
-        if (!presenter_->presentFrame(lastFrame_.get())) {
-            LOG_WARN("IPreviewer: presentFrame failed (format={}, {}x{})",
-                     lastFrame_->format, lastFrame_->width, lastFrame_->height);
-            return;
-        }
-        const auto generation = lastPacket_->generation;
-        const double seconds = lastPacket_->targetPosition * lastPacket_->targetTimeBase.toDouble();
-        events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
-        notifyListener([seconds](Listener& listener) { listener.onFramePresented(seconds); }, generation);
-    }
+    void presentCurrentFrame() { renderPacket(); }
 
     const filtergraph::VulkanGraphNodeDesc* findDocumentNode(
         uint64_t nodeId) const {
@@ -550,15 +540,21 @@ private:
             return;
         }
 
-        presenter_->setD3D11Device(
-            renderer::D3D11Context::instance().device(),
-            renderer::D3D11Context::instance().context());
+        if (!compositionRenderer_) {
+            compositionRenderer_ = std::make_unique<renderer::CompositionRenderer>();
+            std::string error;
+            if (!compositionRenderer_->initialize(gpuCtx_->plGpu(), gpuCtx_->plVulkan(),
+                    renderer::D3D11Context::instance().device(),
+                    renderer::D3D11Context::instance().context(), &error)) {
+                LOG_ERROR("IPreviewer: CompositionRenderer initialization failed: {}", error);
+                compositionRenderer_.reset(); presenter_.reset(); return;
+            }
+            if (!graphDocument_.nodes().empty()) compositionRenderer_->setFilterGraphSnapshot(graphDocument_, &error);
+        }
         presenter_->setOnResize([this](int resizedWidth, int resizedHeight) {
             videoWidth_ = resizedWidth;
             videoHeight_ = resizedHeight;
         });
-        attachedGraph_ = nullptr;
-        applyGraphForFrame(lastFrame_.get());
         renderPacket();
 
         nativeSurface_ = nativeSurface;
@@ -570,13 +566,11 @@ private:
 
     void detachWindowOnRenderThread() {
         if (presenter_) {
-            presenter_->setFilterGraph(nullptr, nullptr, nullptr);
             presenter_->shutdown();
             presenter_.reset();
         }
         nativeSurface_ = nullptr;
-        lastFrame_.reset();
-        attachedGraph_ = nullptr;
+        lastRendered_ = {};
         videoWidth_ = 0;
         videoHeight_ = 0;
     }
@@ -584,19 +578,20 @@ private:
     mutable renderer::RenderThread render_;
     std::shared_ptr<Events> events_ = std::make_shared<Events>();
     std::unique_ptr<VideoEngine> playback_;
-    std::unique_ptr<FrameRenderer> frameRenderer_;
+    std::unique_ptr<renderer::CompositionRenderer> compositionRenderer_;
     std::optional<DecodedFrame> lastPacket_;
     std::unique_ptr<renderer::GpuContext> gpuCtx_;
     std::unique_ptr<renderer::VideoPresenter> presenter_;
-    std::unique_ptr<filtergraph::VulkanFilterGraph> filterGraph_;
     filtergraph::VulkanGraphDocument graphDocument_;
-    filtergraph::VulkanFilterGraph* attachedGraph_ = nullptr;
-    std::shared_ptr<AVFrame> lastFrame_;
+    renderer::RenderedFrame lastRendered_;
+    std::set<std::pair<std::string, std::string>> reportedDiagnostics_;
+    ColorSettings sourceColorSettings_;
+    std::string sourceMediaRef_;
+    uint64_t sourceColorGeneration_ = 0;
     std::string filterGraphPath_;
     void* nativeSurface_ = nullptr;
     int videoWidth_ = 0;
     int videoHeight_ = 0;
-    uint64_t filterGraphVerificationFrame_ = 0;
     bool shutdownDone_ = false;
 };
 

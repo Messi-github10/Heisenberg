@@ -218,8 +218,8 @@ TEST(EditorViewModelTest, SplitTrimAndUndoPreserveTimingPayloads) {
     EXPECT_EQ(right->trimStartFrame, 8);
     EXPECT_EQ(right->fadeInFrames, 0);
     ASSERT_TRUE(right->opacityTrack.has_value());
-    EXPECT_EQ(right->opacityTrack->value["keyframes"][0]["frame"], 2);
-    EXPECT_EQ((*right->effects)[0]["params"]["radius"]["track"]["keyframes"][0]["frame"], 2);
+    EXPECT_EQ(right->opacityTrack->value["keyframes"][0]["frame"], -2);
+    EXPECT_EQ((*right->effects)[0]["params"]["radius"]["track"]["keyframes"][0]["frame"], -2);
     const auto afterSplit = nlohmann::ordered_json::parse(heisenberg::ProjectCodec::encode(editor->project()));
     ASSERT_TRUE(editor->undo());
     EXPECT_EQ(nlohmann::ordered_json::parse(heisenberg::ProjectCodec::encode(editor->project())), before);
@@ -280,11 +280,12 @@ TEST(EditorViewModelTest, SplitBoundaryPayloadBelongsToRightAndRightTrimCropsTim
     EXPECT_EQ(right->fadeInFrames, 0);
     EXPECT_EQ(right->fadeOutFrames, 4);
     ASSERT_TRUE(left->opacityTrack);
-    EXPECT_EQ(left->opacityTrack->value["keyframes"].size(), 1u);
+    EXPECT_EQ(left->opacityTrack->value["keyframes"].size(), 3u);
     ASSERT_TRUE(right->opacityTrack);
-    EXPECT_EQ(right->opacityTrack->value["keyframes"][0]["frame"], 0);
-    EXPECT_EQ(right->opacityTrack->value["keyframes"][1]["frame"], 2);
-    EXPECT_TRUE((*left->effects)[0]["params"]["radius"]["track"]["keyframes"].empty());
+    EXPECT_EQ(right->opacityTrack->value["keyframes"][0]["frame"], -2);
+    EXPECT_EQ(right->opacityTrack->value["keyframes"][1]["frame"], 0);
+    EXPECT_EQ(right->opacityTrack->value["keyframes"][2]["frame"], 2);
+    EXPECT_EQ((*left->effects)[0]["params"]["radius"]["track"]["keyframes"][0]["frame"], 4);
     EXPECT_EQ((*right->effects)[0]["params"]["radius"]["track"]["keyframes"][0]["frame"], 0);
     ASSERT_TRUE(left->wordTimings);
     ASSERT_TRUE(right->wordTimings);
@@ -299,8 +300,8 @@ TEST(EditorViewModelTest, SplitBoundaryPayloadBelongsToRightAndRightTrimCropsTim
     EXPECT_EQ(trimmed->trimEndFrame, 14);
     EXPECT_EQ(trimmed->fadeInFrames, 3);
     EXPECT_EQ(trimmed->fadeOutFrames, 2);
-    EXPECT_EQ(trimmed->opacityTrack->value["keyframes"].size(), 2u);
-    EXPECT_EQ((*trimmed->effects)[0]["params"]["radius"]["track"]["keyframes"].size(), 1u);
+    EXPECT_EQ(trimmed->opacityTrack->value["keyframes"].size(), 3u);
+    EXPECT_EQ((*trimmed->effects)[0]["params"]["radius"]["track"]["keyframes"].size(), 2u);
     EXPECT_EQ(*trimmed->wordTimings, (std::vector<heisenberg::WordTiming>{{"cross", 2, 5}}));
     ASSERT_TRUE(editor->undo());
     EXPECT_EQ(heisenberg::ProjectCodec::encode(editor->project()), before);

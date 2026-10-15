@@ -25,6 +25,7 @@ public:
 
     // ---- Seek 支持 ----
     void flush() override;
+    int lastError() const override;
 
     // ---- 能力查询 ----
     DecoderBackend backend() const override;

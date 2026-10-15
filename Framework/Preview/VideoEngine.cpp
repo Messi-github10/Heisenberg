@@ -1,15 +1,8 @@
 #include "VideoEngine.hpp"
 #include <Compositing/CompositionBuilder.hpp>
-#include <Common/FrameTime.hpp>
-#include <Common/MediaFrame.hpp>
-#include <Common/Stream.hpp>
 #include <Models/ProjectCodec.hpp>
 #include <Models/ProjectFile.hpp>
-#include <MultiMedia/Audio/AudioMixer.hpp>
-#include <MultiMedia/Audio/AudioResampler.hpp>
 #include <MultiMedia/Audio/Output/AudioDevice.hpp>
-#include <MultiMedia/DecoderContext.hpp>
-#include <MultiMedia/DemuxContext.hpp>
 #include <Utiles/Logger.hpp>
 #include <algorithm>
 #include <atomic>
@@ -23,159 +16,12 @@
 #include <iterator>
 #include <mutex>
 #include <thread>
-#include <unordered_map>
-extern "C" {
-#include <libavutil/frame.h>
-}
 
 namespace heisenberg {
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr size_t kVideoCapacity = 12;
 constexpr size_t kAudioCapacity = 48;
-
-// Decoder sessions are not producers or execution graphs. They are private
-// resources of the one engine worker, shared by source and timeline execution.
-struct DecoderSession {
-    std::unique_ptr<demuxer::DemuxContext> demux;
-    std::unique_ptr<decoder::DecoderContext> video, audio;
-    const Stream* videoStream = nullptr;
-    const Stream* audioStream = nullptr;
-    Rational rate{24, 1};
-    double duration = 0.0, videoEnd = -1.0, lastImageEnd = -1.0;
-    bool seekable = false, eof = false, resamplerDrained = false;
-    double selectedSeconds = -1.0;
-    std::deque<std::pair<double, std::shared_ptr<VideoFrame>>> images;
-    std::vector<std::shared_ptr<AudioFrame>> sound;
-    AudioResampler resampler;
-    AudioSpec outputSpec;
-    double audioEnd = -1.0;
-    int64_t inferredAudioPosition = 0;
-    double inferredVideoSeconds = 0.0;
-
-    bool open(const std::string& path, bool hardware, const AudioSpec& output,
-              bool wantVideo, std::string& error) {
-        outputSpec = output;
-        demux = std::make_unique<demuxer::DemuxContext>();
-        if (demux->open(path) < 0) { error = "Failed to open file: " + path; return false; }
-        duration = std::max(0.0, demux->duration());
-        seekable = demux->seekable();
-        for (const auto& stream : demux->streams()) {
-            if (wantVideo && stream.isVideo() && !stream.attachedPicture && !videoStream) videoStream = &stream;
-            if (stream.isAudio() && !audioStream) audioStream = &stream;
-        }
-        const bool playable = std::any_of(demux->streams().begin(), demux->streams().end(),
-            [](const auto& stream) { return stream.isAudio() || (stream.isVideo() && !stream.attachedPicture); });
-        if (!playable) { error = "No playable video or audio stream found"; return false; }
-        decoder::DecoderConfig config;
-        config.preferred = hardware ? decoder::DecoderBackend::D3D11 : decoder::DecoderBackend::Software;
-        config.allowFallback = hardware;
-        if (videoStream) {
-            if (videoStream->codec.fpsNum() > 0 && videoStream->codec.fpsDen() > 0)
-                rate = Rational(videoStream->codec.fpsNum(), videoStream->codec.fpsDen());
-            if (videoStream->durationKnown)
-                videoEnd = videoStream->codec.toSeconds(videoStream->startTime - videoStream->originTime + videoStream->duration);
-            video = std::make_unique<decoder::DecoderContext>();
-            if (video->open(*videoStream, config) < 0) { error = "Failed to create video decoder"; return false; }
-        }
-        // Separate video and audio contribution sessions avoid retaining a
-        // video's surfaces while decoding independent audio lookahead/tails.
-        if (audioStream && !wantVideo) {
-            audio = std::make_unique<decoder::DecoderContext>();
-            if (audio->open(*audioStream, config) < 0) {
-                audio.reset();
-                if (!video) { error = "Failed to create audio decoder"; return false; }
-            }
-        }
-        return true;
-    }
-    void appendSound(std::shared_ptr<AudioFrame> converted) {
-        if (!converted) return;
-        if (!converted->hasPosition()) converted->setPosition(inferredAudioPosition);
-        inferredAudioPosition = converted->position() + converted->samples();
-        audioEnd = static_cast<double>(inferredAudioPosition) / outputSpec.sampleRate;
-        sound.push_back(std::move(converted));
-    }
-    void prune(double seconds) {
-        const int64_t before = static_cast<int64_t>(std::floor(seconds * outputSpec.sampleRate)) - 2;
-        sound.erase(std::remove_if(sound.begin(), sound.end(), [&](const auto& frame) {
-            return frame->position() + frame->samples() < before;
-        }), sound.end());
-        while (images.size() > 1 && images.front().first + 0.000001 < seconds) images.pop_front();
-        // Demuxers with highly skewed interleave must not retain unbounded
-        // decoded references. Normal lookahead is just one presentation slice.
-        while (images.size() > kVideoCapacity) images.pop_back();
-        if (sound.size() > 256) sound.resize(256);
-    }
-    void pull(uint64_t generation, double seconds) {
-        if (video) for (;;) {
-            auto item = video->pull(generation);
-            auto image = item.videoFrame();
-            if (!image) break;
-            const auto native = image->native();
-            const double position = hasFrameTimestamp(*native) ? frameTimeSeconds(*native) : inferredVideoSeconds;
-            const double span = native->duration > 0 ? native->duration * av_q2d(native->time_base) : 1.0 / rate.toDouble();
-            inferredVideoSeconds = position + span;
-            lastImageEnd = inferredVideoSeconds;
-            images.emplace_back(position, std::move(image));
-            prune(seconds);
-        }
-        if (audio) for (;;) {
-            auto item = audio->pull(generation);
-            auto frame = item.audioFrame();
-            if (!frame) break;
-            appendSound(resampler.convert(*frame, outputSpec));
-            prune(seconds);
-        }
-        if (eof && !resamplerDrained) {
-            while (auto frame = resampler.drain()) appendSound(std::move(frame));
-            resamplerDrained = true;
-            prune(seconds);
-        }
-    }
-    std::shared_ptr<VideoFrame> decode(double seconds, double audioSeconds,
-                                      uint64_t generation, const std::atomic<uint64_t>& active) {
-        if (!video && !audio) { selectedSeconds = seconds; return {}; }
-        const bool needSeek = (selectedSeconds < 0.0 ? seconds > 2.0
-            : (seconds + 0.000001 < selectedSeconds || seconds - selectedSeconds > 2.0));
-        if (needSeek && seekable) {
-            const double preroll = std::max(0.0, seconds - 2.0);
-            const int streamIndex = videoStream ? videoStream->index : audioStream->index;
-            if (demux->seek(preroll, streamIndex, 1) < 0) return {};
-            if (video) video->flush();
-            if (audio) audio->flush();
-            resampler.reset();
-            images.clear(); sound.clear(); eof = false; resamplerDrained = false;
-            audioEnd = lastImageEnd = -1.0;
-            inferredVideoSeconds = preroll;
-            inferredAudioPosition = static_cast<int64_t>(preroll * outputSpec.sampleRate);
-        }
-        for (;;) {
-            if (active.load(std::memory_order_acquire) != generation) return {};
-            pull(generation, seconds);
-            prune(seconds);
-            const bool videoReady = !video || (videoEnd >= 0 && seconds >= videoEnd)
-                || (!images.empty() && images.back().first + 0.000001 >= seconds);
-            const bool audioReady = !audio || audioEnd >= audioSeconds;
-            if ((videoReady && audioReady) || eof) break;
-            auto packet = demux->read(generation);
-            if (packet.type == MediaFrameType::Packet) {
-                if (video && packet.metadata.streamIndex == videoStream->index) video->push(packet);
-                else if (audio && packet.metadata.streamIndex == audioStream->index) audio->push(packet);
-            } else {
-                if (video) video->push(MediaFrame::eof(generation));
-                if (audio) audio->push(MediaFrame::eof(generation));
-                eof = true;
-            }
-        }
-        pull(generation, seconds);
-        prune(seconds);
-        selectedSeconds = seconds;
-        if (images.empty() || (videoEnd >= 0 && seconds >= videoEnd)
-            || (eof && lastImageEnd >= 0 && seconds >= lastImageEnd)) return {};
-        return images.front().second;
-    }
-};
 }
 
 struct VideoEngine::Impl {
@@ -218,14 +64,9 @@ struct VideoEngine::Impl {
     // The fields below are touched by the decode worker only.
     CompositionPlan plan;
     bool sourceMode = false;
-    std::unordered_map<std::string, std::unique_ptr<DecoderSession>> sessions;
-    // Failed opens are source failures, shared across contribution identities.
-    // Keep only currently active paths and reset on generation/plan changes.
-    std::unordered_map<std::string, std::string> failedPaths;
+    CompositionExecutor executor;
     int64_t nextFrame = 0;
     bool ready = false, eofQueued = false;
-    double sourceDuration = 0.0;
-    bool sourceHasAudio = false;
     double clockSecondsLocked() const {
         return wallOffset + (manualClock ? manualNow - manualStart
             : std::chrono::duration<double>(Clock::now() - wallStart).count());
@@ -317,97 +158,31 @@ struct VideoEngine::Impl {
         notify(generation, owner->onStateChanged, State::Idle);
         notify(generation, owner->onOpenFailed, message);
     }
-    DecoderSession* session(const std::string& identity, const std::string& path,
-                            bool wantVideo, bool hardwareDecode, uint64_t generation) {
-        if (path.empty()) return nullptr;
-        if (failedPaths.find(path) != failedPaths.end()) return nullptr;
-        auto found = sessions.find(identity);
-        if (found != sessions.end()) return found->second.get();
-        auto created = std::make_unique<DecoderSession>();
-        std::string error;
-        if (!created->open(path, hardwareDecode, plan.settings.audioSpec(), wantVideo, error)) {
-            LOG_WARN("VideoEngine: {}", error);
-            failedPaths.emplace(path, error);
-            { std::lock_guard lock(mutex);
-              if (state.generation == generation) {
-                  const std::string warning = "unavailable media: " + path + " (" + error + ")";
-                  if (std::find(state.warnings.begin(), state.warnings.end(), warning) == state.warnings.end())
-                      state.warnings.push_back(warning);
-              } }
-            return nullptr;
-        }
-        if (active.load(std::memory_order_acquire) != generation) return nullptr;
-        auto* result = created.get();
-        sessions.emplace(identity, std::move(created));
-        return result;
+    CompositionExecutor::Context context(uint64_t generation) {
+        return {generation, [this, generation] {
+            return active.load(std::memory_order_acquire) != generation;
+        }};
     }
-    bool execute(int64_t frame, uint64_t generation, bool urgent, bool hardwareDecode) {
-        DecodedFrame output;
-        output.settings = plan.settings;
-        output.targetPosition = frame;
-        output.targetTimeBase = plan.settings.timeBase();
-        output.generation = generation; output.sourceMode = sourceMode;
-        std::vector<AudioMixer::Input> inputs;
-        std::vector<std::string> used, usedPaths;
-        int samples = static_cast<int>(plan.settings.audioSamplesForFrame(frame));
-        if (sourceMode) samples = static_cast<int>(std::max<int64_t>(0, std::min<int64_t>(samples,
-            static_cast<int64_t>(std::llround(sourceDuration * plan.settings.audioSpec().sampleRate))
-                - plan.settings.audioSamplePosition(frame))));
-        auto contribution = [&](const CompositionSample& sample, const CompositionClip& clip,
-                                const std::string& prefix, bool wantVideo) {
-            const std::string identity = prefix + std::to_string(sample.clipIndex) + ":" + clip.id + ":" + clip.sourcePath;
-            used.push_back(identity); usedPaths.push_back(clip.sourcePath);
-            auto* decoder = session(identity, clip.sourcePath, wantVideo, hardwareDecode, generation);
-            if (!decoder) return;
-            const double end = sample.sourceSeconds + static_cast<double>(samples)
-                / plan.settings.audioSpec().sampleRate * sample.speed;
-            auto image = decoder->decode(sample.sourceSeconds, end, generation, active);
-            if (wantVideo && !sample.hidden) output.source = std::move(image);
-            if (decoder->audio) {
-                AudioMixer::Input input;
-                input.source = &decoder->sound; input.sourceSeconds = sample.sourceSeconds;
-                input.speed = sample.speed; input.gain = sample.gain; input.muted = sample.muted;
-                input.clipOffsetSeconds = plan.settings.secondsFromFrame(frame - clip.startFrame);
-                input.clipDurationSeconds = plan.settings.secondsFromFrame(clip.durationFrames);
-                input.fadeInSeconds = plan.settings.secondsFromFrame(clip.fadeInFrames);
-                input.fadeOutSeconds = plan.settings.secondsFromFrame(clip.fadeOutFrames);
-                inputs.push_back(input);
-            }
-        };
-        if (sourceMode) {
-            CompositionSample sample; sample.sourceSeconds = plan.settings.secondsFromFrame(frame);
-            const auto& clip = plan.clips.front();
-            contribution(sample, clip, "video:", true);
-            if (sourceHasAudio) contribution(sample, clip, "original-audio:", false);
-        } else {
-            if (auto sample = plan.videoSampleAt(frame)) {
-                const auto& clip = plan.clips[sample->clipIndex];
-                contribution(*sample, clip, "video:", true);
-                contribution(*sample, clip, "original-audio:", false);
-            }
-            if (auto sample = plan.audioSampleAt(frame))
-                contribution(*sample, plan.audioClips[sample->clipIndex], "independent-audio:", false);
+    bool execute(int64_t frame, uint64_t generation, bool urgent) {
+        auto video = executor.videoFrame(frame, context(generation));
+        if (video.status == CompositionStatus::Cancelled) return false;
+        if (!video) { ready = false; fail(generation, video.error); return false; }
+        auto audio = executor.audioSamples(plan.settings.audioSamplePosition(frame),
+            plan.settings.audioSamplePosition(frame + 1), context(generation));
+        if (audio.status == CompositionStatus::Cancelled) return false;
+        if (audio.status == CompositionStatus::Failure) {
+            ready = false; fail(generation, audio.error); return false;
         }
-        if (active.load(std::memory_order_acquire) != generation) return false;
-        output.blank = !output.source;
-        const auto sound = AudioMixer::render(plan.settings.audioSpec(), samples,
-            plan.settings.audioSamplePosition(frame), inputs);
-        // Observe exactly the prepared post-mix PCM, on the sole decode worker.
+        const auto sound = audio.value;
+        // The observer still receives exactly the PCM sent to the audio queue,
+        // including silence, on the existing sole decode worker.
         if (sound && owner->onAudioPrepared && active.load(std::memory_order_acquire) == generation)
             owner->onAudioPrepared(sound, generation);
         { std::lock_guard lock(mutex);
           if (state.generation != generation) return false;
-          videoQueue.push_back({std::move(output), urgent, false});
+          state.warnings = executor.warnings();
+          videoQueue.push_back({std::move(video.value), urgent, false});
           if (sound && audioOutputEnabled && !discardAudio) audioQueue.push_back({sound, generation}); }
-        // Same path at different source positions is never a shared session.
-        for (auto it = sessions.begin(); it != sessions.end();) {
-            if (std::find(used.begin(), used.end(), it->first) == used.end()) it = sessions.erase(it);
-            else ++it;
-        }
-        for (auto it = failedPaths.begin(); it != failedPaths.end();) {
-            if (std::find(usedPaths.begin(), usedPaths.end(), it->first) == usedPaths.end()) it = failedPaths.erase(it);
-            else ++it;
-        }
         wake();
         return true;
     }
@@ -425,49 +200,50 @@ struct VideoEngine::Impl {
             if (command) {
                 generation = command->generation;
                 decodeHardware = command->hardware;
-                if (command->kind == Request::Close) { sessions.clear(); failedPaths.clear(); ready = false; continue; }
+                if (command->kind == Request::Close) { executor.close(); ready = false; continue; }
                 if (command->kind == Request::Source || command->kind == Request::Timeline) {
-                    sessions.clear(); failedPaths.clear(); plan = std::move(command->plan);
-                    sourceMode = command->kind == Request::Source;
                     ready = false;
-                    if (sourceMode) {
-                        plan.settings = TimelineSettings::hd1080p24();
-                        auto* decoder = session("video:0::" + command->path, command->path, true, decodeHardware, generation);
-                        if (!decoder) { fail(generation, "Failed to open media: " + command->path); continue; }
-                        sourceDuration = decoder->duration;
-                        sourceHasAudio = decoder->audioStream != nullptr;
-                        VideoSpec spec = plan.settings.videoSpec();
-                        if (decoder->videoStream) {
-                            spec.width = decoder->videoStream->codec.width();
-                            spec.height = decoder->videoStream->codec.height();
-                        }
-                        spec.frameRate = decoder->rate; spec.timeBase = decoder->rate.flipped();
-                        plan.settings = TimelineSettings(spec, plan.settings.audioSpec());
-                        plan.frameCount = static_cast<int64_t>(std::ceil(decoder->duration * decoder->rate.toDouble()));
-                        CompositionClip clip; clip.sourcePath = command->path; clip.durationFrames = plan.frameCount;
-                        plan.clips = {clip};
-                        if (plan.frameCount <= 0) { fail(generation, "Media duration is empty"); continue; }
-                    }
+                    CompositionExecutor::Options options;
+                    options.hardwareDecode = decodeHardware;
+                    options.errorPolicy = CompositionErrorPolicy::Preview;
+                    auto opened = command->kind == Request::Source
+                        ? executor.openSource(command->path, options, context(generation))
+                        : executor.open(command->plan, options, context(generation));
+                    if (opened.status == CompositionStatus::Cancelled) continue;
+                    if (!opened) { fail(generation, opened.error); continue; }
+                    plan = executor.plan();
+                    sourceMode = opened.value.sourceMode;
+                    const auto& info = opened.value;
                     { std::lock_guard lock(mutex);
                       if (state.generation != generation) continue;
-                      state.duration = sourceMode ? sourceDuration : plan.settings.secondsFromFrame(plan.frameCount);
-                      state.fps = plan.settings.fps(); state.frameCount = plan.frameCount;
-                      state.seekable = sourceMode ? sessions.at("video:0::" + command->path)->seekable : plan.frameCount > 0;
-                      state.hasVideo = sourceMode ? sessions.at("video:0::" + command->path)->videoStream != nullptr : !plan.clips.empty();
-                      state.audioOnly = !state.hasVideo && (sourceMode ? sourceHasAudio : !plan.audioClips.empty());
+                      state.duration = info.duration;
+                      state.fps = plan.settings.fps(); state.frameCount = info.frameCount;
+                      state.seekable = info.seekable;
+                      state.hasVideo = info.hasVideo;
+                      state.audioOnly = !info.hasVideo && info.hasAudio;
+                      state.warnings = executor.warnings();
                       audioSpec = plan.settings.audioSpec(); }
-                    notify(generation, owner->onDurationChanged, sourceMode ? sourceDuration : plan.settings.secondsFromFrame(plan.frameCount));
+                    notify(generation, owner->onDurationChanged, info.duration);
                 }
                 // Reset even nearby seek/scrub requests: generation changes must
                 // not retain decoder delay, cached images or resampler history.
-                if (command->kind == Request::Frame) { sessions.clear(); failedPaths.clear(); }
+                if (command->kind == Request::Frame) {
+                    CompositionExecutor::Options options;
+                    options.hardwareDecode = decodeHardware;
+                    options.errorPolicy = CompositionErrorPolicy::Preview;
+                    auto opened = sourceMode
+                        ? executor.openSource(plan.clips.front().sourcePath, options, context(generation))
+                        : executor.open(plan, options, context(generation));
+                    if (opened.status == CompositionStatus::Cancelled) continue;
+                    if (!opened) { ready = false; fail(generation, opened.error); continue; }
+                }
                 nextFrame = command->frame; eofQueued = false;
                 if (plan.frameCount <= 0) {
                     { std::lock_guard lock(mutex); if (state.generation == generation) state.state = State::Paused; }
                     notify(generation, owner->onStateChanged, State::Paused);
                     continue;
                 }
-                if (!execute(nextFrame, generation, true, decodeHardware)) continue;
+                if (!execute(nextFrame, generation, true)) continue;
                 ++nextFrame; ready = true;
                 const auto nextState = command->scrub ? State::Scrubbing : State::Paused;
                 { std::lock_guard lock(mutex);
@@ -489,9 +265,9 @@ struct VideoEngine::Impl {
                 }
                 continue;
             }
-            if (execute(nextFrame, generation, false, decodeHardware)) ++nextFrame;
+            if (execute(nextFrame, generation, false)) ++nextFrame;
         }
-        sessions.clear(); failedPaths.clear();
+        executor.close();
     }
 };
 
@@ -538,13 +314,33 @@ bool VideoEngine::openTimeline(const Timeline& timeline, const MediaManifest& ma
     if (!CompositionBuilder::build(timeline, manifest, dir, plan, &error)) {
         close(); impl_->notify(snapshot().generation, onOpenFailed, error); return false;
     }
+    return openComposition(plan);
+}
+bool VideoEngine::openTimeline(const Timeline& timeline, const MediaManifest& manifest,
+                               const std::string& dir, const ColorSettings& colorSettings) {
+    CompositionPlan plan;
+    std::string error;
+    if (!CompositionBuilder::build(timeline, manifest, dir, colorSettings, plan, &error)) {
+        close(); impl_->notify(snapshot().generation, onOpenFailed, error); return false;
+    }
+    return openComposition(plan);
+}
+bool VideoEngine::openSnapshot(const ProjectSnapshot& snapshotValue) {
+    CompositionPlan plan;
+    std::string error;
+    if (!CompositionBuilder::build(snapshotValue, plan, &error)) {
+        close(); impl_->notify(snapshot().generation, onOpenFailed, error); return false;
+    }
+    return openComposition(plan);
+}
+bool VideoEngine::openComposition(const CompositionPlan& plan) {
     for (const auto& warning : plan.warnings) LOG_WARN("Composition: {}", warning);
     impl_->stopAudio(); uint64_t generation;
     { std::lock_guard lock(impl_->mutex);
       if (impl_->stopping) return false;
       generation = impl_->invalidateLocked(); impl_->state = Snapshot{};
       impl_->state.generation = generation; impl_->state.state = State::Loading;
-      Impl::Request command; command.kind = Impl::Request::Timeline; command.plan = std::move(plan);
+      Impl::Request command; command.kind = Impl::Request::Timeline; command.plan = plan;
       command.generation = generation; command.hardware = impl_->hardware;
       impl_->state.warnings = command.plan.warnings;
       impl_->request = std::move(command); }
@@ -562,7 +358,8 @@ bool VideoEngine::openPlaylist(const std::string& path) {
     else if (!ProjectCodec::decode(projectText, project, &error) || !manifest.loadFromJson(mediaText, &error)) {}
     else if (const auto* timeline = project.activeTimeline()) {
         const auto utf8 = directory.u8string();
-        return openTimeline(*timeline, manifest, std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size()));
+        return openTimeline(*timeline, manifest, std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size()),
+                            project.colorSettings);
     } else error = "project has no active timeline";
     close(); impl_->notify(snapshot().generation, onOpenFailed, error); return false;
 }

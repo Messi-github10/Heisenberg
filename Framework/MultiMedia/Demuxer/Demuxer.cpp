@@ -27,7 +27,9 @@ Demuxer::~Demuxer() {
 int Demuxer::open(const std::string &url) {
     close();
 
-    AVFormatContext *ctx = nullptr;
+    AVFormatContext *ctx = avformat_alloc_context();
+    if (!ctx) return AVERROR(ENOMEM);
+    ctx->interrupt_callback = AVIOInterruptCB{&Demuxer::interrupt, this};
     int ret = avformat_open_input(&ctx, url.c_str(), nullptr, nullptr);
     if (ret < 0) {
         return ret;
@@ -61,25 +63,33 @@ void Demuxer::close() {
     streams_.clear();
 }
 
+void Demuxer::setInterrupt(std::function<bool()> cancelled) {
+    cancelled_ = std::move(cancelled);
+}
+int Demuxer::interrupt(void* opaque) noexcept {
+    auto* self = static_cast<Demuxer*>(opaque);
+    try { return self->cancelled_ && self->cancelled_() ? 1 : 0; }
+    catch (...) { return 1; } // Never unwind through FFmpeg's C callback.
+}
 std::shared_ptr<Packet> Demuxer::readPacket() {
-    if (!formatCtx_) {
-        return nullptr;
-    }
-
+    return readPacketResult().packet;
+}
+PacketReadResult Demuxer::readPacketResult() {
+    if (!formatCtx_) return {ReadStatus::Failure, {}, AVERROR(EINVAL)};
     while (true) {
+        if (interrupt(this)) return {ReadStatus::Cancelled, {}, AVERROR_EXIT};
         AVPacket avpkt = {};
         int ret = av_read_frame(formatCtx_, &avpkt);
         if (ret < 0) {
             av_packet_unref(&avpkt);
-            return nullptr;
+            if (ret == AVERROR_EXIT || interrupt(this)) return {ReadStatus::Cancelled, {}, ret};
+            return {ret == AVERROR_EOF ? ReadStatus::End : ReadStatus::Failure, {}, ret};
         }
-
         if (findStream(avpkt.stream_index)) {
             auto packet = avpacketToPacket(&avpkt);
             av_packet_unref(&avpkt);
-            return packet;
+            return {ReadStatus::Packet, std::move(packet), 0};
         }
-
         // Subtitle, attachment, and data streams are not playback EOF.
         av_packet_unref(&avpkt);
     }

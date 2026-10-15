@@ -26,14 +26,14 @@ bool VulkanInputAdapter::setVulkanInput(
     const VulkanImageRef& image, int32_t inputIndex) {
     if (inputIndex != 0 || !image.valid()) return false;
     if (image.vkFormat != imageFormatToVkFormat(kWorkingImageContract.format)
-        || image.contract != kWorkingImageContract) {
-        LOG_ERROR("FilterGraph: Vulkan input violates the linear BT.2020 "
-                  "RGBA16F straight-alpha working contract");
+        || image.contract.format != toFormatId(ImageType::rgba16f)
+        || image.contract.alpha != AlphaMode::straight) {
+        LOG_ERROR("FilterGraph: Vulkan input violates the RGBA16F straight-alpha program contract");
         return false;
     }
     const bool formatChanged = !externalImage_.valid()
         || externalImage_.vkFormat != image.vkFormat
-        || externalImage_.contract.format != image.contract.format
+        || externalImage_.contract != image.contract
         || externalImage_.extent.width != image.extent.width
         || externalImage_.extent.height != image.extent.height;
     externalImage_ = image;
@@ -43,7 +43,7 @@ bool VulkanInputAdapter::setVulkanInput(
 
 bool VulkanInputAdapter::configure(const std::vector<ImageFormat>& inputs) {
     if (!inputs.empty() || !externalImage_.valid()
-        || externalImage_.contract != kWorkingImageContract) {
+        || externalImage_.contract.format != toFormatId(ImageType::rgba16f)) {
         return false;
     }
     ImageFormat format;

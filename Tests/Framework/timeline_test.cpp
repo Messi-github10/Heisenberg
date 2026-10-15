@@ -83,7 +83,18 @@ TEST(ProjectCodecTest, FullPalmierDocumentRoundTripsByJsonDom) {
     ASSERT_TRUE(heisenberg::ProjectCodec::decode(fixture, project, &error)) << error;
     EXPECT_EQ(project.timelines.front().totalFrames(), 24);
     const json before = json::parse(fixture);
-    const json after = json::parse(heisenberg::ProjectCodec::encode(project));
+    json after = json::parse(heisenberg::ProjectCodec::encode(project));
+    ASSERT_TRUE(after.contains("extensions"));
+    const auto& migratedColor = after["extensions"]["org.heisenberg.color"];
+    EXPECT_TRUE(migratedColor["legacyDefaultsApplied"].get<bool>());
+    EXPECT_EQ(migratedColor["schemaVersion"], 1);
+    EXPECT_EQ(migratedColor["inputPolicyVersion"], 2);
+    EXPECT_EQ(migratedColor["semanticsVersion"], 2);
+    EXPECT_EQ(migratedColor["previewOutput"]["display"], "sRGB - Display");
+    EXPECT_EQ(migratedColor["exportOutput"]["display"], "Rec.1886 Rec.709 - Display");
+    EXPECT_EQ(migratedColor["previewOutput"]["view"], "Un-tone-mapped");
+    EXPECT_EQ(migratedColor["exportOutput"]["view"], "Un-tone-mapped");
+    after.erase("extensions");
     EXPECT_EQ(after, before);
 }
 

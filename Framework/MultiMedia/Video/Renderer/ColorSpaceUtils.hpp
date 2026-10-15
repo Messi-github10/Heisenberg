@@ -133,6 +133,7 @@ inline pl_color_repr colorReprFromAvFrame(const AVFrame* frame) {
     repr.sys = colorSystemFromAvFrame(frame);
     if (frame->format == AV_PIX_FMT_RGBAF16 ||
         frame->format == AV_PIX_FMT_RGBA ||
+        frame->format == AV_PIX_FMT_RGBAF32 ||
         frame->format == AV_PIX_FMT_RGBA64) {
         repr.sys = PL_COLOR_SYSTEM_RGB;
         repr.levels = PL_COLOR_LEVELS_PC;
@@ -143,7 +144,7 @@ inline pl_color_repr colorReprFromAvFrame(const AVFrame* frame) {
 
 inline pl_color_space workingColorSpace() {
     pl_color_space color{};
-    color.primaries = PL_COLOR_PRIM_BT_2020;
+    color.primaries = PL_COLOR_PRIM_ACES_AP1;
     color.transfer = PL_COLOR_TRC_LINEAR;
     pl_color_space_infer(&color);
     return color;

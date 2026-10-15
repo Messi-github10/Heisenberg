@@ -1,2 +1,4 @@
 add_subdirectory(Framework)
-add_subdirectory(UserInterface)
+if(HEISENBERG_BUILD_UI)
+    add_subdirectory(UserInterface)
+endif()

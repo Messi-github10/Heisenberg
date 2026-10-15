@@ -48,6 +48,10 @@ public:
     EditResult setClipAudio(const std::string& clipId, double volume,
                             int64_t fadeInFrames, int64_t fadeOutFrames);
     EditResult setTrackMuted(const std::string& trackId, bool muted);
+    EditResult setColorSettings(const ColorSettings& settings);
+    // Empty space removes an override and restores the versioned input policy.
+    EditResult setMediaInputColorSpace(const std::string& mediaRef, const std::string& space);
+    EditResult setClipEffects(const std::string& clipId, std::optional<JsonValue> effects);
     EditResult moveClip(const std::string& clipId, int64_t startFrame);
     EditResult splitClip(const std::string& clipId, int64_t atFrame);
     EditResult trimClip(const std::string& clipId, TrimEdge edge, int64_t deltaFrames);

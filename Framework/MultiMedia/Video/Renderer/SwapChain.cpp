@@ -50,8 +50,16 @@ bool SwapChain::initialize(pl_vulkan plVk, vk::Instance vkInst,
         return false;
     }
 
+    // libplacebo 365 has no disable_hdr creation option. This is a preference,
+    // not a guarantee: Presenter must validate every acquired surface contract.
+    pl_swapchain_colorspace_hint(sw_, &pl_color_space_srgb);
+
     int w = width, h = height;
-    resize(&w, &h);
+    if (!resize(&w, &h)) {
+        LOG_ERROR("SwapChain: initial SDR surface resize failed");
+        shutdown();
+        return false;
+    }
 
     LOG_INFO("SwapChain: created — {}x{}", w, h);
     return true;
@@ -67,20 +75,18 @@ void SwapChain::shutdown() {
     }
 }
 
-pl_tex SwapChain::startFrame(int width, int height) {
-    if (!sw_) return nullptr;
+bool SwapChain::startFrame(int width, int height, pl_swapchain_frame& target) {
+    target = {};
+    if (!sw_ || width <= 0 || height <= 0) return false;
 
     int w = width, h = height;
-    if (!pl_swapchain_resize(sw_, &w, &h)) {
-        return nullptr;
-    }
+    if (!pl_swapchain_resize(sw_, &w, &h)) return false;
+    return pl_swapchain_start_frame(sw_, &target);
+}
 
-    struct pl_swapchain_frame swFrame;
-    if (!pl_swapchain_start_frame(sw_, &swFrame)) {
-        return nullptr;
-    }
-
-    return swFrame.fbo;
+pl_tex SwapChain::startFrame(int width, int height) {
+    pl_swapchain_frame target{};
+    return startFrame(width, height, target) ? target.fbo : nullptr;
 }
 
 bool SwapChain::submitFrame() {

@@ -1,0 +1,261 @@
+{
+  "schemaVersion": 1,
+  "platform": "windows-x64",
+  "linkage": "shared",
+  "runtime": {
+    "Release": "MSVC /MD",
+    "Debug": "MSVC /MDd"
+  },
+  "licenseProvenance": "licenses/SOURCE.md",
+  "name": "OpenColorIO",
+  "version": "2.5.2",
+  "origin": "vcpkg x64-windows prebuilt package snapshot",
+  "builtinConfig": "studio-config-v4.0.0_aces-v2.0_ocio-v2.5",
+  "runtimeDependencies": {
+    "expat": "2.8.2",
+    "Imath": "3.2.2",
+    "yaml-cpp": "0.9.0#1",
+    "zlib": "1.3.2#1",
+    "bzip2": "1.0.8#6",
+    "liblzma": "5.8.3",
+    "zstd": "1.5.7"
+  },
+  "embeddedComponents": [
+    "pystring 1.2.0",
+    "minizip-ng 4.1.0",
+    "xxHash 0.8.1",
+    "SampleICC snapshot in OpenColorIO 2.5.2"
+  ],
+  "files": [
+    {
+      "path": "CMakeLists.txt",
+      "bytes": 2039,
+      "sha256": "f77dc37827c0dc54dd5c8aa57aa6647098091719f26db2eea4adce8eacbd390c"
+    },
+    {
+      "path": "licenses/builtinConfigACES/aces/LICENSE.md",
+      "bytes": 2759,
+      "sha256": "0ff2aaf84aa20b394be4d92414074a526e857a5c6b96e05a9e68452cf0427ed5"
+    },
+    {
+      "path": "licenses/builtinConfigACES/aces-core/LICENSE.md",
+      "bytes": 2761,
+      "sha256": "cf614fceabe08ebc5618bb79ab056ced3e68967cc32f60245bd64fabd6731833"
+    },
+    {
+      "path": "licenses/builtinConfigACES/aces-input-and-colorspaces/LICENSE.md",
+      "bytes": 2759,
+      "sha256": "5b7e8d2d0f26d01b9739be0a706a106e3b9616ba19875eb577f340fbb1701b7f"
+    },
+    {
+      "path": "licenses/builtinConfigACES/aces-look/LICENSE.md",
+      "bytes": 2759,
+      "sha256": "5b7e8d2d0f26d01b9739be0a706a106e3b9616ba19875eb577f340fbb1701b7f"
+    },
+    {
+      "path": "licenses/builtinConfigACES/aces-output/LICENSE.md",
+      "bytes": 2748,
+      "sha256": "ef0987b0b98ab18ef0f11a0ecf184c94adf65d69002d5941affe4ac2bcdc58f9"
+    },
+    {
+      "path": "licenses/builtinConfigACES/LICENSE",
+      "bytes": 1485,
+      "sha256": "82a40c52065ee968aa62015735e84378ac11425db7a233e6a2dcd2c83fc24276"
+    },
+    {
+      "path": "licenses/bzip2/copyright",
+      "bytes": 1896,
+      "sha256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3"
+    },
+    {
+      "path": "licenses/expat/copyright",
+      "bytes": 1144,
+      "sha256": "31b15de82aa19a845156169a17a5488bf597e561b2c318d159ed583139b25e87"
+    },
+    {
+      "path": "licenses/imath/copyright",
+      "bytes": 1497,
+      "sha256": "c20236d3b39fd20eba8e3d1fb3b892a5483df2e7d8d61bf43f165d3fac22f601"
+    },
+    {
+      "path": "licenses/liblzma/COPYING.0BSD",
+      "bytes": 607,
+      "sha256": "0b01625d853911cd0e2e088dcfb743261034a091bb379246cb25a14cc4c74bf1"
+    },
+    {
+      "path": "licenses/liblzma/copyright",
+      "bytes": 3119,
+      "sha256": "616a3ad264ce29b8f1cb97e53037b139d406899ca8d1f799651e17bfa09830b8"
+    },
+    {
+      "path": "licenses/minizip-ng/copyright",
+      "bytes": 877,
+      "sha256": "675181c03fc1302a1c8554c00f7be9bb420c5dbc9dcc2013433cec144413de03"
+    },
+    {
+      "path": "licenses/opencolorio/copyright",
+      "bytes": 1485,
+      "sha256": "82a40c52065ee968aa62015735e84378ac11425db7a233e6a2dcd2c83fc24276"
+    },
+    {
+      "path": "licenses/pystring/copyright",
+      "bytes": 1530,
+      "sha256": "f7f060301402ea0b5c507b865b1a9de037d4d7b24f37422a93b70fe9c7a9b78a"
+    },
+    {
+      "path": "licenses/sampleicc/iccProfileReader.LICENSE.embedded.txt",
+      "bytes": 2174,
+      "sha256": "d53a48311c133d250af89b05e67ea551a37ac91e986fb612f030447967f950f9"
+    },
+    {
+      "path": "licenses/sampleicc/icProfileHeader.LICENSE.embedded.txt",
+      "bytes": 6315,
+      "sha256": "6442b7fd7a885bb902745f2d3128107ffd060decc1e6a68a759ab15822442711"
+    },
+    {
+      "path": "licenses/SOURCE.md",
+      "bytes": 14835,
+      "sha256": "c91f0c2690dbb646817cc0a62eee9fc8fc72c660e80da2d1d511720277c83b4e"
+    },
+    {
+      "path": "licenses/xxHash/LICENSE.embedded.txt",
+      "bytes": 1661,
+      "sha256": "20bf2c9b132fe78c4256abb204159403d987af7a45345f1bdde07ecc094bed7f"
+    },
+    {
+      "path": "licenses/yaml-cpp/copyright",
+      "bytes": 1061,
+      "sha256": "aa6fcc27be034e41e21dd832f9175bfe694a48491d9e14ff0fa278e19ad14f1b"
+    },
+    {
+      "path": "licenses/zlib/copyright",
+      "bytes": 1002,
+      "sha256": "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2"
+    },
+    {
+      "path": "licenses/zstd/copyright",
+      "bytes": 20086,
+      "sha256": "434dca949c6da7c500413aef694539fe37f867dd1a94d83d4ed1d260194e2660"
+    },
+    {
+      "path": "README.md",
+      "bytes": 1890,
+      "sha256": "d404446085aa7bcec09850fc0d11b2db3a4ea823aca7095a965433cfced50734"
+    },
+    {
+      "path": "windows/bin/bz2.dll",
+      "bytes": 75776,
+      "sha256": "2fa7dff63ea61be34e5c1a61a2447a4525756fd9a441ea24943fc0437d3940e6"
+    },
+    {
+      "path": "windows/bin/Imath-3_2.dll",
+      "bytes": 337408,
+      "sha256": "f07c25ef9efbfc4186438e430d31d90acbb9fa5b77ac29fed08f0d27c0ae5249"
+    },
+    {
+      "path": "windows/bin/libexpat.dll",
+      "bytes": 166400,
+      "sha256": "2ac60b4b4b2d7c70315818c7c9dd8e6aade306257315a0be2c5a23f5d61060e0"
+    },
+    {
+      "path": "windows/bin/liblzma.dll",
+      "bytes": 189952,
+      "sha256": "eea5f6903e07b874c0fbf2fd7d9225f6eda7e2e1482f2075500e98bb524003b8"
+    },
+    {
+      "path": "windows/bin/OpenColorIO_2_5.dll",
+      "bytes": 4779520,
+      "sha256": "46afcbdf21a012b308ccbd3cecdf817d8e7fe2d7c588218d9df71f62d2d3e6c5"
+    },
+    {
+      "path": "windows/bin/yaml-cpp.dll",
+      "bytes": 270848,
+      "sha256": "1f1f8634e5d956c763385dbb93d6341e6d88aea3db4ba9dd34799a2e90c66e51"
+    },
+    {
+      "path": "windows/bin/z.dll",
+      "bytes": 91648,
+      "sha256": "c0eb2b046c8feacf504d07e2a05adeea41e02a7de4a5bf25a27eebf646ae8605"
+    },
+    {
+      "path": "windows/bin/zstd.dll",
+      "bytes": 657920,
+      "sha256": "06e0ee36535bb501a1d841c3130705163729a71af6b3d63e850de85f92ed6fb5"
+    },
+    {
+      "path": "windows/debug/bin/bz2d.dll",
+      "bytes": 187904,
+      "sha256": "3b22f25f1915bfe5e2210b4f94e91f15b7a3eb534e6fca580c5bab748da59d88"
+    },
+    {
+      "path": "windows/debug/bin/Imath-3_2_d.dll",
+      "bytes": 531456,
+      "sha256": "05f7e47f059bdcd9d87da59145751e0922d039d544f7a2e0b70b44eafd873f8e"
+    },
+    {
+      "path": "windows/debug/bin/libexpatd.dll",
+      "bytes": 389632,
+      "sha256": "a81a6fd2d47ad47064f08c064b436adada0ec96f45b92bad75c71474b5321f7e"
+    },
+    {
+      "path": "windows/debug/bin/liblzma.dll",
+      "bytes": 544256,
+      "sha256": "67471bc7c47bef33f38a6155619311508da2ed5565b3006cb7a55d2f09e13e30"
+    },
+    {
+      "path": "windows/debug/bin/OpenColorIO_2_5.dll",
+      "bytes": 13807616,
+      "sha256": "7272c40c6056f1714d34df4dedc550917d5d34c4d68bb557db832b6b3d2a27f1"
+    },
+    {
+      "path": "windows/debug/bin/yaml-cppd.dll",
+      "bytes": 1680384,
+      "sha256": "ee90e68e1d777000e72586b39f7d3f3adfbaad333a63810a2bac1000137e3c85"
+    },
+    {
+      "path": "windows/debug/bin/zd.dll",
+      "bytes": 211456,
+      "sha256": "0a8f34158b751e8d92c5b3b5e7bf74dea38dd0313e11b8fd4b5af8b5d0220f3f"
+    },
+    {
+      "path": "windows/debug/bin/zstd.dll",
+      "bytes": 1802752,
+      "sha256": "47b27165731f27644e0cbdca12ef095e72ebb8a3584f60020440b73d1187dee2"
+    },
+    {
+      "path": "windows/debug/lib/OpenColorIO.lib",
+      "bytes": 561330,
+      "sha256": "2399bb033f7ea121e1178eebd06859f2b575109bf886eeff29f4ee41e9594e38"
+    },
+    {
+      "path": "windows/include/OpenColorIO/OpenColorABI.h",
+      "bytes": 2388,
+      "sha256": "7d832890eed0cab4f102c103485794b5d10ef08a89f224e6768860a711a95e7a"
+    },
+    {
+      "path": "windows/include/OpenColorIO/OpenColorAppHelpers.h",
+      "bytes": 39791,
+      "sha256": "25d1f3fb8c54439b14cc2aa642d43e306cd596a4110311e5461a1f9da3daef08"
+    },
+    {
+      "path": "windows/include/OpenColorIO/OpenColorIO.h",
+      "bytes": 170356,
+      "sha256": "50787fb6f83d040df4c75a58e90201b00952aa49a552563c258c72d7b10db19b"
+    },
+    {
+      "path": "windows/include/OpenColorIO/OpenColorTransforms.h",
+      "bytes": 88100,
+      "sha256": "25fce0c086544e07adb55164b835e8074642b66300993bfca1e7c33d3305ff3a"
+    },
+    {
+      "path": "windows/include/OpenColorIO/OpenColorTypes.h",
+      "bytes": 40639,
+      "sha256": "423512753d4950d3c7ae725ede423f7609f9c45b3d500c895e5de0284816d86a"
+    },
+    {
+      "path": "windows/lib/OpenColorIO.lib",
+      "bytes": 561330,
+      "sha256": "2399bb033f7ea121e1178eebd06859f2b575109bf886eeff29f4ee41e9594e38"
+    }
+  ]
+}

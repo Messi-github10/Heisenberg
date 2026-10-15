@@ -48,22 +48,9 @@ std::pair<std::optional<KeyframeTrackPayload>, std::optional<KeyframeTrackPayloa
 splitTrackPayload(const std::optional<KeyframeTrackPayload>& source, int64_t offset) {
     if (!source || !source->value.is_object() || !source->value.contains("keyframes") ||
         !source->value["keyframes"].is_array()) return {source, source};
-    JsonValue left = source->value, right = source->value;
-    left["keyframes"] = JsonValue::array();
-    right["keyframes"] = JsonValue::array();
-    for (JsonValue keyframe : source->value["keyframes"]) {
-        if (!keyframe.is_object() || !keyframe.contains("frame")) continue;
-        const int64_t frame = keyframe["frame"].get<int64_t>();
-        if (frame < offset) left["keyframes"].push_back(keyframe);
-        if (frame >= offset) {
-            keyframe["frame"] = frame - offset;
-            right["keyframes"].push_back(std::move(keyframe));
-        }
-    }
-    std::optional<KeyframeTrackPayload> l, r;
-    if (!left["keyframes"].empty()) l = KeyframeTrackPayload{std::move(left)};
-    if (!right["keyframes"].empty()) r = KeyframeTrackPayload{std::move(right)};
-    return {std::move(l), std::move(r)};
+    auto left = source, right = source;
+    shiftJsonKeyframeTracks(right->value, -offset, 0);
+    return {std::move(left), std::move(right)};
 }
 
 std::optional<std::pair<Clip, Clip>> splitValue(const Clip& source, int64_t atFrame) {
@@ -124,7 +111,10 @@ void shiftJsonKeyframeTracks(JsonValue& value, int64_t shift, int64_t duration) 
         for (JsonValue keyframe : *keyframes) {
             if (!keyframe.is_object() || !keyframe.contains("frame") || !keyframe["frame"].is_number_integer()) continue;
             int64_t frame = 0;
-            if (!addChecked(keyframe["frame"].get<int64_t>(), shift, frame) || frame < 0 || frame >= duration) continue;
+            // Keep bracketing/history keys on both sides of the visible interval.
+            // Rebased negative/future keys preserve exact Hold/Linear evaluation,
+            // including unknown payloads, and allow a subsequent trim extension.
+            if (!addChecked(keyframe["frame"].get<int64_t>(), shift, frame)) continue;
             keyframe["frame"] = frame;
             kept.push_back(std::move(keyframe));
         }
@@ -138,16 +128,7 @@ void shiftJsonKeyframeTracks(JsonValue& value, int64_t shift, int64_t duration) 
 void shiftTrackPayload(std::optional<KeyframeTrackPayload>& payload, int64_t shift, int64_t duration) {
     if (!payload || !payload->value.is_object() || !payload->value.contains("keyframes") ||
         !payload->value["keyframes"].is_array()) return;
-    JsonValue kept = JsonValue::array();
-    for (JsonValue keyframe : payload->value["keyframes"]) {
-        if (!keyframe.is_object() || !keyframe.contains("frame") || !keyframe["frame"].is_number_integer()) continue;
-        int64_t frame = 0;
-        if (!addChecked(keyframe["frame"].get<int64_t>(), shift, frame) || frame < 0 || frame >= duration) continue;
-        keyframe["frame"] = frame;
-        kept.push_back(std::move(keyframe));
-    }
-    payload->value["keyframes"] = std::move(kept);
-    if (payload->value["keyframes"].empty()) payload.reset();
+    shiftJsonKeyframeTracks(payload->value, shift, duration);
 }
 
 void shiftClipTimedPayloads(Clip& clip, int64_t shift) {
@@ -544,6 +525,53 @@ EditResult EditorViewModel::setClipAudio(const std::string& clipId, double volum
     ++impl_->revision;
     return {EditStatus::Changed, {clipId}, preservedAutomation
         ? "audio automation is preserved; preview uses base volume and linear fades" : ""};
+}
+
+EditResult EditorViewModel::setColorSettings(const ColorSettings& settings) {
+    std::string error;
+    if (!validateColorSettings(settings, &error)) return {EditStatus::Invalid, {}, error};
+    if (!supportedColorSettings(settings))
+        return {EditStatus::Unsupported, {}, "unsupported color settings version"};
+    auto& current = impl_->timelines.project_.colorSettings;
+    if (current == settings) return {EditStatus::NoOp, {}, {}};
+    EditorViewModelTimelines::UndoEntry entry;
+    entry.name = "Color Settings";
+    entry.colorBefore = current;
+    entry.colorAfter = settings;
+    current = settings;
+    impl_->timelines.undo_.push_back(std::move(entry));
+    impl_->timelines.redo_.clear();
+    ++impl_->revision;
+    return {EditStatus::Changed, {}, {}};
+}
+
+EditResult EditorViewModel::setMediaInputColorSpace(const std::string& mediaRef, const std::string& space) {
+    if (!impl_->manifest.find(mediaRef)) return {EditStatus::Invalid, {}, "mediaRef was not found"};
+    ColorSettings candidate = project().colorSettings;
+    if (space.empty()) candidate.inputColorSpaces.erase(mediaRef);
+    else candidate.inputColorSpaces[mediaRef] = space;
+    auto result = setColorSettings(candidate);
+    if (result.changed()) result.affectedIds.push_back(mediaRef);
+    return result;
+}
+
+EditResult EditorViewModel::setClipEffects(const std::string& clipId, std::optional<JsonValue> effects) {
+    auto* timeline = impl_->active();
+    if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
+    const auto* current = timeline->clipById(clipId);
+    if (!current) return {EditStatus::Invalid, {}, "clip was not found"};
+    if (current->mediaType != ClipType::Video) return {EditStatus::Unsupported, {}, "video effects require a video clip"};
+    if (effects && !effects->is_array()) return {EditStatus::Invalid, {}, "clip effects must be an array"};
+    if (current->effects == effects) return {EditStatus::NoOp, {clipId}, {}};
+    Timeline candidate = *timeline;
+    candidate.clipById(clipId)->effects = std::move(effects);
+    const Timeline before = *timeline;
+    *timeline = std::move(candidate);
+    impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Clip Effects"});
+    impl_->timelines.redo_.clear();
+    ++impl_->revision;
+    return {EditStatus::Changed, {clipId}, {}};
 }
 
 EditResult EditorViewModel::setTrackMuted(const std::string& trackId, bool muted) {

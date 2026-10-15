@@ -89,19 +89,10 @@ void Clip::clampFadesToDuration() {
 
 namespace {
 void clampTrack(std::optional<KeyframeTrackPayload>& track, int64_t duration) {
-    if (!track || !track->value.is_object()) return;
-    auto found = track->value.find("keyframes");
-    if (found == track->value.end() || !found->is_array()) return;
-    json kept = json::array();
-    for (json frame : *found) {
-        if (!frame.is_object() || !frame.contains("frame") || !frame["frame"].is_number_integer()) continue;
-        const int64_t offset = frame["frame"].get<int64_t>();
-        if (offset < 0 || offset > duration) continue;
-        frame["frame"] = std::min(offset, std::max<int64_t>(0, duration - 1));
-        kept.push_back(std::move(frame));
-    }
-    *found = std::move(kept);
-    if (found->empty()) track.reset();
+    // Tracks are clip-local curves, not events. Keys outside the visible range
+    // are interpolation anchors and must survive split/trim and later extension.
+    (void)track;
+    (void)duration;
 }
 }
 
@@ -295,7 +286,7 @@ ProjectCompatibility compatibilityFor(const Timeline& timeline) {
             if (clip.opacity != 1.0 || clip.transform != Transform{} || clip.crop != Crop{} ||
                 clip.edgeRounding != 0.0 || clip.edgeSoftness != 0.0 || clip.opacityTrack ||
                 clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack ||
-                clip.volumeTrack || clip.effects || clip.blendMode ||
+                clip.volumeTrack || clip.blendMode ||
                 (clip.fadeInFrames != 0 && clip.fadeInInterpolation != Interpolation::Linear) ||
                 (clip.fadeOutFrames != 0 && clip.fadeOutInterpolation != Interpolation::Linear)) {
                 result.level = CompatibilityLevel::Warning;
@@ -303,7 +294,7 @@ ProjectCompatibility compatibilityFor(const Timeline& timeline) {
         }
     }
     if (result.level == CompatibilityLevel::Warning)
-        result.messages.push_back("advanced Palmier clip appearance and audio automation are preserved; preview uses base volume and linear fades");
+        result.messages.push_back("unsupported advanced geometry, appearance or audio automation is preserved; preview may omit it and strict export must reject it");
     return result;
 }
 

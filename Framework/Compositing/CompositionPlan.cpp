@@ -17,6 +17,7 @@ std::optional<CompositionSample> sample(const CompositionPlan& plan,
     result.clipIndex = static_cast<size_t>(found - clips.begin());
     result.sourceSeconds = plan.settings.secondsFromFrame(found->trimStartFrame)
         + plan.settings.secondsFromFrame(relative) * found->speed;
+    result.clipLocalFrame = relative;
     result.speed = found->speed;
     // The mixer applies clip fades at output-sample resolution, exactly once.
     result.gain = found->volume;

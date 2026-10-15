@@ -2,7 +2,7 @@ set(QT_PATH "D:/Environment/Qt/6.8.3/msvc2022_64" CACHE PATH "Qt 6 installation 
 list(APPEND CMAKE_PREFIX_PATH "${QT_PATH}")
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent)
 
-file(GLOB_RECURSE UI_SOURCES *.cpp *.hpp)
+file(GLOB_RECURSE UI_SOURCES CONFIGURE_DEPENDS *.cpp *.hpp)
 
 add_executable(MainApp
     ${UI_SOURCES}
@@ -35,55 +35,15 @@ target_compile_definitions(MainApp PRIVATE
 )
 
 if(WIN32)
-    add_custom_command(TARGET MainApp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/SpdLog/windows/debug/bin/spdlogd.dll,${CMAKE_SOURCE_DIR}/Dependence/SpdLog/windows/bin/spdlog.dll>"
-            "$<TARGET_FILE_DIR:MainApp>"
-    )
-
+    heisenberg_deploy_runtime(MainApp)
     add_custom_command(TARGET MainApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/ffmpeg.exe"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avcodec-62.dll"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avdevice-62.dll"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avfilter-11.dll"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avformat-62.dll"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avutil-60.dll"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/swresample-6.dll"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/swscale-9.dll"
-            "$<TARGET_FILE_DIR:MainApp>"
-    )
-
-    add_custom_command(TARGET MainApp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/Dependence/LibPlacebo/windows/bin/libplacebo-365.dll"
-            "$<TARGET_FILE_DIR:MainApp>"
-    )
-
-    add_custom_command(TARGET MainApp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/Dependence/MediaInfo/bin/MediaInfo.dll"
             "$<IF:$<CONFIG:Debug>,${QT_PATH}/bin/Qt6Concurrentd.dll,${QT_PATH}/bin/Qt6Concurrent.dll>"
             "$<TARGET_FILE_DIR:MainApp>"
-    )
-
-    add_custom_command(TARGET MainApp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/Lcms2/debug/bin/lcms2-2.dll,${CMAKE_SOURCE_DIR}/Dependence/Lcms2/bin/lcms2-2.dll>"
-            "$<TARGET_FILE_DIR:MainApp>"
-    )
-
-    add_custom_command(TARGET MainApp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/Vulkan/windows/debug/bin/vulkan-1.dll,${CMAKE_SOURCE_DIR}/Dependence/Vulkan/windows/bin/vulkan-1.dll>"
-            "$<TARGET_FILE_DIR:MainApp>"
-    )
-
-    # windeployqt for QWidget (不需要 --qmldir)
-    add_custom_command(TARGET MainApp POST_BUILD
         COMMAND "${QT_PATH}/bin/windeployqt.exe"
-            "$<TARGET_FILE:MainApp>"
-            --no-translations
+            "$<TARGET_FILE:MainApp>" --no-translations
         COMMENT "Deploying Qt6 DLLs..."
+        VERBATIM
     )
 endif()

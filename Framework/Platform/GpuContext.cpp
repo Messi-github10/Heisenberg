@@ -3,6 +3,8 @@
 //
 
 #include "GpuContext.hpp"
+#include <Platform/Vulkan/VulkanQueueSync.hpp>
+#include <Platform/Vulkan/VulkanContext.hpp>
 #include <libplacebo/log.h>
 #include <libplacebo/vulkan.h>
 #include <volk.h>
@@ -76,30 +78,19 @@ void GpuContext::createLog() {
 }
 
 void GpuContext::importVulkan(const VulkanResources& vkRes) {
-    // 查询 device features
-    VkPhysicalDeviceFeatures2 features2 =
-        { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
-    VkPhysicalDeviceVulkan11Features vk11 =
-        { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
-    VkPhysicalDeviceVulkan12Features vk12 =
-        { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
-
-    features2.pNext = &vk11;
-    vk11.pNext = &vk12;
-
-    vkGetPhysicalDeviceFeatures2(vkRes.physDevice, &features2);
-
-    // 枚举设备扩展
-    uint32_t extCount = 0;
-    vkEnumerateDeviceExtensionProperties(vkRes.physDevice, nullptr, &extCount, nullptr);
-    std::vector<VkExtensionProperties> extProps(extCount);
-    vkEnumerateDeviceExtensionProperties(vkRes.physDevice, nullptr, &extCount, extProps.data());
-
-    std::vector<const char*> extensions;
-    extensions.reserve(extCount);
-    for (auto& p : extProps) {
-        extensions.push_back(p.extensionName);
+    auto enabledFeatures = vkRes.enabledFeatures;
+    auto extensions = vkRes.enabledExtensions;
+    // Preserve callers using the shared device without guessing any capabilities.
+    // An independent VkDevice must supply its own explicit enabled contract.
+    if (!enabledFeatures) {
+        auto& shared = VulkanContext::instance();
+        if (vkRes.device != shared.device())
+            throw std::invalid_argument("GpuContext import needs the actual enabled Vulkan feature contract");
+        enabledFeatures = shared.enabledDeviceFeatures();
+        extensions = shared.enabledDeviceExtensions();
     }
+    if (!enabledFeatures)
+        throw std::invalid_argument("GpuContext cannot import an uninitialized Vulkan device");
 
     struct pl_vulkan_import_params vp = {};
     vp.instance       = vkRes.instance;
@@ -108,10 +99,13 @@ void GpuContext::importVulkan(const VulkanResources& vkRes) {
     vp.device         = vkRes.device;
     vp.extensions     = extensions.data();
     vp.num_extensions = static_cast<int>(extensions.size());
-    vp.features       = &features2;
+    vp.features       = enabledFeatures;
+    vp.max_api_version = vkRes.apiVersion;
     vp.queue_graphics = { vkRes.graphicsQF, 1 };
     vp.queue_compute  = { 0 };
     vp.queue_transfer = { 0 };
+    vp.lock_queue = lockVulkanQueue;
+    vp.unlock_queue = unlockVulkanQueue;
 
     impl_->pl_vk = pl_vulkan_import(impl_->pl_logger, &vp);
     if (!impl_->pl_vk) {

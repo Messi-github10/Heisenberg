@@ -9,6 +9,21 @@ set(FRAMEWORK_TEST_CLIP_A
     "${FRAMEWORK_TEST_MEDIA_DIR}/playlist_clip_a.mp4")
 set(FRAMEWORK_TEST_CLIP_B
     "${FRAMEWORK_TEST_MEDIA_DIR}/playlist_clip_b.mp4")
+set(FRAMEWORK_TEST_SDR_GRAY
+    "${FRAMEWORK_TEST_MEDIA_DIR}/sdr_gray_patches.mp4")
+add_custom_command(
+    OUTPUT "${FRAMEWORK_TEST_SDR_GRAY}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FRAMEWORK_TEST_MEDIA_DIR}"
+    COMMAND "${FFMPEG_EXE}" -y -hide_banner -loglevel error
+            -f lavfi -i "nullsrc=s=160x120:r=24:d=0.25,format=yuv420p,geq=lum='if(lt(X,20),16,if(lt(X,40),24,if(lt(X,60),40,if(lt(X,80),64,if(lt(X,100),96,if(lt(X,120),128,if(lt(X,140),192,235)))))))':cb=128:cr=128"
+            -c:v libx264 -crf 0 -preset ultrafast
+            -color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv
+            -bsf:v h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1
+            "${FRAMEWORK_TEST_SDR_GRAY}"
+    DEPENDS "${CMAKE_CURRENT_LIST_FILE}"
+    COMMENT "Generating tagged SDR gray patches for appearance regression"
+    VERBATIM
+)
 
 add_custom_command(
     OUTPUT "${FRAMEWORK_TEST_MEDIA}"
@@ -103,7 +118,8 @@ add_custom_target(HeisenbergFrameworkTestMedia
         "${FRAMEWORK_TEST_COVER_MP3}"
         "${FRAMEWORK_TEST_MEDIA}"
         "${FRAMEWORK_TEST_CLIP_A}"
-        "${FRAMEWORK_TEST_CLIP_B}")
+        "${FRAMEWORK_TEST_CLIP_B}"
+        "${FRAMEWORK_TEST_SDR_GRAY}")
 
 add_executable(HeisenbergFrameworkTests
     timeline_settings_test.cpp
@@ -119,6 +135,16 @@ add_executable(HeisenbergFrameworkTests
     native_preview_test.cpp
     independent_audio_editor_test.cpp
     independent_audio_engine_test.cpp
+    export_engine_test.cpp
+    grade_test.cpp
+    encoding_test.cpp
+    composition_executor_test.cpp
+    color_pipeline_test.cpp
+    grade_edit_continuity_test.cpp
+    grade_renderer_test.cpp
+    composition_renderer_interop_test.cpp
+    color_settings_test.cpp
+    video_presenter_test.cpp
 )
 add_dependencies(HeisenbergFrameworkTests HeisenbergFrameworkTestMedia)
 target_link_libraries(HeisenbergFrameworkTests PRIVATE
@@ -137,6 +163,7 @@ target_compile_definitions(HeisenbergFrameworkTests PRIVATE
     HEISENBERG_TEST_COVER_MP3="${FRAMEWORK_TEST_COVER_MP3}"
     HEISENBERG_PLAYLIST_CLIP_A="${FRAMEWORK_TEST_CLIP_A}"
     HEISENBERG_PLAYLIST_CLIP_B="${FRAMEWORK_TEST_CLIP_B}"
+    HEISENBERG_TEST_SDR_GRAY="${FRAMEWORK_TEST_SDR_GRAY}"
     HEISENBERG_TEST_FILTER="${CMAKE_SOURCE_DIR}/Framework/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Test/exposure.json"
 )
 
@@ -144,26 +171,6 @@ if(MSVC)
     target_compile_options(HeisenbergFrameworkTests PRIVATE /utf-8)
 endif()
 
-if(WIN32)
-    add_custom_command(TARGET HeisenbergFrameworkTests POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/SpdLog/windows/debug/bin/spdlogd.dll,${CMAKE_SOURCE_DIR}/Dependence/SpdLog/windows/bin/spdlog.dll>"
-            "$<TARGET_FILE_DIR:HeisenbergFrameworkTests>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avcodec-62.dll"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avdevice-62.dll"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avfilter-11.dll"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avformat-62.dll"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/avutil-60.dll"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/swresample-6.dll"
-            "${CMAKE_SOURCE_DIR}/Dependence/FFmpeg/windows/bin/swscale-9.dll"
-            "$<TARGET_FILE_DIR:HeisenbergFrameworkTests>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/Dependence/LibPlacebo/windows/bin/libplacebo-365.dll"
-            "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/Vulkan/windows/debug/bin/vulkan-1.dll,${CMAKE_SOURCE_DIR}/Dependence/Vulkan/windows/bin/vulkan-1.dll>"
-            "$<IF:$<CONFIG:Debug>,${CMAKE_SOURCE_DIR}/Dependence/Lcms2/debug/bin/lcms2-2.dll,${CMAKE_SOURCE_DIR}/Dependence/Lcms2/bin/lcms2-2.dll>"
-            "$<TARGET_FILE_DIR:HeisenbergFrameworkTests>"
-    )
-endif()
+heisenberg_deploy_runtime(HeisenbergFrameworkTests)
 
 gtest_discover_tests(HeisenbergFrameworkTests)

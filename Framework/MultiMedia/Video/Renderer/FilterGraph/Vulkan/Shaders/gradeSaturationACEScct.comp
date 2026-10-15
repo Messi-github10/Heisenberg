@@ -1,0 +1,21 @@
+#version 450
+
+// ACEScct/AP1 RGB, straight alpha. This is a log-domain saturation operation,
+// not linear luminance. AP1 weights define its achromatic axis (not BT.2020).
+// No negative/HDR clamp; Color processors alone own domain conversion.
+layout (local_size_x = 16, local_size_y = 16) in;
+layout (binding = 0, rgba16f) uniform readonly image2D inTex;
+layout (binding = 1, rgba16f) uniform writeonly image2D outTex;
+layout (std140, binding = 2) uniform GradeSaturationParams {
+    float saturation;
+} params;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, imageSize(outTex)))) return;
+    vec4 color = imageLoad(inTex, pixel);
+    const vec3 ap1Weights = vec3(0.2722287168, 0.6740817658, 0.0536895174);
+    float achromatic = dot(color.rgb, ap1Weights);
+    color.rgb = mix(vec3(achromatic), color.rgb, params.saturation);
+    imageStore(outTex, pixel, color);
+}

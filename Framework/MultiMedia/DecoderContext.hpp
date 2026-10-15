@@ -30,6 +30,8 @@ public:
     MediaFrame pull(uint64_t generation);
 
     bool isOpen() const;
+    // Sticky negative error until open/flush/close; never EAGAIN or EOF.
+    int lastError() const { return lastError_; }
 
 private:
     struct AudioConverter;
@@ -37,6 +39,7 @@ private:
     std::unique_ptr<IDecoder> decoder_;
     std::unique_ptr<AudioConverter> audioConverter_;
     int streamIndex_ = -1;
+    int lastError_ = 0;
     bool audio_ = false;
     bool draining_ = false;
     bool eofReturned_ = false;

@@ -23,6 +23,9 @@ struct PlaneMeta {
     int components   = 0;
     int compMapping[4] = {};
     int bytesPerComp = 1;
+    int sampleBits = 8;
+    int colorBits = 8;
+    int bitShift = 0;
     int chromaShiftW = 0;
     int chromaShiftH = 0;
 };
@@ -44,6 +47,7 @@ struct StaticFormatEntry {
 static const StaticFormatEntry kStaticFormats[] = {
     { AV_PIX_FMT_YUV420P,     {0, 1, 2, -1},  8, 1, 1 },
     { AV_PIX_FMT_NV12,        {0, 1, 1, -1},  8, 1, 1 },
+    { AV_PIX_FMT_P010LE,      {0, 1, 1, -1}, 10, 1, 1 },
     { AV_PIX_FMT_YUV420P10LE, {0, 1, 2, -1}, 10, 1, 1 },
     { AV_PIX_FMT_RGBA,        {0, 0, 0,  0},  8, 0, 0 },
     { AV_PIX_FMT_RGBAF16,     {0, 0, 0,  0}, 16, 0, 0 },
@@ -79,6 +83,8 @@ static FormatMeta deriveFromStaticEntry(const StaticFormatEntry& entry) {
     for (int p = 0; p < meta.numPlanes; ++p) {
         PlaneMeta& pm = meta.planes[p];
         pm.bytesPerComp = bytes;
+        pm.sampleBits = bytes * 8; pm.colorBits = entry.bitDepth;
+        pm.bitShift = entry.avFormat == AV_PIX_FMT_P010LE ? 6 : 0;
 
         int slot = 0;
         for (int c = 0; c < 4; ++c) {
@@ -112,7 +118,11 @@ static FormatMeta deriveFromFFmpeg(const AVPixFmtDescriptor* desc, AVPixelFormat
                 break;
             }
         }
-        pm.bytesPerComp = (bits > 8) ? 2 : 1;
+        pm.bytesPerComp = (bits + 7) / 8;
+        pm.sampleBits = pm.bytesPerComp * 8; pm.colorBits = bits;
+        for (int c = 0; c < desc->nb_components; ++c) {
+            if (desc->comp[c].plane == p) { pm.bitShift = desc->comp[c].shift; break; }
+        }
 
         int slot = 0;
         for (int c = 0; c < desc->nb_components; ++c) {
@@ -215,6 +225,7 @@ const pl_frame* SoftwareContext::uploadAvFrame(const AVFrame* avframe) {
     int w = avframe->width;
     int h = avframe->height;
     int numPlanes = meta.numPlanes;
+    if (numPlanes < 1 || numPlanes > 4) return nullptr;
 
     // 分辨率/格式变化时重建上传纹理
     if (avfmt != impl_->cachedUploadFormat
@@ -312,6 +323,24 @@ const pl_frame* SoftwareContext::uploadAvFrame(const AVFrame* avframe) {
     }
 
     impl_->uploadFrame.repr  = colorReprFromAvFrame(avframe);
+    const auto* descriptor = av_pix_fmt_desc_get(avfmt);
+    if (descriptor && !(descriptor->flags & AV_PIX_FMT_FLAG_FLOAT)) {
+        impl_->uploadFrame.repr.bits.sample_depth = meta.planes[0].sampleBits;
+        impl_->uploadFrame.repr.bits.color_depth = meta.planes[0].colorBits;
+        impl_->uploadFrame.repr.bits.bit_shift = meta.planes[0].bitShift;
+    }
+    // GPU samples decode normalized integer planes, not depth-bit containers.
+    // P010's six low padding bits and planar 10/12-bit low alignment differ.
+    pl_chroma_location chroma = PL_CHROMA_LEFT;
+    switch (avframe->chroma_location) {
+        case AVCHROMA_LOC_CENTER: chroma = PL_CHROMA_CENTER; break;
+        case AVCHROMA_LOC_TOPLEFT: chroma = PL_CHROMA_TOP_LEFT; break;
+        case AVCHROMA_LOC_TOP: chroma = PL_CHROMA_TOP_CENTER; break;
+        case AVCHROMA_LOC_BOTTOMLEFT: chroma = PL_CHROMA_BOTTOM_LEFT; break;
+        case AVCHROMA_LOC_BOTTOM: chroma = PL_CHROMA_BOTTOM_CENTER; break;
+        default: break;
+    }
+    pl_frame_set_chroma_location(&impl_->uploadFrame, chroma);
     impl_->uploadFrame.color = colorSpaceFromAvFrame(avframe);
     impl_->uploadFrame.crop  = { 0, 0, static_cast<float>(w), static_cast<float>(h) };
 

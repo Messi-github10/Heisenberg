@@ -2,7 +2,7 @@
 
 #include <Common/VideoFrame.hpp>
 #include <Common/AudioFrame.hpp>
-#include <Compositing/CompositionPlan.hpp>
+#include <Compositing/CompositionExecutor.hpp>
 #include <functional>
 #include <memory>
 
@@ -10,18 +10,12 @@ namespace heisenberg {
 
 struct Timeline;
 class MediaManifest;
+class ProjectSnapshot;
+struct ColorSettings;
 
 // Raw source image and intended presentation timing are deliberately separate.
 // Native AVFrame timestamps are never rewritten by decode or timeline mapping.
-struct DecodedFrame {
-    std::shared_ptr<VideoFrame> source;
-    TimelineSettings settings;
-    int64_t targetPosition = 0;
-    Rational targetTimeBase{1, 1};
-    uint64_t generation = 0;
-    bool sourceMode = false;
-    bool blank = false;
-};
+using DecodedFrame = CompositionVideoSample;
 
 class VideoEngine {
 public:
@@ -51,6 +45,10 @@ public:
     bool openPlaylist(const std::string& path);
     bool openTimeline(const Timeline& timeline, const MediaManifest& manifest,
                       const std::string& projectDir);
+    bool openTimeline(const Timeline& timeline, const MediaManifest& manifest,
+                      const std::string& projectDir, const ColorSettings& colorSettings);
+    bool openComposition(const CompositionPlan& plan);
+    bool openSnapshot(const ProjectSnapshot& snapshot);
     void close();
     void shutdown();
     void play();

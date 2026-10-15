@@ -76,6 +76,8 @@ class VulkanFilterRegistry final {
 public:
     static VulkanFilterRegistry& instance();
 
+    // Tests may explicitly select a fixture directory before first registry use.
+    static bool setResourceDirectoryForTests(const std::string& directory);
     bool ensureLoaded(std::string* error = nullptr);
     const VulkanFilterDescriptor* find(std::string_view id,
                                        std::string* error = nullptr);

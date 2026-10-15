@@ -1,0 +1,44 @@
+#version 450
+
+// Separable Gaussian in linear ACEScg/AP1. Premultiply straight alpha for the
+// convolution then unpremultiply; preserve negative/HDR RGB. Color owns transfer.
+layout (local_size_x = 16, local_size_y = 16) in;
+layout (binding = 0) uniform sampler2D inTex;
+layout (binding = 1, rgba16f) uniform image2D outTex;
+layout (std140, binding = 2) uniform GradeGaussianBlurParams {
+    ivec2 direction;
+    int radius;
+    float sigma;
+} params;
+
+void accumulate(vec4 color, float weight, inout vec3 rgb,
+                inout float alpha, inout float weights) {
+    rgb += color.rgb * color.a * weight;
+    alpha += color.a * weight;
+    weights += weight;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outTex);
+    if (any(greaterThanEqual(pixel, size))) return;
+    vec2 inverseSize = 1.0 / vec2(size);
+    vec2 uv = (vec2(pixel) + 0.5) * inverseSize;
+    vec2 step = vec2(params.direction) * inverseSize;
+    int radius = clamp(params.radius, 0, 32);
+    float sigma = params.sigma > 0.0 ? params.sigma
+        : max(0.1, (float(radius) - 1.0) * 0.3 + 0.8);
+    vec3 rgb = vec3(0.0);
+    float alpha = 0.0;
+    float weights = 0.0;
+    accumulate(texture(inTex, uv), 1.0, rgb, alpha, weights);
+    for (int offset = 1; offset <= radius; ++offset) {
+        float distance = float(offset);
+        float normalized = distance / sigma;
+        float weight = exp(-0.5 * normalized * normalized);
+        vec2 delta = step * distance;
+        accumulate(texture(inTex, uv + delta), weight, rgb, alpha, weights);
+        accumulate(texture(inTex, uv - delta), weight, rgb, alpha, weights);
+    }
+    imageStore(outTex, pixel, vec4(alpha > 0.000001 ? rgb / alpha : vec3(0.0), alpha / weights));
+}

@@ -47,7 +47,14 @@ struct SoftwareDecoder::Impl {
     int pixelFormat_ = AV_PIX_FMT_NONE;
     int64_t startTime_ = 0;
 
+    int lastError = 0;
+    int record(int result) {
+        if (result < 0 && result != AVERROR(EAGAIN) && result != AVERROR_EOF) lastError = result;
+        return result;
+    }
+
     void close() {
+        lastError = 0;
         if (ctx) {
             avcodec_free_context(&ctx);
             ctx = nullptr;
@@ -141,11 +148,11 @@ bool SoftwareDecoder::isOpen() const {
 
 int SoftwareDecoder::sendPacket(std::shared_ptr<const Packet> packet) {
     if (!impl_->isOpen_) {
-        return -1;
+        return impl_->record(AVERROR(EINVAL));
     }
 
     if (!packet || packet->empty()) {
-        return avcodec_send_packet(impl_->ctx, nullptr);
+        return impl_->record(avcodec_send_packet(impl_->ctx, nullptr));
     }
 
     AVPacket avpkt = {};
@@ -189,25 +196,28 @@ int SoftwareDecoder::sendPacket(std::shared_ptr<const Packet> packet) {
     for (const auto& data : packet->sideData) {
         auto* copy = av_packet_new_side_data(&avpkt,
             static_cast<AVPacketSideDataType>(data.type), data.data.size());
-        if (!copy) { av_packet_free_side_data(&avpkt); return AVERROR(ENOMEM); }
+        if (!copy) { av_packet_free_side_data(&avpkt); return impl_->record(AVERROR(ENOMEM)); }
         std::memcpy(copy, data.data.data(), data.data.size());
     }
     const int result = avcodec_send_packet(impl_->ctx, &avpkt);
     av_packet_free_side_data(&avpkt);
-    return result;
+    return impl_->record(result);
 }
 
 std::shared_ptr<AVFrame> SoftwareDecoder::receiveFrame() {
     if (!impl_->isOpen_) {
+        impl_->record(AVERROR(EINVAL));
         return nullptr;
     }
 
     AVFrame* raw = av_frame_alloc();
     if (!raw) {
+        impl_->record(AVERROR(ENOMEM));
         return nullptr;
     }
 
     int ret = avcodec_receive_frame(impl_->ctx, raw);
+    impl_->record(ret);
     if (ret < 0) {
         av_frame_free(&raw);
         return nullptr;
@@ -231,7 +241,10 @@ std::shared_ptr<AVFrame> SoftwareDecoder::receiveFrame() {
     return std::shared_ptr<AVFrame>(raw, avframeDeleter);
 }
 
+int SoftwareDecoder::lastError() const { return impl_->lastError; }
+
 void SoftwareDecoder::flush() {
+    impl_->lastError = 0;
     if (impl_->ctx) {
         avcodec_flush_buffers(impl_->ctx);
     }

@@ -47,7 +47,8 @@ void StateTransitionScheduler::executeTransition(
     const StateTransition& transition) {
 
     // 如果状态相同，不需要执行转换
-    if (transition.oldState == transition.newState) {
+    if (transition.oldState == transition.newState
+        && !(transition.oldState.access & (VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_MEMORY_WRITE_BIT))) {
         return;
     }
 
@@ -67,8 +68,10 @@ void StateTransitionScheduler::executeTransition(
 
     vkCmdPipelineBarrier(
         commandBuffer,
-        transition.oldState.stage,
-        transition.newState.stage,
+        transition.oldState.stage ? transition.oldState.stage
+            : (transition.oldState.access ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT),
+        transition.newState.stage ? transition.newState.stage
+            : (transition.newState.access ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT),
         0,
         0, nullptr,
         0, nullptr,

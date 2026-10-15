@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Timeline.hpp"
+#include "ColorSettings.hpp"
 #include <unordered_map>
 
 namespace heisenberg {
@@ -23,6 +24,9 @@ struct MulticamSource {
 
 struct ProjectFile {
     std::vector<Timeline> timelines;
+    ColorSettings colorSettings;
+    JsonValue extensions = JsonValue::object(); // Unknown namespaces survive save/copy.
+    JsonValue unknownFields = JsonValue::object();
     std::optional<std::string> activeTimelineId;
     std::optional<std::vector<std::string>> openTimelineIds;
     std::optional<std::unordered_map<std::string, TimelineViewState>> viewStates;

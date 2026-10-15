@@ -159,6 +159,19 @@ bool parseParameter(const std::string& filterId, const json& object,
 
 } // namespace
 
+VulkanGraphDocument VulkanGraphDocument::emptyStage() {
+    VulkanGraphDocument result;
+    result.nodes_.push_back({kVulkanGraphInputNodeId, "input", {}, {}});
+    result.nodes_.push_back({kVulkanGraphOutputNodeId, "output", {}, {}});
+    return result;
+}
+
+VulkanGraphDocument VulkanGraphDocument::passthrough() {
+    auto result = emptyStage();
+    result.connect({kVulkanGraphInputNodeId, 0}, {kVulkanGraphOutputNodeId, 0});
+    return result;
+}
+
 bool VulkanGraphDocument::loadFromJsonFile(
     const std::string& path, std::string* error) {
     std::ifstream file(std::filesystem::u8path(path), std::ios::binary);

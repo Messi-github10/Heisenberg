@@ -1,0 +1,19 @@
+#version 450
+
+// ACEScct/AP1 RGB with straight alpha, contrast around ACEScct 18% gray.
+// Color processors handle ACEScg<->ACEScct. No transfer or clamping here.
+layout (local_size_x = 16, local_size_y = 16) in;
+layout (binding = 0, rgba16f) uniform readonly image2D inTex;
+layout (binding = 1, rgba16f) uniform writeonly image2D outTex;
+layout (std140, binding = 2) uniform GradeContrastParams {
+    float contrast;
+} params;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, imageSize(outTex)))) return;
+    vec4 color = imageLoad(inTex, pixel);
+    const float pivot = 0.4135884024924423;
+    color.rgb = (color.rgb - vec3(pivot)) * params.contrast + vec3(pivot);
+    imageStore(outTex, pixel, color);
+}

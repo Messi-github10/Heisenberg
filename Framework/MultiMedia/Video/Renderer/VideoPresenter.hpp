@@ -1,79 +1,46 @@
-//
-// Created by NiceFold on 2026/7/9.
-//
-
 #pragma once
 
-#include <memory>
-#include <functional>
 #include <Common/NonCopy.hpp>
+#include "CompositionRenderer.hpp"
+#include <functional>
+#include <memory>
 
 extern "C" {
-#include <libplacebo/gpu.h>
-#include <libplacebo/renderer.h>
-#include <libplacebo/vulkan.h>
+#include <libplacebo/swapchain.h>
 }
 
-struct AVFrame;
-struct ID3D11Device;
-struct ID3D11DeviceContext;
-
-namespace heisenberg {
-
-namespace filtergraph {
-    class IInputNode;
-    class IOutputNode;
-    class IPipeGraph;
-    struct VulkanImageRef;
-}
-
-namespace renderer {
-
+namespace heisenberg::renderer {
 class SwapChain;
-class SoftwareContext;
 class RenderEngine;
-class D3D11VulkanInterop;
 
+// Shared final presentation path, also usable with a readable test attachment.
+// Source is already OCIO output-encoded RGB; selection must describe its actual
+// resolved encoding and presentation intent. Explicit SDR video preview keeps
+// code values; Colorimetric keeps transfer adaptation. Target remains unmodified.
+// Only SDR sRGB UNORM targets are supported; unknown/HDR/scRGB/implicit-sRGB
+// attachments fail explicitly. No image ownership or synchronization is taken.
+bool blitPresentationFrame(pl_gpu gpu, RenderEngine& blitter, pl_tex source,
+                           const ColorOutputRequest& selection,
+                           const pl_swapchain_frame& target,
+                           std::string* error = nullptr);
+
+// Presentation only. Never uploads decoded frames, executes a filter graph, or
+// reapplies an OCIO view. Transfer adaptation is only between the declared
+// encoded output and the actual supported SDR surface.
 class VideoPresenter : public NonCopy {
 public:
-    using ResizeCallback  = std::function<void(int width, int height)>;
+    using ResizeCallback = std::function<void(int, int)>;
     using PresentCallback = std::function<void()>;
-
     VideoPresenter();
     ~VideoPresenter();
-
-    VideoPresenter(VideoPresenter&&)            = delete;
-    VideoPresenter& operator=(VideoPresenter&&) = delete;
-
-    bool initialize(pl_gpu gpu, pl_vulkan vk,
-                    std::unique_ptr<SwapChain> swapChain,
-                    int width, int height);
-
-    bool presentFrame(const AVFrame* frame);
-
+    bool initialize(pl_gpu gpu, pl_vulkan vk, std::unique_ptr<SwapChain>, int width, int height);
+    bool presentFrame(const RenderedFrame& encodedFrame);
     void resize(int width, int height);
-
-    void setOnResize(ResizeCallback cb);
-    void setOnPresent(PresentCallback cb);
-
-    void setFilterGraph(heisenberg::filtergraph::IPipeGraph* graph,
-                        heisenberg::filtergraph::IInputNode* input,
-                        heisenberg::filtergraph::IOutputNode* output);
-
-    void setD3D11Device(ID3D11Device* device, ID3D11DeviceContext* context);
-
+    void setOnResize(ResizeCallback);
+    void setOnPresent(PresentCallback);
     void shutdown();
-
 private:
-    bool buildIntermediateTarget(int width, int height);
-    void releaseIntermediateTarget();
-    bool renderToSwapChain(const pl_frame* source, int width, int height);
-    bool renderToSwapChain(const filtergraph::VulkanImageRef& image);
-    bool presentHardwareFrame(const AVFrame* frame);
-
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
-
-} // namespace renderer
-} // namespace heisenberg
+} // namespace heisenberg::renderer

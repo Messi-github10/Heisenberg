@@ -1,5 +1,8 @@
 #include "VulkanGroupNode.hpp"
 #include <Utiles/Logger.hpp>
+#include <MultiMedia/Video/Renderer/FilterGraph/Vulkan/Graph/ResourceManager.hpp>
+#include <MultiMedia/Video/Renderer/FilterGraph/Vulkan/Graph/StateTransitionScheduler.hpp>
+#include <volk.h>
 #include <stdexcept>
 #include <utility>
 #include <cstddef>
@@ -55,6 +58,13 @@ void VulkanGroupNode::record(
         pass->setResourceManager(resourceManager());
         pass->bindInputResources({currentResource});
         if (pass->beginFrame(frame)) {
+            for (const auto& access : pass->declareResourceAccess()) {
+                const auto image = resourceManager()->getResource(access.resource);
+                const auto state = resourceManager()->getState(access.resource);
+                StateTransition transition{access.resource, state, access.expectedState, 0};
+                StateTransitionScheduler::executeTransition(commandBuffer, image.image, transition);
+                resourceManager()->setState(access.resource, access.expectedState);
+            }
             pass->record(commandBuffer, frame);
         }
         currentResource = pass->logicalOutputResource(0);
@@ -73,21 +83,15 @@ void VulkanGroupNode::setCompletion(VulkanSyncPoint completion) {
 }
 
 std::vector<ResourceAccess> VulkanGroupNode::declareResourceAccess() const {
-    std::vector<ResourceAccess> accesses;
-    LogicalResourceId previous;
-    if (inputCount() > 0) previous = inputResource(0);
-
-    for (const auto& pass : passes_) {
-        auto* mutablePass = const_cast<VulkanNode*>(pass.get());
-        mutablePass->bindInputResources({previous});
-        if (pass->active()) {
-            auto passAccesses = pass->declareResourceAccess();
-            accesses.insert(accesses.end(), passAccesses.begin(), passAccesses.end());
-        }
-        previous = pass->logicalOutputResource(0);
-    }
-
-    return accesses;
+    // Only the boundary input belongs to the enclosing graph's transition list.
+    // Scratch/output images transition immediately before their respective pass.
+    ResourceAccess inputAccess;
+    inputAccess.resource = inputResource(0);
+    inputAccess.mode = ResourceAccessMode::Read;
+    inputAccess.expectedState.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    inputAccess.expectedState.stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    inputAccess.expectedState.access = VK_ACCESS_SHADER_READ_BIT;
+    return {inputAccess};
 }
 
 LogicalResourceId VulkanGroupNode::logicalOutputResource(int32_t index) const {

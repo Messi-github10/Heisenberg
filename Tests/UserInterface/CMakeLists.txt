@@ -4,10 +4,13 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent)
 add_executable(HeisenbergEditorUiTests
     media_pool_test.cpp
     timeline_interaction_test.cpp
+    color_export_ui_test.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/EditorSession.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/EditorSession.hpp
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/PlayerController.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/PlayerController.hpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/Backend/QtExportController.cpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/Backend/QtExportController.hpp
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/MediaInfoProbe.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/MediaInfoProbe.hpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/MediaInfoPanel.cpp

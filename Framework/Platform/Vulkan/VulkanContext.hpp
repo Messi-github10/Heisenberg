@@ -47,6 +47,10 @@ public:
     bool      hasAloneCompute()   const;
     const std::array<uint8_t, VK_LUID_SIZE>& deviceLuid() const;
     bool deviceLuidValid() const;
+    // The enabled contract, not a fresh query of what the adapter supports.
+    const VkPhysicalDeviceFeatures2* enabledDeviceFeatures() const;
+    std::vector<const char*> enabledDeviceExtensions() const;
+    uint64_t validationErrorCount() const;
 private:
     VulkanContext();
 

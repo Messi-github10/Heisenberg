@@ -232,6 +232,65 @@ void TimelineWidget::editSelectedClipAudio() {
     if (!result.changed() && !result.message.empty()) emit editFailed(QString::fromUtf8(result.message.c_str()));
 }
 
+void TimelineWidget::editSelectedClipGrade() {
+    cancelInteraction();
+    const auto* clip = timeline() ? timeline()->clipById(selectedClipId_) : nullptr;
+    if (!session_ || !clip || clip->mediaType != heisenberg::ClipType::Video) return;
+    const QString id = QString::fromStdString(clip->id);
+    auto effects = clip->effects.value_or(heisenberg::JsonValue::array());
+    if (!effects.is_array()) { emit editFailed(tr("Unsupported effects payload is preserved.")); return; }
+    size_t index = effects.size();
+    for (size_t i = 0; i < effects.size(); ++i) {
+        if (effects[i].is_object() && effects[i].value("type", std::string{}) == "video.basicGrade") { index = i; break; }
+    }
+    QDialog dialog(this);
+    dialog.setObjectName("clipGradeDialog");
+    dialog.setWindowTitle(tr("Basic Grade"));
+    auto* form = new QFormLayout(&dialog);
+    const std::array<const char*, 3> names{"exposure", "contrast", "saturation"};
+    const std::array<double, 3> defaults{0.0, 1.0, 1.0};
+    std::array<QDoubleSpinBox*, 3> fields{};
+    std::array<double, 3> original{};
+    for (size_t i = 0; i < names.size(); ++i) {
+        double value = defaults[i];
+        if (index < effects.size() && effects[index].contains("params") && effects[index]["params"].is_object()) {
+            const auto& params = effects[index]["params"];
+            if (params.contains(names[i]) && params[names[i]].is_object() && params[names[i]].contains("value") && params[names[i]]["value"].is_number())
+                value = params[names[i]]["value"].get<double>();
+        }
+        fields[i] = new QDoubleSpinBox(&dialog);
+        fields[i]->setObjectName(QString("grade_%1").arg(names[i]));
+        fields[i]->setDecimals(4);
+        fields[i]->setRange(i == 0 ? -10.0 : 0.0, i == 0 ? 10.0 : (i == 1 ? 4.0 : 2.0));
+        fields[i]->setSingleStep(0.1);
+        fields[i]->setValue(value);
+        original[i] = fields[i]->value();
+        form->addRow(QString::fromLatin1(names[i]), fields[i]);
+    }
+    auto* hint = new QLabel(tr("Changing a parameter sets a constant value and replaces its animation. Other parameters and imported effects are preserved."), &dialog);
+    hint->setWordWrap(true); form->addRow(hint);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    bool changed = false;
+    for (size_t i = 0; i < fields.size(); ++i) changed |= fields[i]->value() != original[i];
+    if (!changed) return;
+    if (index == effects.size()) effects.push_back({{"id", "basic-grade"}, {"type", "video.basicGrade"}, {"enabled", true}, {"params", heisenberg::JsonValue::object()}});
+    auto& params = effects[index]["params"];
+    if (!params.is_object()) params = heisenberg::JsonValue::object();
+    for (size_t i = 0; i < fields.size(); ++i) {
+        if (fields[i]->value() == original[i]) continue;
+        auto& parameter = params[names[i]];
+        if (!parameter.is_object()) parameter = heisenberg::JsonValue::object();
+        parameter["value"] = fields[i]->value();
+        parameter.erase("track");
+    }
+    const auto result = session_->setClipEffects(id, std::move(effects));
+    if (!result.changed() && !result.message.empty()) emit editFailed(QString::fromUtf8(result.message.c_str()));
+}
+
 void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     const auto hit = clipAt(event->pos());
     if (hit.empty()) { QWidget::contextMenuEvent(event); return; }
@@ -243,9 +302,14 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     menu.setObjectName("timelineClipMenu");
     auto* audio = menu.addAction(tr("Audio Settings..."));
     audio->setObjectName("clipAudioSettings");
+    auto* grade = menu.addAction(tr("Basic Grade..."));
+    grade->setObjectName("clipBasicGrade");
+    const auto* selected = timeline() ? timeline()->clipById(selectedClipId_) : nullptr;
+    grade->setEnabled(selected && selected->mediaType == heisenberg::ClipType::Video);
     auto* remove = menu.addAction(tr("Delete Clip"));
     const auto* chosen = menu.exec(event->globalPos());
     if (chosen == audio) editSelectedClipAudio();
+    else if (chosen == grade) editSelectedClipGrade();
     else if (chosen == remove) removeSelectedClip();
     event->accept();
 }

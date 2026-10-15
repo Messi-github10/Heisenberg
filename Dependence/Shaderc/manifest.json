@@ -1,0 +1,187 @@
+{
+  "schemaVersion": 1,
+  "platform": "windows-x64",
+  "linkage": "shared",
+  "runtime": {
+    "Release": "MSVC /MD",
+    "Debug": "MSVC /MDd"
+  },
+  "licenseProvenance": "licenses/SOURCE.md",
+  "name": "shaderc shared",
+  "sdkVersion": "1.4.357.0",
+  "origin": "LunarG Windows Vulkan SDK shared compiler snapshot",
+  "sourceCommit": "2c8cae778eec0283b44acbe7ed1a386865d78799",
+  "versionEvidence": "CHANGES latest heading v2026.3; not an assertion of an exact release tag",
+  "glslangCommit": "168d452a4f460d24b588fed08477a81c44ee27a1",
+  "spirvHeadersCommit": "29981f65241605e08b0ede4cfeb999fe3b723c6a",
+  "spirvToolsAssemblyCommit": "b707790a898e44038547df54580022fc1cf89c3d",
+  "spirvToolsStandaloneSdkCommit": "9a49b0883b9b635689a85b5647dbfcb223268151",
+  "limits": "Exact embedded SPIRV-Tools revision and optional allocator build flags are not proven; full notices for the official selectors are retained.",
+  "files": [
+    {
+      "path": "CMakeLists.txt",
+      "bytes": 1414,
+      "sha256": "8cab4ec13a87389116fa2f18bfde74ad93b1c597a4bd34aa18cdd28432351843"
+    },
+    {
+      "path": "licenses/evidence/glslang-known_good.json.txt",
+      "bytes": 667,
+      "sha256": "5324c6dc4ff43e9f185a828f3c76b1626c80aef4e0707b17dfb67dc0d803c307"
+    },
+    {
+      "path": "licenses/evidence/SDK-components.xml.txt",
+      "bytes": 3699,
+      "sha256": "72d48475b34b69238d3917eca626f4360896ed1dd85f2a945dc39ad600e3b8ea"
+    },
+    {
+      "path": "licenses/evidence/SDK-LICENSE.txt",
+      "bytes": 944,
+      "sha256": "03b9dd9957f288bc26ef39d188672d5a761f2f35c972d959b65c0f32cd4d576f"
+    },
+    {
+      "path": "licenses/evidence/sdk-shaderc-known_good.json.txt",
+      "bytes": 1655,
+      "sha256": "b3d6f8052c3739cfe124f1a8def7b3c0344e00f77f4452ebea21a5df47735c11"
+    },
+    {
+      "path": "licenses/evidence/shaderc-DEPS.txt",
+      "bytes": 1359,
+      "sha256": "f629401c15ad76ce96405ec97257db08df112f68cf1557f49f50f14bc8c0ac33"
+    },
+    {
+      "path": "licenses/evidence/SPIRV-Tools-DEPS.txt",
+      "bytes": 1329,
+      "sha256": "d5ae06c13341f45d763ae20f11b3b5202ecbea83e39a1eb67c098feb7d117737"
+    },
+    {
+      "path": "licenses/evidence/SPIRV-Tools-standalone-SDK-LICENSE.txt",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "licenses/glslang/LICENSE.txt",
+      "bytes": 54615,
+      "sha256": "17e70c676e1521ff3e4686f04a2053d93a7e28a33be8de7ec37ab0ff72feb677"
+    },
+    {
+      "path": "licenses/glslang/LICENSES/AML-glslang.txt",
+      "bytes": 2373,
+      "sha256": "cc8ea571129dbee2997e52a54d1f715f8b0159a22f28f985a9b2b31708a48620"
+    },
+    {
+      "path": "licenses/glslang/REUSE.toml.txt",
+      "bytes": 16712,
+      "sha256": "fd3556a55016a73ff351a79a4d87600e4e67ed511299e0809dce018638ae7424"
+    },
+    {
+      "path": "licenses/mimalloc/LICENSE",
+      "bytes": 1096,
+      "sha256": "82ade5d7d9b029044b5fbbc326207fc47c2d44ee4dd71e8a559c36d728217de9"
+    },
+    {
+      "path": "licenses/shaderc/headers/env.h.LICENSE.embedded.txt",
+      "bytes": 619,
+      "sha256": "aea950f224c850bf353c6207b528407ddf27f4a1971f48be554104613f924e7c"
+    },
+    {
+      "path": "licenses/shaderc/headers/shaderc.h.LICENSE.embedded.txt",
+      "bytes": 619,
+      "sha256": "f1615c27810bf717756ad7f9d2122d0135480fca3c7e1faea3335a0a24152183"
+    },
+    {
+      "path": "licenses/shaderc/headers/shaderc.hpp.LICENSE.embedded.txt",
+      "bytes": 619,
+      "sha256": "f1615c27810bf717756ad7f9d2122d0135480fca3c7e1faea3335a0a24152183"
+    },
+    {
+      "path": "licenses/shaderc/headers/status.h.LICENSE.embedded.txt",
+      "bytes": 619,
+      "sha256": "aea950f224c850bf353c6207b528407ddf27f4a1971f48be554104613f924e7c"
+    },
+    {
+      "path": "licenses/shaderc/headers/visibility.h.LICENSE.embedded.txt",
+      "bytes": 619,
+      "sha256": "aea950f224c850bf353c6207b528407ddf27f4a1971f48be554104613f924e7c"
+    },
+    {
+      "path": "licenses/shaderc/LICENSE",
+      "bytes": 11357,
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "path": "licenses/shaderc/third_party/LICENSE.glslang",
+      "bytes": 8280,
+      "sha256": "b5a00e94f058edc87e05978329b55730d8689abe61205d9018443d03de4f07da"
+    },
+    {
+      "path": "licenses/shaderc/third_party/LICENSE.spirv-tools",
+      "bytes": 11650,
+      "sha256": "47e20ce182bc68fab1a0cfb129b03c326aaf4f2b6b7905aa9d376d31018bd29f"
+    },
+    {
+      "path": "licenses/SOURCE.md",
+      "bytes": 19438,
+      "sha256": "e51f23fa5c91d98fad7f9fb5dfcf24fecfbab4d7f8ad68f1c56b5f5114ba96bd"
+    },
+    {
+      "path": "licenses/SPIRV-Headers/LICENSE",
+      "bytes": 23503,
+      "sha256": "ea43b1de38a6f90c488800d66dec1ed671e68cda530266bc96951fb5b6307613"
+    },
+    {
+      "path": "licenses/SPIRV-Tools/LICENSE",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "README.md",
+      "bytes": 1589,
+      "sha256": "ef9f2d599a4ac2db88bc4e98488b560ab3b126a8d1705f5a9044a8fbee69c3f3"
+    },
+    {
+      "path": "windows/bin/shaderc_shared.dll",
+      "bytes": 5182904,
+      "sha256": "258c9ccc80c31c20904c64a80af964504bdb29c1475aa21b15eb540d5c93c860"
+    },
+    {
+      "path": "windows/debug/bin/shaderc_sharedd.dll",
+      "bytes": 21285816,
+      "sha256": "736dace353ae19767a74918488f56b635ab5317e0e1c7c50718464454e925727"
+    },
+    {
+      "path": "windows/debug/lib/shaderc_sharedd.lib",
+      "bytes": 16386,
+      "sha256": "54b31e366e04d5f28bb616c3c98bdcf73e8cb8d3520319ef7bdd3a801d58b7da"
+    },
+    {
+      "path": "windows/include/shaderc/env.h",
+      "bytes": 2775,
+      "sha256": "645d5d8c0bbc874e42be727d8bb3cb887408b39a7335e99f33bf1f923142dac8"
+    },
+    {
+      "path": "windows/include/shaderc/shaderc.h",
+      "bytes": 29624,
+      "sha256": "78a8195db6fa67b94e95014fe08f63063c36d2b581d182bae0f7cd4e86d59588"
+    },
+    {
+      "path": "windows/include/shaderc/shaderc.hpp",
+      "bytes": 28463,
+      "sha256": "1230c3d7e07bf431555b820ff957b46f7f3e3609ba0839d8c85ed09f809a6405"
+    },
+    {
+      "path": "windows/include/shaderc/status.h",
+      "bytes": 1377,
+      "sha256": "c379f95263f2a319de6805a68749b5bdf78ec885075bc504d6d2c1173c032941"
+    },
+    {
+      "path": "windows/include/shaderc/visibility.h",
+      "bytes": 1163,
+      "sha256": "9bb1c9db00ab812ced4b22bb813a8950ecb7c9cdf7a92135db0c71f0804b3d62"
+    },
+    {
+      "path": "windows/lib/shaderc_shared.lib",
+      "bytes": 16332,
+      "sha256": "697a51fe3193f41bf1cd71d462aca037102b88f1f1d114f36db27d58ae771ebb"
+    }
+  ]
+}

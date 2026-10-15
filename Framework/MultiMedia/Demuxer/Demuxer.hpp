@@ -32,6 +32,9 @@ public:
     int open(const std::string &url) override;
     void close() override;
     std::shared_ptr<Packet> readPacket() override;
+    PacketReadResult readPacketResult() override;
+    void setInterrupt(std::function<bool()> cancelled) override;
+    static int interrupt(void* opaque) noexcept;
     int seek(double seconds, int streamIndex = -1, int flags = 1 /* AVSEEK_FLAG_BACKWARD */) override;
 
     const std::vector<Stream> &streams() const override { return streams_; }
@@ -56,6 +59,7 @@ private:
     AVFormatContext *formatCtx_ = nullptr;
     std::string url_;
     std::vector<Stream> streams_;
+    std::function<bool()> cancelled_;
 };
 
 } // namespace demuxer

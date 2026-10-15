@@ -44,10 +44,6 @@ uint16_t floatToHalf(float value) {
 
 } // namespace
 
-#ifndef HEISENBERG_FILTER_SHADER_BINARY_DIR
-#define HEISENBERG_FILTER_SHADER_BINARY_DIR "."
-#endif
-
 namespace heisenberg::filtergraph {
 
 VulkanManifestComputeNode::VulkanManifestComputeNode(
@@ -56,8 +52,7 @@ VulkanManifestComputeNode::VulkanManifestComputeNode(
     : VulkanComputeNode(descriptor.displayName, descriptor.inputCount,
                         descriptor.outputCount),
       descriptor_(descriptor),
-      shaderPath_(std::string(HEISENBERG_FILTER_SHADER_BINARY_DIR) + "/"
-                  + descriptor.shaderBinary),
+      shaderPath_(descriptor.shaderBinary),
       parameters_(parameter) {
     externalInputs_.resize(descriptor_.extraInputs.size());
     setUniformBufferSize(descriptor_.uniformSize);
@@ -439,7 +434,7 @@ VulkanManifestComputeNode::declareResourceRequests() const {
         request.extent = {descriptor_.auxiliaryWidth, descriptor_.auxiliaryHeight};
         request.usage = VK_IMAGE_USAGE_SAMPLED_BIT
             | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-        request.contract = kWorkingImageContract;
+        request.contract = context_.imageContract;
         request.name = "auxiliary";
         requests.push_back(std::move(request));
     }

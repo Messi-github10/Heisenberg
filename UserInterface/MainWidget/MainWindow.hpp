@@ -31,9 +31,11 @@ public:
     void setSourcePreview(bool source, const QString& name);
     void showFileInfo(const QString& path);
     void showError(const QString& message);
+    void showColorSettings();
 
 signals:
     void aboutToClose();
+    void exportTimelineRequested();
     void playPauseClicked();
     void scrubStarted();
     void scrubFrameRequested(qint64 frameIndex);

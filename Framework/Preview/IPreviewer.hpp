@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Preview/VideoEngine.hpp>
+#include <MultiMedia/Video/Renderer/FilterGraph/Vulkan/Graph/VulkanGraphDocument.hpp>
 
 #include <cstdint>
 #include <functional>
@@ -43,9 +44,12 @@ public:
     virtual void detachWindow() = 0;
     virtual void resize(int w, int h) = 0;
     virtual void open(const std::string& path) = 0;
+    virtual void openSource(const std::string& path, const ColorSettings& colorSettings,
+                            const std::string& mediaRef) = 0;
     virtual void openPlaylist(const std::string& path) = 0;
     virtual void openTimeline(const Timeline& timeline, const MediaManifest& manifest,
                               const std::string& projectDir) = 0;
+    virtual void openComposition(const CompositionPlan& plan) = 0;
     virtual void close() = 0;
     virtual void play() = 0;
     virtual void pause() = 0;
@@ -80,6 +84,7 @@ public:
     virtual double fps() const = 0;
     virtual int64_t frameCount() const = 0;
     virtual std::string filterGraphPath() const = 0;
+    virtual filtergraph::VulkanGraphDocument filterGraphSnapshot() const = 0;
 };
 
 } // namespace heisenberg

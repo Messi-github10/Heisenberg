@@ -24,6 +24,9 @@ public:
     EditResult placeMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId = {});
     EditResult setClipAudio(const QString& clipId, double volume, qint64 fadeInFrames, qint64 fadeOutFrames);
     EditResult setTrackMuted(const QString& trackId, bool muted);
+    EditResult setColorSettings(const ColorSettings& settings);
+    EditResult setMediaInputColorSpace(const QString& mediaRef, const QString& space);
+    EditResult setClipEffects(const QString& clipId, std::optional<JsonValue> effects);
     EditResult removeClips(const QStringList& clipIds);
     EditResult moveClip(const QString& clipId, qint64 frame);
     EditResult trimClip(const QString& clipId, TrimEdge edge, qint64 deltaFrames);

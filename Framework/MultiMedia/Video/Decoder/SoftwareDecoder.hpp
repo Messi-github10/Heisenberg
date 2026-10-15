@@ -22,6 +22,7 @@ public:
     std::shared_ptr<AVFrame> receiveFrame() override;
 
     void flush() override;
+    int lastError() const override;
 
     DecoderBackend backend() const override;
     bool isHardware() const override;

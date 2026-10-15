@@ -7,15 +7,22 @@
 #include <fstream>
 #include <limits>
 #include <variant>
+#include <mutex>
+#include <windows.h>
 
-#ifndef HEISENBERG_SHADER_MANIFEST_PATH
-#define HEISENBERG_SHADER_MANIFEST_PATH "shader_manifest.json"
-#endif
 
 namespace heisenberg::filtergraph {
 namespace {
 
 using json = nlohmann::json;
+std::recursive_mutex registryMutex;
+std::filesystem::path explicitResourceDirectory;
+std::filesystem::path resourceDirectory() {
+    if (!explicitResourceDirectory.empty()) return explicitResourceDirectory;
+    std::vector<wchar_t> path(32768);
+    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    return std::filesystem::path(std::wstring(path.data(), length)).parent_path() / "resources" / "shaders";
+}
 
 void setError(std::string* error, const std::string& message) {
     if (error) *error = message;
@@ -125,16 +132,24 @@ VulkanFilterRegistry& VulkanFilterRegistry::instance() {
     return registry;
 }
 
+bool VulkanFilterRegistry::setResourceDirectoryForTests(const std::string& directory) {
+    std::lock_guard lock(registryMutex);
+    if (instance().loaded_) return false;
+    explicitResourceDirectory = std::filesystem::u8path(directory);
+    return true;
+}
+
 bool VulkanFilterRegistry::ensureLoaded(std::string* error) {
+    std::lock_guard lock(registryMutex);
     return loaded_ || load(error);
 }
 
 bool VulkanFilterRegistry::load(std::string* error) {
-    std::ifstream file(std::filesystem::u8path(HEISENBERG_SHADER_MANIFEST_PATH),
-                       std::ios::binary);
+    const auto manifestPath = resourceDirectory() / "shader_manifest.json";
+    std::ifstream file(manifestPath, std::ios::binary);
     if (!file) {
         setError(error, std::string("Failed to open shader manifest '")
-            + HEISENBERG_SHADER_MANIFEST_PATH + "'");
+            + manifestPath.string() + "'");
         return false;
     }
 
@@ -176,6 +191,8 @@ bool VulkanFilterRegistry::load(std::string* error) {
         }
         descriptor.shaderSource = jsonStringField(object, "source");
         descriptor.shaderBinary = jsonStringField(object, "spirv");
+        if (!descriptor.shaderBinary.empty())
+            descriptor.shaderBinary = (resourceDirectory() / std::filesystem::u8path(descriptor.shaderBinary)).string();
         if (!readInt(object, "inputs", 0, descriptor.inputCount, error)
             || !readInt(object, "outputs", 0, descriptor.outputCount, error)) {
             return false;

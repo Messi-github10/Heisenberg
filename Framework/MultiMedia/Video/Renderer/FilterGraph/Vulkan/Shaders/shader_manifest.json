@@ -2,6 +2,93 @@
   "version": 1,
   "shaders": [
     {
+      "source": "gradeExposureACEScg.comp",
+      "spirv": "gradeExposureACEScg.comp.spv",
+      "node": "grade_exposure_acescg",
+      "id": "grade_exposure_acescg",
+      "name": "Grade Exposure (linear ACEScg)",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "exposure", "type": "float", "offset": 0, "default": 0.0, "min": -32.0, "max": 32.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "GradeExposureParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 4, "cpp_size": 16, "members": { "exposure": 0 } }
+      ]
+    },
+    {
+      "source": "gradeContrastACEScct.comp",
+      "spirv": "gradeContrastACEScct.comp.spv",
+      "node": "grade_contrast_acescct",
+      "id": "grade_contrast_acescct",
+      "name": "Grade Contrast (ACEScct)",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "contrast", "type": "float", "offset": 0, "default": 1.0, "min": 0.0, "max": 4.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "GradeContrastParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 4, "cpp_size": 16, "members": { "contrast": 0 } }
+      ]
+    },
+    {
+      "source": "gradeSaturationACEScct.comp",
+      "spirv": "gradeSaturationACEScct.comp.spv",
+      "node": "grade_saturation_acescct",
+      "id": "grade_saturation_acescct",
+      "name": "Grade Saturation (ACEScct AP1)",
+      "kind": "compute",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["storage"],
+      "uniform_size": 16,
+      "parameters": [
+        { "name": "saturation", "type": "float", "offset": 0, "default": 1.0, "min": 0.0, "max": 2.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "storage_image", "access": "read", "format": "rgba16f" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "write", "format": "rgba16f" },
+        { "name": "GradeSaturationParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 4, "cpp_size": 16, "members": { "saturation": 0 } }
+      ]
+    },
+    {
+      "source": "gradeGaussianBlurACEScg.comp",
+      "spirv": "gradeGaussianBlurACEScg.comp.spv",
+      "node": "grade_gaussian_blur_acescg",
+      "id": "grade_gaussian_blur_acescg",
+      "name": "Grade Gaussian Blur (linear ACEScg)",
+      "kind": "multi_pass",
+      "inputs": 1,
+      "outputs": 1,
+      "input_bindings": ["sampled_linear"],
+      "uniform_size": 16,
+      "passes": [
+        { "name": "horizontal", "direction": [1, 0] },
+        { "name": "vertical", "direction": [0, 1] }
+      ],
+      "parameters": [
+        { "name": "directionX", "type": "int", "offset": 0, "default": 0, "exposed": false },
+        { "name": "directionY", "type": "int", "offset": 4, "default": 0, "exposed": false },
+        { "name": "blurRadius", "type": "int", "offset": 8, "default": 0, "min": 0, "max": 32 },
+        { "name": "sigma", "type": "float", "offset": 12, "default": 0.0, "min": 0.0 }
+      ],
+      "resources": [
+        { "name": "inTex", "set": 0, "binding": 0, "kind": "sampled_image" },
+        { "name": "outTex", "set": 0, "binding": 1, "kind": "storage_image", "access": "readwrite", "format": "rgba16f" },
+        { "name": "GradeGaussianBlurParams", "set": 0, "binding": 2, "kind": "ubo", "block_size": 16, "cpp_size": 16, "members": { "direction": 0, "radius": 8, "sigma": 12 } }
+      ]
+    },
+    {
       "source": "colorInvert.comp",
       "spirv": "colorInvert.comp.spv",
       "node": "color_invert",

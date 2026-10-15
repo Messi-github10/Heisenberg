@@ -39,6 +39,7 @@ public:
     QString currentFile() const { return currentFile_; }
     QString filterGraphPath() const { return filterGraphPath_; }
     bool previewingSource() const { return previewingSource_; }
+    std::optional<filtergraph::VulkanGraphDocument> filterGraphSnapshot() const;
     void showTimeline(qint64 focusFrame = -1);
     void previewAsset(const QString& mediaRef);
 
@@ -83,6 +84,7 @@ signals:
     void playbackFailed(const QString& message);
 
 private:
+    bool openSource(const QString& path, const std::string& mediaRef = {});
     void onStateChanged(heisenberg::IPreviewer::State state) override;
     void onPositionChanged(double seconds) override;
     void onDurationChanged(double seconds) override;

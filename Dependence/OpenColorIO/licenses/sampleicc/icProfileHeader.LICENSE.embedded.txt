@@ -1,0 +1,161 @@
+/** @file
+File:       icProfileHeader.h
+
+Contains:   ICC profile definitions and structures including Version 4 extensions
+
+Copyright:  © see ICC Software License
+
+* <b>
+* This version of the header file corresponds to the profile
+* specification version 4.2 as defined in ICC Specificion ICC.1:2004-04.
+*
+* Some definitions only provided by version 2.x profiles are also included.
+*
+* This header file should not be considered as a replacement for the ICC
+* profile specification.  The ICC profile specification should always be
+* considered the ULTIMATE authority related to the specifiation for
+* contents in ICC profile file.  Conflicts between this header file
+* and the ICC profile specification (if they exist) should be deferred
+* to the ICC profile specification.
+* </b>
+*
+* All header file entries are pre-fixed with "ic" to help
+* avoid name space collisions. Signatures are pre-fixed with
+* icSig.
+*
+* Note: This header assumes that int is at least a 32 bit quantity
+*
+* The structures defined in this header file were created to
+* represent a description of an ICC profile on disk. Rather
+* than use pointers a technique is used where a single byte array
+* was placed at the end of each structure. This allows us in "C"
+* to extend the structure by allocating more data than is needed
+* to account for variable length structures.
+*
+* This also ensures that data following is allocated
+* contiguously and makes it easier to write and read data from
+* the file.
+*
+* For example to allocate space for a 256 count length UCR
+* and BG array, and fill the allocated data.  Note strlen + 1
+* to remember NULL terminator.
+*
+icUcrBgCurve    *ucrCurve, *bgCurve;
+int             ucr_nbytes, bg_nbytes, string_bytes;
+icUcrBg         *ucrBgWrite;
+char            ucr_string[100], *ucr_char;
+
+strcpy(ucr_string, "Example ucrBG curves");
+ucr_nbytes = sizeof(icUInt32Number) +
+(UCR_CURVE_SIZE * sizeof(icUInt16Number));
+bg_nbytes = sizeof(icUInt32Number) +
+(BG_CURVE_SIZE * sizeof(icUInt16Number));
+string_bytes = strlen(ucr_string) + 1;
+
+ucrBgWrite = (icUcrBg *)malloc(
+(ucr_nbytes + bg_nbytes + string_bytes));
+
+ucrCurve = (icUcrBgCurve *)ucrBgWrite->data;
+ucrCurve->count = UCR_CURVE_SIZE;
+for (i=0; i<ucrCurve->count; i++)
+ucrCurve->curve[i] = (icUInt16Number)i;
+
+bgCurve = (icUcrBgCurve *)((char *)ucrCurve + ucr_nbytes);
+bgCurve->count = BG_CURVE_SIZE;
+for (i=0; i<bgCurve->count; i++)
+bgCurve->curve[i] = 255 - (icUInt16Number)i;
+
+ucr_char = (char *)((char *)bgCurve + bg_nbytes);
+memcpy(ucr_char, ucr_string, string_bytes);
+
+* Many of the structures contain variable length arrays. This
+* is represented by the use of the convention.
+*
+*      type    data[icAny];
+*/
+
+/*
+*
+*
+* Copyright (c) 2003-2006 The International Color Consortium.
+*
+*
+* THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESSED OR IMPLIED
+* WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+* OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+* DISCLAIMED.  IN NO EVENT SHALL THE INTERNATIONAL COLOR CONSORTIUM OR
+* ITS CONTRIBUTING MEMBERS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+* SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+* LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
+* USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+* ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+* OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+* OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+* SUCH DAMAGE.
+* ====================================================================
+*
+* This software consists of voluntary contributions made by many
+* individuals on behalf of the The International Color Consortium.
+*
+*
+* Membership in the ICC is encouraged when this software is used for
+* commercial purposes.
+*
+*
+* For more information on The International Color Consortium, please
+* see <http://www.color.org/>.
+*
+*
+*/
+
+
+/*****************************************************************
+Copyright (c) 2002  Heidelberger Druckmaschinen AG
+
+* THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESSED OR IMPLIED
+* WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+* OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+* DISCLAIMED.  IN NO EVENT SHALL THE INTERNATIONAL COLOR CONSORTIUM OR
+* ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+* SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+* LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
+* USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+* ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+* OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+* OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+* SUCH DAMAGE.
+******************************************************************/
+
+/*****************************************************************
+Copyright (c) 1994 SunSoft, Inc.
+
+Rights Reserved
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without restrict-
+ion, including without limitation the rights to use, copy, modify,
+merge, publish distribute, sublicense, and/or sell copies of the
+Software, and to permit persons to whom the Software is furnished
+to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-
+INFRINGEMENT.  IN NO EVENT SHALL SUNSOFT, INC. OR ITS PARENT
+COMPANY BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of SunSoft, Inc.
+shall not be used in advertising or otherwise to promote the
+sale, use or other dealings in this Software without written
+authorization from SunSoft Inc.
+******************************************************************/
+
+
+

@@ -1,695 +1,193 @@
 #include "VideoPresenter.hpp"
-
-#include "MultiMedia/Video/Renderer/RenderEngine.hpp"
-#include "MultiMedia/Video/Renderer/SwapChain.hpp"
-#include "Platform/D3D11/D3D11VulkanInterop.hpp"
-#include "MultiMedia/Video/Renderer/ColorSpaceUtils.hpp"
-#include "Platform/Vulkan/VulkanContext.hpp"
-#include "Platform/Software/SoftwareContext.hpp"
-
-#include <Common/FrameTime.hpp>
-#include <MultiMedia/Video/Renderer/FilterGraph/Interface/INodeFactory.hpp>
-#include <MultiMedia/Video/Renderer/FilterGraph/Interface/IPipeGraph.hpp>
+#include "SwapChain.hpp"
+#include "RenderEngine.hpp"
 #include <Utiles/Logger.hpp>
-
-#include <d3d11.h>
-#include <vulkan/vulkan.hpp>
-
-#include <exception>
 #include <utility>
-
-extern "C" {
-#include <libavutil/frame.h>
-#include <libavutil/pixfmt.h>
-#include <libplacebo/renderer.h>
-}
 
 namespace heisenberg::renderer {
 namespace {
-
-VkImage toC(vk::Image image) {
-    return static_cast<VkImage>(image);
+bool fail(std::string* error, const char* message) {
+    if (error) *error = message;
+    LOG_ERROR("VideoPresenter: {}", message);
+    return false;
 }
 
-VkImageView toC(vk::ImageView view) {
-    return static_cast<VkImageView>(view);
-}
-
-VkSemaphore toC(vk::Semaphore semaphore) {
-    return static_cast<VkSemaphore>(semaphore);
-}
-
-VkFormat toC(vk::Format format) {
-    return static_cast<VkFormat>(format);
-}
-
-VkImageLayout toC(vk::ImageLayout layout) {
-    return static_cast<VkImageLayout>(layout);
-}
-
-VkImageUsageFlags toCUsage(vk::ImageUsageFlags usage) {
-    return static_cast<VkImageUsageFlags>(usage);
-}
-
-pl_frame makeRgbFrame(pl_tex texture, int width, int height,
-                      const pl_color_space& color) {
-    pl_frame frame = {};
-    frame.num_planes = 1;
-    frame.planes[0].texture = texture;
-    frame.planes[0].components = 4;
-    frame.planes[0].component_mapping[0] = 0;
-    frame.planes[0].component_mapping[1] = 1;
-    frame.planes[0].component_mapping[2] = 2;
-    frame.planes[0].component_mapping[3] = 3;
-    frame.repr.sys = PL_COLOR_SYSTEM_RGB;
-    frame.repr.levels = PL_COLOR_LEVELS_PC;
-    frame.repr.alpha = PL_ALPHA_INDEPENDENT;
-    frame.color = color;
-    frame.crop = {0, 0, static_cast<float>(width), static_cast<float>(height)};
-    return frame;
-}
-
-pl_frame makeRgbFrameWithAspect(pl_tex texture, int texWidth, int texHeight,
-                                int srcWidth, int srcHeight,
-                                const pl_color_space& color) {
-    pl_frame frame = {};
-    frame.num_planes = 1;
-    frame.planes[0].texture = texture;
-    frame.planes[0].components = 4;
-    frame.planes[0].component_mapping[0] = 0;
-    frame.planes[0].component_mapping[1] = 1;
-    frame.planes[0].component_mapping[2] = 2;
-    frame.planes[0].component_mapping[3] = 3;
-    frame.repr.sys = PL_COLOR_SYSTEM_RGB;
-    frame.repr.levels = PL_COLOR_LEVELS_PC;
-    frame.repr.alpha = PL_ALPHA_INDEPENDENT;
-    frame.color = color;
-
-    // 计算保持宽高比的 crop 区域
-    float srcAspect = static_cast<float>(srcWidth) / static_cast<float>(srcHeight);
-    float dstAspect = static_cast<float>(texWidth) / static_cast<float>(texHeight);
-
-    float cropX = 0.0f, cropY = 0.0f;
-    float cropW = static_cast<float>(texWidth);
-    float cropH = static_cast<float>(texHeight);
-
-    if (srcAspect > dstAspect) {
-        // 源视频更宽，上下留黑边
-        cropH = cropW / srcAspect;
-        cropY = (static_cast<float>(texHeight) - cropH) * 0.5f;
-    } else {
-        // 源视频更窄，左右留黑边
-        cropW = cropH * srcAspect;
-        cropX = (static_cast<float>(texWidth) - cropW) * 0.5f;
+bool outputColorSpace(const ColorOutputRequest& selection, pl_color_space& color) {
+    // These are resolved OCIO output names, not the input/working-space tags.
+    // A view may tone-map, but the display still determines its final encoding.
+    const auto& space = selection.colorSpace.empty() ? selection.display : selection.colorSpace;
+    color = pl_color_space_srgb;
+    if (space == "sRGB - Display" || space == "sRGB Encoded Rec.709 (sRGB)") return true;
+    if (space == "Rec.1886 Rec.709 - Display") {
+        // The fixed studio config's Rec.1886 display is a pure 2.4 encoding.
+        if (selection.intent != ColorOutputIntent::SdrVideoPreview ||
+            selection.view != "Un-tone-mapped" || !selection.colorSpace.empty())
+            color.transfer = PL_COLOR_TRC_GAMMA24;
+        // The explicit video-preview intent presents these SDR code values
+        // unchanged, matching unmanaged SDR playback on the sRGB surface.
+        return true;
     }
-
-    frame.crop = {cropX, cropY, cropX + cropW, cropY + cropH};
-    return frame;
+    return false;
 }
 
-pl_color_space makeDisplayColor() {
-    pl_color_space color = {};
-    color.primaries = PL_COLOR_PRIM_BT_709;
-    color.transfer = PL_COLOR_TRC_SRGB;
-    return color;
-}
-
-pl_color_space makeWorkingColor(const pl_frame& source) {
-    (void)source;
-    return workingColorSpace();
-}
-
-bool isRgb16fD3D11(const AVFrame* frame) {
-    if (!frame || frame->format != AV_PIX_FMT_D3D11 || !frame->data[0]) {
+bool supportedTarget(pl_gpu gpu, const pl_swapchain_frame& target, VkFormat& format) {
+    if (!target.fbo || !target.fbo->params.renderable) return false;
+    if (!pl_vulkan_unwrap(gpu, target.fbo, &format, nullptr)) return false;
+    // Inspect the actual VkImage format, not pl_fmt.name. libplacebo 365 has no
+    // implicit-sRGB pl_fmt contract. Reject *_SRGB rather than sending encoded
+    // values to an implicit linear-write attachment (which would double encode).
+    switch (format) {
+    case VK_FORMAT_R8G8B8A8_UNORM:
+    case VK_FORMAT_B8G8R8A8_UNORM:
+    case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
+    case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+        break;
+    default:
         return false;
     }
-    D3D11_TEXTURE2D_DESC desc{};
-    reinterpret_cast<ID3D11Texture2D*>(frame->data[0])->GetDesc(&desc);
-    return desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    const auto& repr = target.color_repr;
+    const auto& space = target.color_space;
+    return repr.sys == PL_COLOR_SYSTEM_RGB && repr.levels == PL_COLOR_LEVELS_FULL &&
+           !repr.dovi && repr.bits.bit_shift == 0 &&
+           (!repr.bits.sample_depth || !repr.bits.color_depth || repr.bits.sample_depth == repr.bits.color_depth) &&
+           space.primaries == PL_COLOR_PRIM_BT_709 && space.transfer == PL_COLOR_TRC_SRGB &&
+           !pl_color_space_is_hdr(&space);
 }
 
-} // namespace
+pl_frame rgbFrame(pl_tex texture, const pl_color_space& color) {
+    pl_frame frame{};
+    frame.num_planes = 1;
+    frame.planes[0].texture = texture;
+    frame.planes[0].components = 4;
+    for (int i = 0; i < 4; ++i) frame.planes[0].component_mapping[i] = i;
+    frame.repr = pl_color_repr_rgb;
+    frame.repr.alpha = PL_ALPHA_INDEPENDENT;
+    frame.color = color;
+    frame.crop = {0, 0, static_cast<float>(texture->params.w), static_cast<float>(texture->params.h)};
+    return frame;
+}
+}
+
+bool blitPresentationFrame(pl_gpu gpu, RenderEngine& blitter, pl_tex texture,
+                           const ColorOutputRequest& selection,
+                           const pl_swapchain_frame& surface, std::string* error) {
+    if (error) error->clear();
+    if (!gpu || !texture || !texture->params.sampleable || texture->params.w <= 0 || texture->params.h <= 0)
+        return fail(error, "invalid presentation source");
+    pl_color_space sourceColor{};
+    if (!outputColorSpace(selection, sourceColor))
+        return fail(error, "unsupported/unknown encoded output selection; expected resolved sRGB or Rec.1886 Rec.709 output");
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    if (!supportedTarget(gpu, surface, format))
+        return fail(error, "unsupported surface contract; expected full-range BT.709 sRGB UNORM (no HDR/scRGB or implicit-sRGB attachment)");
+
+    auto source = rgbFrame(texture, sourceColor);
+    pl_frame target{};
+    // Includes surface repr, color, physical extent, component mapping and
+    // plane orientation. Do not replace these with requested window dimensions.
+    pl_frame_from_swapchain(&target, &surface);
+    const float width = static_cast<float>(surface.fbo->params.w);
+    const float height = static_cast<float>(surface.fbo->params.h);
+    const float aspect = static_cast<float>(texture->params.w) / texture->params.h;
+    target.crop = {0, 0, width, height};
+    if (aspect > width / height) {
+        const float h = width / aspect;
+        target.crop.y0 = (height - h) * 0.5f;
+        target.crop.y1 = target.crop.y0 + h;
+    } else {
+        const float w = height * aspect;
+        target.crop.x0 = (width - w) * 0.5f;
+        target.crop.x1 = target.crop.x0 + w;
+    }
+    pl_render_params params = pl_render_default_params;
+    params.disable_linear_scaling = true;
+    // Colorimetric Rec.1886 is adapted once to sRGB. Explicit SDR video preview
+    // instead preserves code values; neither path reruns an ACES rendering view.
+    if (!blitter.render(&source, &target, &params)) return fail(error, "final presentation blit failed");
+    return true;
+}
 
 struct VideoPresenter::Impl {
-    pl_gpu gpu = nullptr;
-    pl_vulkan vulkan = nullptr;
-
-    vk::Device vkDevice;
-    vk::PhysicalDevice vkPhysDevice;
-
-    std::unique_ptr<SoftwareContext> softwareContext;
-    std::unique_ptr<RenderEngine> renderEngine;
+    pl_gpu gpu = nullptr; pl_vulkan vulkan = nullptr;
     std::unique_ptr<SwapChain> swapChain;
-
-    ResizeCallback onResize;
-    PresentCallback onPresent;
-
-    int outputWidth = 0;
-    int outputHeight = 0;
-    bool initialized = false;
-
-    vk::Image intermediateImg = nullptr;
-    vk::ImageView intermediateView = nullptr;
-    vk::DeviceMemory intermediateMemory = nullptr;
-    vk::ImageLayout intermediateLayout = vk::ImageLayout::eUndefined;
-    int intermediateWidth = 0;
-    int intermediateHeight = 0;
-
-    vk::Semaphore interopSemaphore;
-    uint64_t interopValue = 0;
-    filtergraph::VulkanSyncPoint intermediateReleaseWait = {};
-
-    filtergraph::IPipeGraph* filterGraph = nullptr;
-    filtergraph::IInputNode* dagInput = nullptr;
-    filtergraph::IOutputNode* dagOutput = nullptr;
-    pl_color_space workingColor = {};
-    ID3D11Device* d3d11Device = nullptr;
-    ID3D11DeviceContext* d3d11Context = nullptr;
-    std::unique_ptr<D3D11VulkanInterop> interop;
-    int interopWidth = 0;
-    int interopHeight = 0;
+    std::unique_ptr<RenderEngine> blitter;
+    ResizeCallback onResize; PresentCallback onPresent;
+    int width = 0, height = 0;
+    VkSemaphore readDone = VK_NULL_HANDLE;
+    uint64_t readValue = 0;
+    bool loggedSurface = false;
 };
-
 VideoPresenter::VideoPresenter() : impl_(std::make_unique<Impl>()) {}
-
-VideoPresenter::~VideoPresenter() {
-    shutdown();
+VideoPresenter::~VideoPresenter() { shutdown(); }
+bool VideoPresenter::initialize(pl_gpu gpu, pl_vulkan vk, std::unique_ptr<SwapChain> swapChain, int width, int height) {
+    if (!gpu || !vk || !swapChain || !swapChain->isValid()) return false;
+    impl_->gpu = gpu; impl_->vulkan = vk; impl_->swapChain = std::move(swapChain);
+    impl_->width = width; impl_->height = height;
+    impl_->loggedSurface = false;
+    pl_vulkan_sem_params semaphore{}; semaphore.type = VK_SEMAPHORE_TYPE_TIMELINE;
+    impl_->readDone = pl_vulkan_sem_create(gpu, &semaphore);
+    if (!impl_->readDone) { shutdown(); return false; }
+    impl_->blitter = std::make_unique<RenderEngine>(gpu); return true;
 }
-
-bool VideoPresenter::initialize(pl_gpu gpu, pl_vulkan vulkan,
-                            std::unique_ptr<SwapChain> swapChain,
-                            int width, int height) {
-    if (!gpu || !vulkan || !swapChain || !swapChain->isValid()) {
-        LOG_ERROR("VideoPresenter: invalid initialization parameters");
-        return false;
-    }
-
-    impl_->gpu = gpu;
-    impl_->vulkan = vulkan;
-    impl_->vkDevice = vk::Device(vulkan->device);
-    impl_->vkPhysDevice = vk::PhysicalDevice(vulkan->phys_device);
-    impl_->swapChain = std::move(swapChain);
-    impl_->outputWidth = width;
-    impl_->outputHeight = height;
-
-    vk::SemaphoreTypeCreateInfo timelineInfo;
-    timelineInfo.semaphoreType = vk::SemaphoreType::eTimeline;
-    timelineInfo.initialValue = 0;
-    vk::SemaphoreCreateInfo semaphoreInfo;
-    semaphoreInfo.pNext = &timelineInfo;
-    impl_->interopSemaphore = impl_->vkDevice.createSemaphore(semaphoreInfo);
-
-    try {
-        impl_->softwareContext = std::make_unique<SoftwareContext>(gpu);
-        impl_->renderEngine = std::make_unique<RenderEngine>(gpu);
-    } catch (const std::exception& error) {
-        LOG_ERROR("VideoPresenter: renderer initialization failed: {}", error.what());
-        shutdown();
-        return false;
-    }
-
-    impl_->initialized = true;
-    LOG_INFO("VideoPresenter: initialized {}x{}", width, height);
-    return true;
-}
-
 void VideoPresenter::shutdown() {
-    if (!impl_) return;
-
-    // Stop accepting work first, then wait for every submission on the
-    // graphics queue before destroying swapchain or texture resources.
-    impl_->initialized = false;
-    if (impl_->vkDevice) {
-        impl_->vkDevice.waitIdle();
-    }
-
-    releaseIntermediateTarget();
-    if (impl_->interop) {
-        impl_->interop->shutdown();
-        impl_->interop.reset();
-    }
-    impl_->interopWidth = 0;
-    impl_->interopHeight = 0;
-    if (impl_->interopSemaphore) {
-        impl_->vkDevice.destroySemaphore(impl_->interopSemaphore);
-        impl_->interopSemaphore = nullptr;
-    }
-    if (impl_->swapChain) impl_->swapChain->shutdown();
-    if (impl_->softwareContext) impl_->softwareContext->shutdown();
-    impl_->renderEngine.reset();
-    impl_->filterGraph = nullptr;
-    impl_->dagInput = nullptr;
-    impl_->dagOutput = nullptr;
-    impl_->onResize = nullptr;
-    impl_->onPresent = nullptr;
+    if (!impl_->gpu) return;
+    pl_gpu_finish(impl_->gpu);
+    impl_->blitter.reset(); impl_->swapChain.reset();
+    if (impl_->readDone) pl_vulkan_sem_destroy(impl_->gpu, &impl_->readDone);
+    impl_->gpu = nullptr; impl_->vulkan = nullptr;
 }
-
 void VideoPresenter::resize(int width, int height) {
-    if (!impl_->initialized) return;
-    impl_->outputWidth = width;
-    impl_->outputHeight = height;
-    if (impl_->swapChain) {
-        int actualWidth = width;
-        int actualHeight = height;
-        impl_->swapChain->resize(&actualWidth, &actualHeight);
-    }
-    if (impl_->onResize) impl_->onResize(width, height);
+    impl_->width = width; impl_->height = height;
+    if (impl_->swapChain) impl_->swapChain->resize(&width,&height);
+    if (impl_->onResize) impl_->onResize(width,height);
 }
-
-void VideoPresenter::setOnResize(ResizeCallback callback) {
-    impl_->onResize = std::move(callback);
-}
-
-void VideoPresenter::setOnPresent(PresentCallback callback) {
-    impl_->onPresent = std::move(callback);
-}
-
-void VideoPresenter::setFilterGraph(filtergraph::IPipeGraph* graph,
-                                filtergraph::IInputNode* input,
-                                filtergraph::IOutputNode* output) {
-    impl_->filterGraph = graph;
-    impl_->dagInput = input;
-    impl_->dagOutput = output;
-    impl_->intermediateReleaseWait = {};
-}
-
-void VideoPresenter::setD3D11Device(ID3D11Device* device,
-                                ID3D11DeviceContext* context) {
-    impl_->d3d11Device = device;
-    impl_->d3d11Context = context;
-    if ((!device || !context) && impl_->interop) {
-        impl_->interop->shutdown();
-        impl_->interop.reset();
-        impl_->interopWidth = 0;
-        impl_->interopHeight = 0;
-    }
-}
-
-bool VideoPresenter::buildIntermediateTarget(int width, int height) {
-    if (width <= 0 || height <= 0) return false;
-
-    vk::ImageCreateInfo imageInfo;
-    imageInfo.imageType = vk::ImageType::e2D;
-    imageInfo.format = vk::Format::eR16G16B16A16Sfloat;
-    imageInfo.extent = vk::Extent3D{
-        static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
-    imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
-    imageInfo.samples = vk::SampleCountFlagBits::e1;
-    imageInfo.tiling = vk::ImageTiling::eOptimal;
-    imageInfo.usage = vk::ImageUsageFlagBits::eStorage
-        | vk::ImageUsageFlagBits::eSampled
-        | vk::ImageUsageFlagBits::eColorAttachment
-        | vk::ImageUsageFlagBits::eTransferSrc
-        | vk::ImageUsageFlagBits::eTransferDst;
-    imageInfo.sharingMode = vk::SharingMode::eExclusive;
-    imageInfo.initialLayout = vk::ImageLayout::eUndefined;
-
-    impl_->intermediateImg = impl_->vkDevice.createImage(imageInfo);
-    if (!impl_->intermediateImg) return false;
-
-    const vk::MemoryRequirements requirements =
-        impl_->vkDevice.getImageMemoryRequirements(impl_->intermediateImg);
-    const vk::PhysicalDeviceMemoryProperties properties =
-        impl_->vkPhysDevice.getMemoryProperties();
-
-    uint32_t memoryType = properties.memoryTypeCount;
-    for (uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
-        if ((requirements.memoryTypeBits & (1u << i))
-            && (properties.memoryTypes[i].propertyFlags
-                & vk::MemoryPropertyFlagBits::eDeviceLocal)) {
-            memoryType = i;
-            break;
+void VideoPresenter::setOnResize(ResizeCallback callback) { impl_->onResize = std::move(callback); }
+void VideoPresenter::setOnPresent(PresentCallback callback) { impl_->onPresent = std::move(callback); }
+bool VideoPresenter::presentFrame(const RenderedFrame& frame) {
+    if (!impl_->gpu || !impl_->swapChain || !frame || !frame.encoded() || impl_->width <= 0 || impl_->height <= 0) return false;
+    pl_color_space sourceColor{};
+    if (!outputColorSpace(frame.outputSelectionMetadata(), sourceColor))
+        return fail(nullptr, "unsupported/unknown RenderedFrame output encoding");
+    const auto image = frame.image();
+    pl_vulkan_wrap_params wp{}; wp.image = image.image; wp.width = image.extent.width; wp.height = image.extent.height; wp.format = image.vkFormat; wp.usage = image.usage;
+    auto sourceTexture = pl_vulkan_wrap(impl_->gpu,&wp); if (!sourceTexture) return false;
+    pl_vulkan_release_params release{}; release.tex = sourceTexture; release.layout = image.layout; release.qf = image.queueFamilyIndex;
+    release.semaphore.sem = image.ready.semaphore; release.semaphore.value = image.ready.value;
+    pl_vulkan_release_ex(impl_->gpu,&release);
+    pl_swapchain_frame surface{};
+    const bool acquired = impl_->swapChain->startFrame(impl_->width, impl_->height, surface);
+    bool success = acquired;
+    if (acquired) {
+        if (!impl_->loggedSurface && surface.fbo) {
+            VkFormat format = VK_FORMAT_UNDEFINED;
+            pl_vulkan_unwrap(impl_->gpu, surface.fbo, &format, nullptr);
+            const auto plFormat = surface.fbo->params.format;
+            LOG_INFO("VideoPresenter: actual surface VkFormat={} ({}) plformat={} extent={}x{} repr(sys={},levels={},alpha={},sample_depth={},color_depth={},shift={}) primaries={} transfer={} flipped={}",
+                     static_cast<int>(format), vk::to_string(static_cast<vk::Format>(format)), plFormat ? plFormat->name : "unknown",
+                     surface.fbo->params.w, surface.fbo->params.h,
+                     static_cast<int>(surface.color_repr.sys), static_cast<int>(surface.color_repr.levels), static_cast<int>(surface.color_repr.alpha),
+                     surface.color_repr.bits.sample_depth, surface.color_repr.bits.color_depth, surface.color_repr.bits.bit_shift,
+                     pl_color_primaries_name(surface.color_space.primaries), pl_color_transfer_name(surface.color_space.transfer), surface.flipped);
+            impl_->loggedSurface = true;
+        }
+        success = blitPresentationFrame(impl_->gpu, *impl_->blitter, sourceTexture, frame.outputSelectionMetadata(), surface);
+        if (!success && surface.fbo) {
+            // There is no swapchain cancel API. Consume the acquired frame in
+            // lockstep, but never expose unknown/incorrect encoded image data.
+            const float black[4] = {0, 0, 0, 1};
+            pl_tex_clear(impl_->gpu, surface.fbo, black);
         }
     }
-    if (memoryType == properties.memoryTypeCount) {
-        releaseIntermediateTarget();
-        return false;
-    }
-
-    vk::MemoryAllocateInfo allocation;
-    allocation.allocationSize = requirements.size;
-    allocation.memoryTypeIndex = memoryType;
-    impl_->intermediateMemory = impl_->vkDevice.allocateMemory(allocation);
-    if (!impl_->intermediateMemory) {
-        releaseIntermediateTarget();
-        return false;
-    }
-    impl_->vkDevice.bindImageMemory(
-        impl_->intermediateImg, impl_->intermediateMemory, 0);
-
-    vk::ImageViewCreateInfo viewInfo;
-    viewInfo.image = impl_->intermediateImg;
-    viewInfo.viewType = vk::ImageViewType::e2D;
-    viewInfo.format = vk::Format::eR16G16B16A16Sfloat;
-    viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.layerCount = 1;
-    impl_->intermediateView = impl_->vkDevice.createImageView(viewInfo);
-    if (!impl_->intermediateView) {
-        releaseIntermediateTarget();
-        return false;
-    }
-
-    impl_->intermediateLayout = vk::ImageLayout::eUndefined;
-    impl_->intermediateWidth = width;
-    impl_->intermediateHeight = height;
-    return true;
-}
-
-void VideoPresenter::releaseIntermediateTarget() {
-    if (!impl_->vkDevice) return;
-    if (impl_->intermediateView || impl_->intermediateImg) {
-        impl_->vkDevice.waitIdle();
-    }
-    if (impl_->intermediateView) {
-        impl_->vkDevice.destroyImageView(impl_->intermediateView);
-        impl_->intermediateView = nullptr;
-    }
-    if (impl_->intermediateImg) {
-        impl_->vkDevice.destroyImage(impl_->intermediateImg);
-        impl_->intermediateImg = nullptr;
-    }
-    if (impl_->intermediateMemory) {
-        impl_->vkDevice.freeMemory(impl_->intermediateMemory);
-        impl_->intermediateMemory = nullptr;
-    }
-    impl_->intermediateLayout = vk::ImageLayout::eUndefined;
-    impl_->intermediateWidth = 0;
-    impl_->intermediateHeight = 0;
-    impl_->intermediateReleaseWait = {};
-}
-
-bool VideoPresenter::presentFrame(const AVFrame* avframe) {
-    if (!avframe || !impl_->initialized || !impl_->swapChain->isValid()) {
-        return false;
-    }
-    const int outputWidth = impl_->outputWidth;
-    const int outputHeight = impl_->outputHeight;
-    if (outputWidth <= 0 || outputHeight <= 0) return false;
-
-    if (avframe->format == AV_PIX_FMT_D3D11) {
-        return presentHardwareFrame(avframe);
-    }
-
-    const pl_frame* source = impl_->softwareContext->uploadAvFrame(avframe);
-    if (!source) return false;
-
-    if (!impl_->filterGraph || !impl_->dagInput || !impl_->dagOutput) {
-        const bool result =
-            renderToSwapChain(source, outputWidth, outputHeight);
-        if (result && impl_->onPresent) impl_->onPresent();
-        return result;
-    }
-
-    const int workWidth = avframe->width;
-    const int workHeight = avframe->height;
-    if (workWidth <= 0 || workHeight <= 0) return false;
-    if (!impl_->intermediateImg || impl_->intermediateWidth != workWidth
-        || impl_->intermediateHeight != workHeight) {
-        releaseIntermediateTarget();
-        if (!buildIntermediateTarget(workWidth, workHeight)) return false;
-    }
-
-    const vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eStorage
-        | vk::ImageUsageFlagBits::eSampled
-        | vk::ImageUsageFlagBits::eColorAttachment
-        | vk::ImageUsageFlagBits::eTransferSrc
-        | vk::ImageUsageFlagBits::eTransferDst;
-    pl_vulkan_wrap_params wrapParams = {};
-    wrapParams.image = toC(impl_->intermediateImg);
-    wrapParams.width = workWidth;
-    wrapParams.height = workHeight;
-    wrapParams.format = toC(vk::Format::eR16G16B16A16Sfloat);
-    wrapParams.usage = toCUsage(usage);
-
-    pl_tex targetTexture = pl_vulkan_wrap(impl_->gpu, &wrapParams);
-    if (!targetTexture) return false;
-
-    pl_vulkan_release_params releaseParams = {};
-    releaseParams.tex = targetTexture;
-    releaseParams.layout = toC(impl_->intermediateLayout);
-    releaseParams.qf = impl_->vulkan->queue_graphics.index;
-    releaseParams.semaphore.sem = impl_->intermediateReleaseWait.semaphore;
-    releaseParams.semaphore.value = impl_->intermediateReleaseWait.value;
-    pl_vulkan_release_ex(impl_->gpu, &releaseParams);
-
-    impl_->workingColor = makeWorkingColor(*source);
-    pl_frame workingFrame = makeRgbFrame(
-        targetTexture, workWidth, workHeight, impl_->workingColor);
-    if (!impl_->renderEngine->render(source, &workingFrame)) {
-        pl_tex_destroy(impl_->gpu, &targetTexture);
-        return false;
-    }
-
+    // Synchronous final read: the lease may be released immediately after this
+    // call and no borrowed swapchain/graph resource escapes to another frame.
     pl_gpu_flush(impl_->gpu);
-    pl_vulkan_hold_params holdParams = {};
-    holdParams.tex = targetTexture;
-    holdParams.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    holdParams.qf = impl_->vulkan->queue_graphics.index;
-    holdParams.semaphore.sem = toC(impl_->interopSemaphore);
-    holdParams.semaphore.value = ++impl_->interopValue;
-    if (!pl_vulkan_hold_ex(impl_->gpu, &holdParams)) {
-        pl_tex_destroy(impl_->gpu, &targetTexture);
-        return false;
-    }
-    pl_tex_destroy(impl_->gpu, &targetTexture);
-    impl_->intermediateLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-
-    filtergraph::VulkanImageRef graphInput;
-    graphInput.image = toC(impl_->intermediateImg);
-    graphInput.view = toC(impl_->intermediateView);
-    graphInput.vkFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-    graphInput.extent = {
-        static_cast<uint32_t>(workWidth), static_cast<uint32_t>(workHeight)};
-    graphInput.usage = toCUsage(usage);
-    graphInput.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    graphInput.queueFamilyIndex = impl_->vulkan->queue_graphics.index;
-    graphInput.ready = {toC(impl_->interopSemaphore), impl_->interopValue};
-    graphInput.contract = filtergraph::kWorkingImageContract;
-    if (!impl_->dagInput->setVulkanInput(graphInput)) return false;
-
-    filtergraph::FrameContext frameContext;
-    frameContext.pts = avframe->pts;
-    frameContext.timeBaseNum = avframe->time_base.num;
-    frameContext.timeBaseDen = avframe->time_base.den;
-    frameContext.timeSeconds = frameTimeSeconds(*avframe);
-    if (!impl_->filterGraph->run(frameContext)) return false;
-
-    filtergraph::VulkanImageRef graphOutput;
-    if (!impl_->dagOutput->getVulkanOutput(graphOutput)
-        || !graphOutput.valid()) {
-        impl_->vkDevice.waitIdle();
-        return false;
-    }
-    impl_->intermediateReleaseWait = graphOutput.ready;
-
-    const bool result = renderToSwapChain(graphOutput);
-    if (result && impl_->onPresent) impl_->onPresent();
-    return result;
+    pl_vulkan_hold_params hold{}; hold.tex = sourceTexture; hold.layout = image.layout; hold.qf = image.queueFamilyIndex;
+    hold.semaphore.sem = impl_->readDone; hold.semaphore.value = ++impl_->readValue;
+    const bool returned = pl_vulkan_hold_ex(impl_->gpu,&hold);
+    pl_gpu_finish(impl_->gpu); pl_tex_destroy(impl_->gpu,&sourceTexture);
+    // Even failure must unlock an acquired swapchain frame.
+    const bool submitted = acquired && impl_->swapChain->submitFrame();
+    if (!success || !returned || !submitted) return false;
+    impl_->swapChain->swapBuffers(); if (impl_->onPresent) impl_->onPresent(); return true;
 }
-
-bool VideoPresenter::presentHardwareFrame(const AVFrame* avframe) {
-    if (!avframe || !impl_->d3d11Device || !impl_->d3d11Context
-        || !impl_->vulkan || !impl_->swapChain) return false;
-    const int width = avframe->width;
-    const int height = avframe->height;
-    if (width <= 0 || height <= 0) return false;
-
-    const bool rgbCanvas = isRgb16fD3D11(avframe);
-    // Decoder NV12 still converts into the scene-linear working image.
-    // Profile canvas frames already live in the timeline working space.
-    impl_->workingColor = rgbCanvas
-        ? colorSpaceFromAvFrame(avframe)
-        : workingColorSpace();
-
-    if (!impl_->interop || impl_->interopWidth != width
-        || impl_->interopHeight != height) {
-        if (impl_->interop) impl_->interop->shutdown();
-        impl_->interop = std::make_unique<D3D11VulkanInterop>();
-        const auto& vkContext = VulkanContext::instance();
-        if (!impl_->interop->init(
-                impl_->d3d11Device, impl_->d3d11Context,
-                static_cast<VkDevice>(impl_->vkDevice),
-                static_cast<VkPhysicalDevice>(impl_->vkPhysDevice),
-                static_cast<VkQueue>(vkContext.graphicsQueue()),
-                vkContext.graphicsQueueFamily(), width, height)) {
-            impl_->interop.reset();
-            impl_->interopWidth = 0;
-            impl_->interopHeight = 0;
-            return false;
-        }
-        impl_->interopWidth = width;
-        impl_->interopHeight = height;
-    }
-
-    filtergraph::VulkanImageRef graphInput;
-    const bool imported = rgbCanvas
-        ? impl_->interop->processRgbFrame(avframe, graphInput)
-        : impl_->interop->processFrame(avframe, graphInput);
-    if (!imported) {
-        LOG_ERROR("VideoPresenter: D3D11/Vulkan interop processFrame failed");
-        return false;
-    }
-
-    if (!impl_->filterGraph || !impl_->dagInput || !impl_->dagOutput) {
-        const uint64_t previousInteropValue = impl_->interopValue;
-        const bool rendered = renderToSwapChain(graphInput);
-        if (!rendered) {
-            LOG_ERROR("VideoPresenter: rendering imported D3D11 frame to swapchain failed");
-        }
-        const filtergraph::VulkanSyncPoint done =
-            impl_->interopValue != previousInteropValue
-                ? filtergraph::VulkanSyncPoint{
-                      static_cast<VkSemaphore>(impl_->interopSemaphore),
-                      impl_->interopValue}
-                : graphInput.ready;
-        impl_->interop->releaseFrame(done);
-        if (rendered && impl_->onPresent) impl_->onPresent();
-        return rendered;
-    }
-
-    if (!impl_->dagInput->setVulkanInput(graphInput)) {
-        LOG_ERROR("VideoPresenter: failed to set hardware frame as graph input");
-        impl_->interop->releaseFrame(graphInput.ready);
-        return false;
-    }
-    filtergraph::FrameContext frameContext;
-    frameContext.pts = avframe->pts;
-    frameContext.timeBaseNum = avframe->time_base.num;
-    frameContext.timeBaseDen = avframe->time_base.den;
-    frameContext.timeSeconds = frameTimeSeconds(*avframe);
-    if (!impl_->filterGraph->run(frameContext)) {
-        LOG_ERROR("VideoPresenter: filter graph failed for hardware frame");
-        impl_->interop->releaseFrame(graphInput.ready);
-        return false;
-    }
-
-    filtergraph::VulkanImageRef graphOutput;
-    if (!impl_->dagOutput->getVulkanOutput(graphOutput)
-        || !graphOutput.valid()) {
-        impl_->vkDevice.waitIdle();
-        impl_->interop->releaseFrame(graphInput.ready);
-        return false;
-    }
-    const uint64_t previousInteropValue = impl_->interopValue;
-    const bool rendered = renderToSwapChain(graphOutput);
-    if (!rendered) {
-        LOG_ERROR("VideoPresenter: rendering filter graph output to swapchain failed");
-    }
-    const filtergraph::VulkanSyncPoint done =
-        impl_->interopValue != previousInteropValue
-            ? filtergraph::VulkanSyncPoint{
-                  static_cast<VkSemaphore>(impl_->interopSemaphore),
-                  impl_->interopValue}
-            : graphInput.ready;
-    impl_->interop->releaseFrame(done);
-    if (rendered && impl_->onPresent) impl_->onPresent();
-    return rendered;
-}
-
-bool VideoPresenter::renderToSwapChain(
-    const pl_frame* source, int width, int height) {
-    if (!source) return false;
-    pl_tex framebuffer = impl_->swapChain->startFrame(width, height);
-    if (!framebuffer) return false;
-
-    // 获取源帧的尺寸
-    int srcWidth = static_cast<int>(source->crop.x1 - source->crop.x0);
-    int srcHeight = static_cast<int>(source->crop.y1 - source->crop.y0);
-
-    const pl_color_space displayColor = makeDisplayColor();
-    pl_frame target = makeRgbFrameWithAspect(framebuffer, width, height,
-                                             srcWidth, srcHeight, displayColor);
-    if (!impl_->renderEngine->render(source, &target)) return false;
-    if (!impl_->swapChain->submitFrame()) return false;
-    impl_->swapChain->swapBuffers();
-    return true;
-}
-
-bool VideoPresenter::renderToSwapChain(
-    const filtergraph::VulkanImageRef& image) {
-    if (!image.valid()) return false;
-
-    pl_vulkan_wrap_params wrapParams = {};
-    wrapParams.image = image.image;
-    wrapParams.width = static_cast<int>(image.extent.width);
-    wrapParams.height = static_cast<int>(image.extent.height);
-    wrapParams.format = image.vkFormat;
-    wrapParams.usage = image.usage;
-    pl_tex sourceTexture = pl_vulkan_wrap(impl_->gpu, &wrapParams);
-    if (!sourceTexture) {
-        LOG_ERROR("VideoPresenter: failed to wrap imported Vulkan image");
-        return false;
-    }
-
-    pl_vulkan_release_params releaseParams = {};
-    releaseParams.tex = sourceTexture;
-    releaseParams.layout = image.layout;
-    releaseParams.qf = image.queueFamilyIndex;
-    releaseParams.semaphore.sem = image.ready.semaphore;
-    releaseParams.semaphore.value = image.ready.value;
-    pl_vulkan_release_ex(impl_->gpu, &releaseParams);
-
-    pl_tex framebuffer = impl_->swapChain->startFrame(
-        impl_->outputWidth, impl_->outputHeight);
-    bool rendered = framebuffer != nullptr;
-    if (!framebuffer) {
-        LOG_ERROR("VideoPresenter: swapchain startFrame failed ({}x{})",
-                  impl_->outputWidth, impl_->outputHeight);
-    }
-    if (rendered) {
-        if (image.contract != filtergraph::kWorkingImageContract) {
-            LOG_ERROR("VideoPresenter: graph output violates the working image contract");
-            rendered = false;
-        }
-        pl_frame source = makeRgbFrame(
-            sourceTexture, static_cast<int>(image.extent.width),
-            static_cast<int>(image.extent.height), impl_->workingColor);
-        const pl_color_space displayColor = makeDisplayColor();
-        pl_frame target = makeRgbFrameWithAspect(
-            framebuffer, impl_->outputWidth, impl_->outputHeight,
-            static_cast<int>(image.extent.width),
-            static_cast<int>(image.extent.height), displayColor);
-        if (rendered) {
-            rendered = impl_->renderEngine->render(&source, &target);
-            if (!rendered) {
-                LOG_ERROR("VideoPresenter: libplacebo failed to render imported image");
-            }
-        }
-    }
-
-    pl_gpu_flush(impl_->gpu);
-    pl_vulkan_hold_params holdParams = {};
-    holdParams.tex = sourceTexture;
-    holdParams.layout = image.layout;
-    holdParams.qf = image.queueFamilyIndex;
-    holdParams.semaphore.sem = toC(impl_->interopSemaphore);
-    holdParams.semaphore.value = ++impl_->interopValue;
-    if (!pl_vulkan_hold_ex(impl_->gpu, &holdParams)) {
-        LOG_ERROR("VideoPresenter: failed to release swapchain image ownership");
-        pl_tex_destroy(impl_->gpu, &sourceTexture);
-        return false;
-    }
-    pl_tex_destroy(impl_->gpu, &sourceTexture);
-
-    filtergraph::VulkanImageRef returnedImage = image;
-    returnedImage.ready = {
-        toC(impl_->interopSemaphore), impl_->interopValue};
-    if (impl_->dagOutput) {
-        impl_->dagOutput->releaseVulkanOutput(returnedImage);
-    }
-    if (image.image == toC(impl_->intermediateImg)) {
-        impl_->intermediateReleaseWait = returnedImage.ready;
-    }
-
-    if (!rendered) return false;
-    if (!impl_->swapChain->submitFrame()) {
-        LOG_ERROR("VideoPresenter: swapchain submitFrame failed");
-        return false;
-    }
-    impl_->swapChain->swapBuffers();
-    return true;
-}
-
 } // namespace heisenberg::renderer

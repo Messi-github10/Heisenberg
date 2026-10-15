@@ -28,6 +28,10 @@ public:
                     void* hwnd, int width, int height);
     void shutdown();
 
+    // Preserve the complete surface contract, including repr, colorspace and
+    // orientation. A successful acquire must be paired with submitFrame().
+    bool startFrame(int width, int height, pl_swapchain_frame& target);
+    // Compatibility for callers which do not render color-managed content.
     pl_tex startFrame(int width, int height);
 
     bool submitFrame();

@@ -233,7 +233,8 @@ enum class ColorTransfer : int32_t {
     s_log1    = 15,
     s_log2    = 16,
     scrgb     = 17,
-    count     = 18,
+    acescct   = 18,
+    count     = 19,
 };
 
 enum class AlphaMode : int32_t {
@@ -258,7 +259,7 @@ struct GraphImageContract {
 // 运行时语义契约
 inline constexpr GraphImageContract kWorkingImageContract{
     toFormatId(ImageType::rgba16f),
-    ColorPrimaries::bt2020,
+    ColorPrimaries::aces_ap1,
     ColorTransfer::linear,
     AlphaMode::straight,
 };
@@ -320,6 +321,8 @@ struct VulkanGraphContext {
     VkDevice         device            = VK_NULL_HANDLE;
     VkQueue          queue             = VK_NULL_HANDLE;
     uint32_t         queueFamilyIndex  = VK_QUEUE_FAMILY_IGNORED;
+    // Execution semantics supplied by the caller, not a color transform policy.
+    GraphImageContract imageContract = kWorkingImageContract;
 };
 
 struct FrameContext {

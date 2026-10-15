@@ -28,6 +28,12 @@ void EditorViewModelTimelines::replace(ProjectFile project) {
 }
 bool EditorViewModelTimelines::undo() {
     if (undo_.empty()) return false;
+    if (undo_.back().colorBefore) {
+        auto entry = std::move(undo_.back()); undo_.pop_back();
+        project_.colorSettings = *entry.colorBefore;
+        redo_.push_back(std::move(entry));
+        return true;
+    }
     auto found = std::find_if(project_.timelines.begin(), project_.timelines.end(),
                              [&](const auto& timeline) { return timeline.id == undo_.back().timelineId; });
     if (found == project_.timelines.end()) return false;
@@ -40,6 +46,12 @@ bool EditorViewModelTimelines::undo() {
 }
 bool EditorViewModelTimelines::redo() {
     if (redo_.empty()) return false;
+    if (redo_.back().colorAfter) {
+        auto entry = std::move(redo_.back()); redo_.pop_back();
+        project_.colorSettings = *entry.colorAfter;
+        undo_.push_back(std::move(entry));
+        return true;
+    }
     auto found = std::find_if(project_.timelines.begin(), project_.timelines.end(),
                              [&](const auto& timeline) { return timeline.id == redo_.back().timelineId; });
     if (found == project_.timelines.end()) return false;

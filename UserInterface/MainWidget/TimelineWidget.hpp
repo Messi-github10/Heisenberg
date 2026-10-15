@@ -39,6 +39,7 @@ public:
     void splitSelectedClip();
     void removeSelectedClip();
     void editSelectedClipAudio();
+    void editSelectedClipGrade();
     void setFrameCount(qint64 frameCount);
     void setCurrentFrame(qint64 frame);
     void setPlaying(bool playing);

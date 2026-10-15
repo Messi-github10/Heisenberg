@@ -11,6 +11,12 @@
 #include "Backend/EditorSession.hpp"
 #include "Backend/MediaInfoProbe.hpp"
 
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QComboBox>
+#include <QFormLayout>
+#include <QTableWidget>
+#include <QHeaderView>
 #include <QAction>
 #include <QCloseEvent>
 #include <QFutureWatcher>
@@ -102,6 +108,12 @@ void MainWindow::setupUi() {
     splitAction->setObjectName("splitAtPlayhead");
     splitAction->setToolTip(tr("Select a clip, place the playhead inside it, then split (S when the timeline has focus)."));
 
+    auto* exportAction = fileMenu->addAction(tr("Export Timeline..."));
+    exportAction->setObjectName("exportTimeline");
+    auto* colorAction = editMenu->addAction(tr("Color Settings..."));
+    colorAction->setObjectName("colorSettings");
+    connect(colorAction, &QAction::triggered, this, &MainWindow::showColorSettings);
+    connect(exportAction, &QAction::triggered, this, &MainWindow::exportTimelineRequested);
     auto* playbackMenu = menuBar()->addMenu(tr("Playback"));
     playPauseAction_ = playbackMenu->addAction(
         style()->standardIcon(QStyle::SP_MediaPlay), tr("Play / Pause"));
@@ -415,6 +427,116 @@ void MainWindow::showFileInfo(const QString& path) {
         const auto probe = heisenberg::mediainfo::probeFile(path.toUtf8().toStdString());
         return heisenberg::ui::presentProbe(probe, path);
     }));
+}
+
+void MainWindow::showColorSettings() {
+    auto settings = session_->editor().project().colorSettings;
+    QDialog dialog(this);
+    dialog.setObjectName("colorSettingsDialog");
+    dialog.setWindowTitle(tr("Color Settings"));
+    dialog.resize(760, 420);
+    auto* form = new QFormLayout(&dialog);
+    const auto outputText = [](const heisenberg::OutputSelection& selection) {
+        return QString::fromUtf8(selection.display.c_str()) + " / " + QString::fromUtf8(selection.view.c_str());
+    };
+    auto* config = new QLabel(QString::fromUtf8(settings.configId.c_str()), &dialog);
+    config->setWordWrap(true); form->addRow(tr("Configuration"), config);
+    auto* mode = new QComboBox(&dialog);
+    mode->setObjectName("colorMode");
+    mode->addItem(tr("Ordinary SDR (preserve finished appearance)"), QStringLiteral("sdr"));
+    mode->addItem(tr("ACES rendering"), QStringLiteral("aces"));
+    const auto originalSettings = settings;
+    const bool supported = heisenberg::supportedColorSettings(settings);
+    const bool legacy = supported && settings.inputPolicyVersion == 1;
+    const auto matchesOutputs = [&](const char* view) {
+        return settings.previewOutput == heisenberg::OutputSelection{"sRGB - Display", view} &&
+            settings.exportOutput == heisenberg::OutputSelection{"Rec.1886 Rec.709 - Display", view};
+    };
+    if (legacy) {
+        mode->addItem(tr("Legacy ACES (policy v1; preserved)"), QStringLiteral("legacy"));
+        mode->setCurrentIndex(mode->count() - 1);
+    } else if (supported && matchesOutputs("Un-tone-mapped")) {
+        mode->setCurrentIndex(0);
+    } else if (supported && matchesOutputs("ACES 2.0 - SDR 100 nits (Rec.709)")) {
+        mode->setCurrentIndex(1);
+    } else {
+        mode->addItem(tr("Preserved saved settings"), QStringLiteral("preserved"));
+        mode->setCurrentIndex(mode->count() - 1);
+    }
+    mode->setEnabled(supported);
+    form->addRow(tr("Color mode"), mode);
+    auto* summary = new QLabel(&dialog);
+    summary->setObjectName("colorModeSummary");
+    summary->setWordWrap(true); form->addRow(summary);
+    auto* preview = new QLabel(outputText(settings.previewOutput), &dialog);
+    preview->setObjectName("previewColorOutput");
+    auto* exportOutput = new QLabel(outputText(settings.exportOutput), &dialog);
+    exportOutput->setObjectName("exportColorOutput");
+    form->addRow(tr("Preview output"), preview);
+    form->addRow(tr("Export output (SDR)"), exportOutput);
+    auto* hint = new QLabel(tr("Working space: ACEScg. Ordinary SDR previews finished Rec.709 video without an extra display-gamma conversion; export remains Rec.709. ACES rendering applies the ACES view. Input overrides take priority in either mode and apply to every clip using that media. Automatic input keeps warnings for unknown metadata; select camera/log inputs explicitly."), &dialog);
+    hint->setWordWrap(true); form->addRow(hint);
+    const auto assets = session_->editor().assets();
+    auto* table = new QTableWidget(static_cast<int>(assets.size()), 2, &dialog);
+    table->setObjectName("inputColorSpaces");
+    table->setHorizontalHeaderLabels({tr("Media"), tr("Input color space")});
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    std::vector<QComboBox*> inputs;
+    for (size_t i = 0; i < assets.size(); ++i) {
+        auto* item = new QTableWidgetItem(QString::fromUtf8(assets[i].name.c_str()));
+        item->setFlags(item->flags() & ~Qt::ItemIsEditable); table->setItem(static_cast<int>(i), 0, item);
+        auto* combo = new QComboBox(table);
+        combo->setObjectName(QString("inputSpace_%1").arg(QString::fromStdString(assets[i].id)));
+        combo->addItem(tr("Automatic (policy v%1)").arg(settings.inputPolicyVersion), QString());
+        for (const char* space : {"sRGB Encoded Rec.709 (sRGB)", "Rec.1886 Rec.709 - Display", "Camera Rec.709", "ACEScg", "ACES2065-1", "Raw"})
+            combo->addItem(QString::fromLatin1(space), QString::fromLatin1(space));
+        const auto found = settings.inputColorSpaces.find(assets[i].id);
+        if (found != settings.inputColorSpaces.end()) {
+            const QString value = QString::fromUtf8(found->second.c_str());
+            int index = combo->findData(value);
+            if (index < 0) { combo->addItem(tr("Preserved: %1").arg(value), value); index = combo->count() - 1; }
+            combo->setCurrentIndex(index);
+        }
+        if (assets[i].type != heisenberg::ClipType::Video) combo->setEnabled(false);
+        table->setCellWidget(static_cast<int>(i), 1, combo); inputs.push_back(combo);
+    }
+    form->addRow(table);
+    const auto updateMode = [&]() {
+        const auto selected = mode->currentData().toString();
+        if (selected == QStringLiteral("sdr") || selected == QStringLiteral("aces")) {
+            settings.inputPolicyVersion = 2;
+            settings.semanticsVersion = 2;
+            const char* view = selected == QStringLiteral("sdr") ? "Un-tone-mapped" : "ACES 2.0 - SDR 100 nits (Rec.709)";
+            settings.previewOutput = {"sRGB - Display", view};
+            settings.exportOutput = {"Rec.1886 Rec.709 - Display", view};
+        } else {
+            settings = originalSettings;
+        }
+        summary->setText(!supported ? tr("Unsupported saved color settings are preserved and cannot be executed.") :
+            settings.inputPolicyVersion == 1 ? tr("Legacy ACES: saved policy v1 / semantics v1. Choose a new mode to upgrade explicitly.") :
+            selected == QStringLiteral("preserved") ? tr("Saved output selections are preserved. Choose a mode to replace them explicitly.") :
+            selected == QStringLiteral("aces") ? tr("ACES rendering: finished SDR input policy v2 / semantics v2, with the ACES output view.") :
+            tr("Ordinary SDR: code-preserving preview for finished Rec.709 video, without extra display-gamma conversion or tone mapping."));
+        preview->setText(outputText(settings.previewOutput));
+        exportOutput->setText(outputText(settings.exportOutput));
+        for (auto* input : inputs)
+            input->setItemText(0, tr("Automatic (policy v%1)").arg(settings.inputPolicyVersion));
+    };
+    connect(mode, qOverload<int>(&QComboBox::currentIndexChanged), &dialog, [&](int) { updateMode(); });
+    updateMode();
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    for (size_t i = 0; i < assets.size(); ++i) {
+        if (!inputs[i]->isEnabled()) continue;
+        const auto value = inputs[i]->currentData().toString().toUtf8().toStdString();
+        if (value.empty()) settings.inputColorSpaces.erase(assets[i].id);
+        else settings.inputColorSpaces[assets[i].id] = value;
+    }
+    const auto result = session_->setColorSettings(settings);
+    if (!result.changed() && !result.message.empty()) showError(QString::fromUtf8(result.message.c_str()));
 }
 
 void MainWindow::showError(const QString& message) {
