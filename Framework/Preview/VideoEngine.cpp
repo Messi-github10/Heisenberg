@@ -67,6 +67,16 @@ struct VideoEngine::Impl {
     CompositionExecutor executor;
     int64_t nextFrame = 0;
     bool ready = false, eofQueued = false;
+    struct DecodeDiagnostics {
+        uint64_t generation = 0, frames = 0, commands = 0;
+        double videoMs = 0.0, audioMs = 0.0, maxTotalMs = 0.0;
+        int64_t worstFrame = 0;
+        std::string clipId;
+        Clock::time_point last{};
+    } decodeDiagnostics;
+    uint64_t diagnosticUnderruns = 0, diagnosticMissingSamples = 0, diagnosticEmptyVideoPolls = 0;
+    uint64_t diagnosticPresented = 0, diagnosticLateFrames = 0;
+    double diagnosticMaxLateMs = 0.0;
     double clockSecondsLocked() const {
         return wallOffset + (manualClock ? manualNow - manualStart
             : std::chrono::duration<double>(Clock::now() - wallStart).count());
@@ -119,6 +129,10 @@ struct VideoEngine::Impl {
             written += count; audioOffset += count;
             if (audioOffset >= currentAudio->samples()) currentAudio.reset();
         }
+        if (written < samples) {
+            ++diagnosticUnderruns;
+            diagnosticMissingSamples += samples - written;
+        }
         cv.notify_all();
     }
     void startAudio() {
@@ -148,6 +162,9 @@ struct VideoEngine::Impl {
         const auto generation = active.fetch_add(1, std::memory_order_acq_rel) + 1;
         lifetime->generation.store(generation, std::memory_order_release);
         state.generation = generation;
+        diagnosticUnderruns = diagnosticMissingSamples = diagnosticEmptyVideoPolls = 0;
+        diagnosticPresented = diagnosticLateFrames = 0;
+        diagnosticMaxLateMs = 0.0;
         videoQueue.clear(); audioQueue.clear(); currentAudio.reset(); audioOffset = 0;
         return generation;
     }
@@ -163,16 +180,65 @@ struct VideoEngine::Impl {
             return active.load(std::memory_order_acquire) != generation;
         }};
     }
+    void reportDecode(int64_t frame, uint64_t generation, const DecodedFrame& video,
+                      double videoMs, double audioMs) {
+        auto& stats = decodeDiagnostics;
+        if (stats.generation != generation || stats.clipId != video.clipId) {
+            const auto commands = stats.commands;
+            stats = {}; stats.generation = generation; stats.clipId = video.clipId; stats.commands = commands;
+        }
+        ++stats.frames; stats.videoMs += videoMs; stats.audioMs += audioMs;
+        if (videoMs + audioMs > stats.maxTotalMs) {
+            stats.maxTotalMs = videoMs + audioMs; stats.worstFrame = frame;
+        }
+        const auto now = Clock::now();
+        if (stats.last != Clock::time_point{} && now - stats.last < std::chrono::seconds(1)) return;
+        size_t videoQueued, audioQueued;
+        uint64_t underruns, missingSamples, emptyPolls, presented, late;
+        int64_t audioSample;
+        double maxLate, currentTime;
+        bool usingAudioClock, discardingAudio;
+        {
+            std::lock_guard lock(mutex);
+            videoQueued = videoQueue.size(); audioQueued = audioQueue.size();
+            underruns = diagnosticUnderruns; missingSamples = diagnosticMissingSamples;
+            emptyPolls = diagnosticEmptyVideoPolls; presented = diagnosticPresented;
+            late = diagnosticLateFrames; maxLate = diagnosticMaxLateMs;
+            audioSample = audioPosition.load(std::memory_order_relaxed);
+            currentTime = state.currentTime; usingAudioClock = audioClock; discardingAudio = discardAudio;
+            diagnosticUnderruns = diagnosticMissingSamples = diagnosticEmptyVideoPolls = 0;
+            diagnosticPresented = diagnosticLateFrames = 0; diagnosticMaxLateMs = 0.0;
+        }
+        LOG_INFO("[PlaybackDiag] engine gen={} clip='{}' media='{}' source_mode={} target_frame={} "
+                 "target_s={:.3f} current_s={:.3f} frames={} commands={} video_avg_ms={:.3f} audio_avg_ms={:.3f} "
+                 "decode_max_ms={:.3f} worst_frame={} budget_ms={:.3f} video_queue={} audio_queue={} "
+                 "presented={} late_frames={} max_late_ms={:.3f} empty_video_polls={} "
+                 "audio_underruns={} missing_audio_samples={} audio_position={} audio_clock={} discard_audio={}",
+                 generation, video.clipId, video.mediaRef, sourceMode, frame, plan.settings.secondsFromFrame(frame),
+                 currentTime, stats.frames, stats.commands, stats.videoMs / stats.frames, stats.audioMs / stats.frames,
+                 stats.maxTotalMs, stats.worstFrame, 1000.0 / plan.settings.fps(), videoQueued, audioQueued,
+                 presented, late, maxLate, emptyPolls, underruns, missingSamples, audioSample,
+                 usingAudioClock, discardingAudio);
+        Logger::ModuleLogger(__FILE__)->flush();
+        stats.last = now; stats.frames = stats.commands = 0;
+        stats.videoMs = stats.audioMs = stats.maxTotalMs = 0.0;
+    }
     bool execute(int64_t frame, uint64_t generation, bool urgent) {
+        const auto diagnosticStart = Clock::now();
         auto video = executor.videoFrame(frame, context(generation));
         if (video.status == CompositionStatus::Cancelled) return false;
         if (!video) { ready = false; fail(generation, video.error); return false; }
+        const auto diagnosticVideoEnd = Clock::now();
         auto audio = executor.audioSamples(plan.settings.audioSamplePosition(frame),
             plan.settings.audioSamplePosition(frame + 1), context(generation));
         if (audio.status == CompositionStatus::Cancelled) return false;
         if (audio.status == CompositionStatus::Failure) {
             ready = false; fail(generation, audio.error); return false;
         }
+        const auto diagnosticAudioEnd = Clock::now();
+        reportDecode(frame, generation, video.value,
+            std::chrono::duration<double, std::milli>(diagnosticVideoEnd - diagnosticStart).count(),
+            std::chrono::duration<double, std::milli>(diagnosticAudioEnd - diagnosticVideoEnd).count());
         const auto sound = audio.value;
         // The observer still receives exactly the PCM sent to the audio queue,
         // including silence, on the existing sole decode worker.
@@ -198,6 +264,7 @@ struct VideoEngine::Impl {
               if (stopping) break;
               if (request) { command = std::move(request); request.reset(); } }
             if (command) {
+                ++decodeDiagnostics.commands;
                 generation = command->generation;
                 decodeHardware = command->hardware;
                 if (command->kind == Request::Close) { executor.close(); ready = false; continue; }
@@ -446,6 +513,7 @@ VideoEngine::Pump VideoEngine::pumpFrame(int& waitMs) {
       while (!impl_->videoQueue.empty() && impl_->videoQueue.front().frame.generation != generation) impl_->videoQueue.pop_front();
       if (impl_->videoQueue.empty()) {
           if (impl_->state.state != State::Playing && impl_->state.state != State::Loading) { waitMs = -1; return Pump::Paused; }
+          if (impl_->state.state == State::Playing) ++impl_->diagnosticEmptyVideoPolls;
           return Pump::Wait;
       }
       auto& front = impl_->videoQueue.front();
@@ -465,6 +533,12 @@ VideoEngine::Pump VideoEngine::pumpFrame(int& waitMs) {
       }
       if (!front.urgent && due - master > 0.002) {
           waitMs = std::max(1, static_cast<int>((due - master) * 1000)); return Pump::Wait;
+      }
+      if (!front.eof && !front.urgent) {
+          ++impl_->diagnosticPresented;
+          const double lateMs = std::max(0.0, (master - due) * 1000.0);
+          impl_->diagnosticMaxLateMs = std::max(impl_->diagnosticMaxLateMs, lateMs);
+          if (lateMs > 1000.0 / impl_->state.fps) ++impl_->diagnosticLateFrames;
       }
       packet = std::move(front); impl_->videoQueue.pop_front();
       ended = packet.eof; seconds = due;

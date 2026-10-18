@@ -11,6 +11,21 @@ set(FRAMEWORK_TEST_CLIP_B
     "${FRAMEWORK_TEST_MEDIA_DIR}/playlist_clip_b.mp4")
 set(FRAMEWORK_TEST_SDR_GRAY
     "${FRAMEWORK_TEST_MEDIA_DIR}/sdr_gray_patches.mp4")
+set(FRAMEWORK_TEST_EXECUTOR_LOOKAHEAD
+    "${FRAMEWORK_TEST_MEDIA_DIR}/executor_24fps_bframes_10s.mp4")
+add_custom_command(
+    OUTPUT "${FRAMEWORK_TEST_EXECUTOR_LOOKAHEAD}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FRAMEWORK_TEST_MEDIA_DIR}"
+    COMMAND "${FFMPEG_EXE}" -y -hide_banner -loglevel error
+            -f lavfi -i testsrc2=size=160x90:rate=24:duration=10
+            -f lavfi -i sine=frequency=613:sample_rate=44100:duration=10
+            -t 10 -pix_fmt yuv420p -c:v libx264 -preset ultrafast -bf 2 -g 48
+            -c:a aac -b:a 96k
+            "${FRAMEWORK_TEST_EXECUTOR_LOOKAHEAD}"
+    DEPENDS "${CMAKE_CURRENT_LIST_FILE}"
+    COMMENT "Generating 10-second B-frame media for executor lookahead regression"
+    VERBATIM
+)
 add_custom_command(
     OUTPUT "${FRAMEWORK_TEST_SDR_GRAY}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${FRAMEWORK_TEST_MEDIA_DIR}"
@@ -119,7 +134,8 @@ add_custom_target(HeisenbergFrameworkTestMedia
         "${FRAMEWORK_TEST_MEDIA}"
         "${FRAMEWORK_TEST_CLIP_A}"
         "${FRAMEWORK_TEST_CLIP_B}"
-        "${FRAMEWORK_TEST_SDR_GRAY}")
+        "${FRAMEWORK_TEST_SDR_GRAY}"
+        "${FRAMEWORK_TEST_EXECUTOR_LOOKAHEAD}")
 
 add_executable(HeisenbergFrameworkTests
     timeline_settings_test.cpp
@@ -164,6 +180,7 @@ target_compile_definitions(HeisenbergFrameworkTests PRIVATE
     HEISENBERG_PLAYLIST_CLIP_A="${FRAMEWORK_TEST_CLIP_A}"
     HEISENBERG_PLAYLIST_CLIP_B="${FRAMEWORK_TEST_CLIP_B}"
     HEISENBERG_TEST_SDR_GRAY="${FRAMEWORK_TEST_SDR_GRAY}"
+    HEISENBERG_TEST_EXECUTOR_LOOKAHEAD="${FRAMEWORK_TEST_EXECUTOR_LOOKAHEAD}"
     HEISENBERG_TEST_FILTER="${CMAKE_SOURCE_DIR}/Framework/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Test/exposure.json"
 )
 

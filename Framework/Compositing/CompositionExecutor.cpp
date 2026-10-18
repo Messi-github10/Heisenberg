@@ -1,11 +1,14 @@
 #include "CompositionExecutor.hpp"
 #include <Common/FrameTime.hpp>
 #include <Common/MediaFrame.hpp>
+#include <Common/Packet.hpp>
 #include <Common/Stream.hpp>
 #include <MultiMedia/Audio/AudioResampler.hpp>
 #include <MultiMedia/DecoderContext.hpp>
 #include <MultiMedia/DemuxContext.hpp>
+#include <Utiles/Logger.hpp>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <deque>
 #include <limits>
@@ -17,7 +20,8 @@ extern "C" {
 
 namespace heisenberg {
 namespace {
-constexpr size_t kVideoCapacity = 12;
+constexpr size_t kVideoPacketCapacity = 256;
+constexpr size_t kVideoPacketBytes = 16 * 1024 * 1024;
 constexpr size_t kAudioCapacity = 256;
 constexpr int64_t kMixBlock = 2048;
 // Bound a returned allocation as well as internal lookahead. Callers can request
@@ -44,8 +48,8 @@ struct InterruptScope {
     ~InterruptScope() { demux.setInterrupt({}); }
 };
 
-// The single decoder-session implementation formerly owned by VideoEngine.
-// Video and each audio contribution have separate demux/decode histories.
+// A clip shares one demux cursor for picture and original sound. Independent
+// audio contributions own another session, even for the same source path.
 struct DecoderSession {
     std::unique_ptr<demuxer::DemuxContext> demux;
     std::unique_ptr<decoder::DecoderContext> video, audio;
@@ -54,19 +58,51 @@ struct DecoderSession {
     Rational rate{24, 1};
     double duration = 0.0, videoEnd = -1.0, lastImageEnd = -1.0;
     bool seekable = false, eof = false, resamplerDrained = false;
+    bool videoDrainSent = false, videoDrained = false, videoCoverageLost = false;
     double selectedSeconds = -1.0;
+    double decodedVideoSeconds = -std::numeric_limits<double>::infinity();
+    std::optional<std::pair<double, std::shared_ptr<VideoFrame>>> lookaheadVideo;
     std::deque<std::pair<double, std::shared_ptr<VideoFrame>>> images;
+    std::deque<MediaFrame> pendingVideo;
+    size_t pendingVideoBytes = 0;
     std::vector<std::shared_ptr<AudioFrame>> sound;
     AudioResampler resampler;
     AudioSpec outputSpec;
     int64_t audioEnd = std::numeric_limits<int64_t>::min();
+    int64_t discardedAudioBefore = std::numeric_limits<int64_t>::min();
     int64_t inferredAudioPosition = 0, expectedInputPosition = 0;
     bool inputPositionKnown = false;
     double inferredVideoSeconds = 0.0;
-    std::string error;
+    std::string sourcePath, error;
+    bool hardwareDecode = false, wantsVideo = false;
+    std::string diagnosticIdentity;
+    uint64_t diagnosticCalls = 0, diagnosticReopens = 0, diagnosticLostPictures = 0, diagnosticLostAudio = 0;
+    uint64_t diagnosticReads = 0, diagnosticVideoFrames = 0, diagnosticAudioFrames = 0;
+    double diagnosticDecodeMs = 0.0, diagnosticMaxDecodeMs = 0.0, diagnosticOpenMs = 0.0;
+    double diagnosticRestartSource = -1.0, diagnosticRestartSelected = -1.0;
+    double diagnosticRestartDecodedVideo = -1.0;
+    int64_t diagnosticRestartFirst = 0, diagnosticRestartDiscardedAudio = 0;
+    std::chrono::steady_clock::time_point diagnosticLast{};
 
     Status open(const std::string& path, bool hardware, const AudioSpec& output,
                 bool wantVideo, const Context& context) {
+        const auto diagnosticStart = std::chrono::steady_clock::now();
+        sourcePath = path;
+        hardwareDecode = hardware;
+        wantsVideo = wantVideo;
+        video.reset(); audio.reset();
+        videoStream = nullptr; audioStream = nullptr;
+        resampler.reset(); sound.clear(); images.clear(); pendingVideo.clear();
+        lookaheadVideo.reset();
+        pendingVideoBytes = 0;
+        rate = Rational(24, 1);
+        duration = 0.0; videoEnd = lastImageEnd = selectedSeconds = -1.0;
+        decodedVideoSeconds = -std::numeric_limits<double>::infinity();
+        inferredVideoSeconds = 0.0;
+        audioEnd = discardedAudioBefore = std::numeric_limits<int64_t>::min();
+        inferredAudioPosition = expectedInputPosition = 0;
+        inputPositionKnown = eof = resamplerDrained = videoDrainSent = videoDrained = videoCoverageLost = false;
+        error.clear();
         outputSpec = output;
         demux = std::make_unique<demuxer::DemuxContext>();
         InterruptScope interrupt(*demux, context);
@@ -82,34 +118,78 @@ struct DecoderSession {
             if (stream.isVideo() && !stream.attachedPicture && !videoStream) videoStream = &stream;
             if (stream.isAudio() && !audioStream) audioStream = &stream;
         }
-        if (!videoStream && !audioStream) {
-            error = "No playable video or audio stream found: " + path;
-            return Status::Failure;
-        }
         decoder::DecoderConfig config;
         config.preferred = hardware ? decoder::DecoderBackend::D3D11 : decoder::DecoderBackend::Software;
         config.allowFallback = hardware;
-        if (videoStream) {
+        if (videoStream && wantVideo) {
             if (videoStream->codec.fpsNum() > 0 && videoStream->codec.fpsDen() > 0)
                 rate = Rational(videoStream->codec.fpsNum(), videoStream->codec.fpsDen());
             if (videoStream->durationKnown)
                 videoEnd = videoStream->codec.toSeconds(videoStream->startTime - videoStream->originTime + videoStream->duration);
-            if (wantVideo) {
-                video = std::make_unique<decoder::DecoderContext>();
-                if (video->open(*videoStream, config) < 0) {
-                    error = "Failed to create video decoder: " + path;
-                    return Status::Failure;
-                }
+            video = std::make_unique<decoder::DecoderContext>();
+            if (video->open(*videoStream, config) < 0) {
+                error = "Failed to create video decoder: " + path;
+                video.reset();
             }
         }
-        if (audioStream && !wantVideo) {
+        if (audioStream) {
             audio = std::make_unique<decoder::DecoderContext>();
             if (audio->open(*audioStream, config) < 0) {
-                error = "Failed to create audio decoder: " + path;
-                return Status::Failure;
+                if (error.empty()) error = "Failed to create audio decoder: " + path;
+                audio.reset();
             }
         }
-        return cancelled(context) ? Status::Cancelled : Status::Ok;
+        if (cancelled(context)) return Status::Cancelled;
+        if (!video && !audio) {
+            if (error.empty()) error = "No usable video or audio decoder: " + path;
+            return Status::Failure;
+        }
+        error.clear();
+        diagnosticOpenMs += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - diagnosticStart).count();
+        return Status::Ok;
+    }
+    void reportDecode(double elapsedMs, std::optional<double> seconds, int64_t first, int64_t last,
+                      const Context& context, Status status) {
+        ++diagnosticCalls;
+        diagnosticDecodeMs += elapsedMs;
+        diagnosticMaxDecodeMs = std::max(diagnosticMaxDecodeMs, elapsedMs);
+        const auto now = std::chrono::steady_clock::now();
+        if (diagnosticLast != std::chrono::steady_clock::time_point{}
+            && now - diagnosticLast < std::chrono::seconds(1)) return;
+        LOG_INFO("[PlaybackDiag] session gen={} identity='{}' path='{}' request={} source_s={:.6f} "
+                 "audio=[{},{}) calls={} reopens={} lost_picture={} lost_audio={} reads={} video_frames={} audio_frames={} "
+                 "decode_avg_ms={:.3f} decode_max_ms={:.3f} open_ms={:.3f} cache_images={} cache_sound={} "
+                 "pending_video={} pending_bytes={} decoded_video_s={:.6f} selected_s={:.6f} "
+                 "lookahead_s={:.6f} coverage_lost={} audio_end={} discarded_audio_before={} eof={} video_drained={} "
+                 "hardware_requested={} has_video={} has_audio={} status={} last_reopen_source_s={:.6f} "
+                 "last_reopen_selected_s={:.6f} last_reopen_decoded_video_s={:.6f} "
+                 "last_reopen_audio_first={} last_reopen_discarded_audio_before={}",
+                 context.generation, diagnosticIdentity, sourcePath, seconds ? "video+audio" : "audio",
+                 seconds.value_or(-1.0), first, last, diagnosticCalls, diagnosticReopens,
+                 diagnosticLostPictures, diagnosticLostAudio, diagnosticReads, diagnosticVideoFrames,
+                 diagnosticAudioFrames, diagnosticDecodeMs / diagnosticCalls, diagnosticMaxDecodeMs, diagnosticOpenMs,
+                 images.size(), sound.size(), pendingVideo.size(), pendingVideoBytes, decodedVideoSeconds,
+                 selectedSeconds, lookaheadVideo ? lookaheadVideo->first : -1.0, videoCoverageLost,
+                 audioEnd, discardedAudioBefore, eof, videoDrained,
+                 hardwareDecode, video != nullptr, audio != nullptr, static_cast<int>(status),
+                 diagnosticRestartSource, diagnosticRestartSelected, diagnosticRestartDecodedVideo,
+                 diagnosticRestartFirst, diagnosticRestartDiscardedAudio);
+        Logger::ModuleLogger(__FILE__)->flush();
+        diagnosticLast = now;
+        diagnosticCalls = diagnosticReopens = diagnosticLostPictures = diagnosticLostAudio = 0;
+        diagnosticReads = diagnosticVideoFrames = diagnosticAudioFrames = 0;
+        diagnosticDecodeMs = diagnosticMaxDecodeMs = diagnosticOpenMs = 0.0;
+    }
+    Status restart(const Context& context) {
+        if (!seekable) {
+            error = "Cannot seek backward in non-seekable media";
+            return Status::Failure;
+        }
+        // Replay the origin to preserve compressed priming and resampler phase.
+        const auto path = sourcePath;
+        const auto spec = outputSpec;
+        return open(path, hardwareDecode, spec, wantsVideo, context);
     }
     void appendSound(std::shared_ptr<AudioFrame> converted) {
         if (!converted) return;
@@ -120,33 +200,75 @@ struct DecoderSession {
     }
     void pruneAudio(int64_t before) {
         sound.erase(std::remove_if(sound.begin(), sound.end(), [&](const auto& frame) {
-            return frame->position() + frame->samples() <= before;
+            const auto end = frame->position() + frame->samples();
+            if (end > before) return false;
+            discardedAudioBefore = std::max(discardedAudioBefore, end);
+            return true;
         }), sound.end());
     }
-    void pruneVideo(double seconds) {
-        // Retain the last image at/before the requested time, not the first
-        // future image. Never discard valid lookahead to enforce a bound.
-        while (images.size() > 1 && images[1].first <= seconds + 0.0000001) images.pop_front();
+    bool pictureReady(double seconds) const {
+        return !video || videoDrained || (videoEnd >= 0 && seconds >= videoEnd)
+            || (!images.empty() && lookaheadVideo && lookaheadVideo->first > seconds + 0.0000001)
+            || (!images.empty() && images.front().first <= seconds + 0.0000001
+                && decodedVideoSeconds >= seconds - 0.0000001);
     }
-    Status pull(const Context& context, double seconds, int64_t before) {
-        if (video) for (;;) {
+    bool soundReady(int64_t last) const { return !audio || audioEnd > last || eof; }
+    Status pullVideo(const Context& context, std::optional<double> seconds) {
+        if (!video) return Status::Ok;
+        if (seconds && lookaheadVideo && lookaheadVideo->first <= *seconds + 0.0000001) {
+            images.clear();
+            images.emplace_back(std::move(*lookaheadVideo));
+            lookaheadVideo.reset();
+        }
+        for (;;) {
             if (cancelled(context)) return Status::Cancelled;
+            if (seconds && pictureReady(*seconds)) break;
             auto item = video->pull(context.generation);
             if (video->lastError() < 0) {
                 error = "Video decode failed: " + ffmpegError(video->lastError());
                 return Status::Failure;
             }
+            if (item.type == MediaFrameType::Eof) videoDrained = true;
             auto image = item.videoFrame();
-            if (!image) break;
+            if (!image) {
+                if (!pendingVideo.empty()) {
+                    auto packet = std::move(pendingVideo.front()); pendingVideo.pop_front();
+                    pendingVideoBytes -= std::get<PacketPtr>(packet.payload)->size();
+                    if (!video->push(packet)) {
+                        error = "Decoder rejected video packet: " + ffmpegError(video->lastError());
+                        return Status::Failure;
+                    }
+                    continue;
+                }
+                if (eof && !videoDrainSent) {
+                    videoDrainSent = true;
+                    if (!video->push(MediaFrame::eof(context.generation))) {
+                        error = "Video decoder drain failed"; return Status::Failure;
+                    }
+                    continue;
+                }
+                break;
+            }
+            ++diagnosticVideoFrames;
             const auto native = image->native();
             const double position = hasFrameTimestamp(*native) ? frameTimeSeconds(*native) : inferredVideoSeconds;
             const double span = native->duration > 0 ? native->duration * av_q2d(native->time_base) : 1.0 / rate.toDouble();
             inferredVideoSeconds = position + span;
             lastImageEnd = inferredVideoSeconds;
+            decodedVideoSeconds = position;
+            if (!seconds || position > *seconds + 0.0000001) {
+                if (seconds) {
+                    lookaheadVideo = std::make_pair(position, std::move(image));
+                    break;
+                }
+                continue;
+            }
+            images.clear();
             images.emplace_back(position, std::move(image));
-            pruneVideo(seconds);
-            if (images.size() > kVideoCapacity) { error = "Video decoder lookahead exceeded bounded cache"; return Status::Failure; }
         }
+        return Status::Ok;
+    }
+    Status pullAudio(const Context& context, int64_t before) {
         if (audio) for (;;) {
             if (cancelled(context)) return Status::Cancelled;
             auto item = audio->pull(context.generation);
@@ -156,98 +278,100 @@ struct DecoderSession {
             }
             auto frame = item.audioFrame();
             if (!frame) break;
-            // Drain the previous filter before a real PTS discontinuity causes
-            // AudioResampler::convert to reset it. Do not silently lose its tail.
+            ++diagnosticAudioFrames;
+            // Drain the old filter before a PTS discontinuity resets its phase.
             if (frame->hasPosition() && inputPositionKnown
                 && std::abs(static_cast<long double>(frame->position()) - expectedInputPosition) > 2) {
                 while (auto tail = resampler.drain()) appendSound(std::move(tail));
                 resampler.reset();
             }
             if (frame->hasPosition()) {
-                expectedInputPosition = frame->position() + frame->samples();
-                inputPositionKnown = true;
+                expectedInputPosition = frame->position() + frame->samples(); inputPositionKnown = true;
             } else if (inputPositionKnown) expectedInputPosition += frame->samples();
-            auto converted = resampler.convert(*frame, outputSpec);
-            // Zero output can legitimately mean filter delay, not decode failure.
-            appendSound(std::move(converted));
+            appendSound(resampler.convert(*frame, outputSpec));
             pruneAudio(before);
-            if (sound.size() > kAudioCapacity) { error = "Audio decoder lookahead exceeded bounded cache"; return Status::Failure; }
+            if (sound.size() > kAudioCapacity) {
+                error = "Audio decoder lookahead exceeded bounded cache"; return Status::Failure;
+            }
         }
         if (eof && !resamplerDrained) {
             while (auto tail = resampler.drain()) appendSound(std::move(tail));
-            resamplerDrained = true;
-            pruneAudio(before);
+            resamplerDrained = true; pruneAudio(before);
         }
         return Status::Ok;
     }
     Status read(const Context& context) {
+        ++diagnosticReads;
         auto result = demux->readResult(context.generation);
         if (result.status == demuxer::ReadStatus::Cancelled) return Status::Cancelled;
         if (result.status == demuxer::ReadStatus::Failure) {
-            error = "Media read failed: " + ffmpegError(result.error);
-            return Status::Failure;
+            error = "Media read failed: " + ffmpegError(result.error); return Status::Failure;
         }
         if (result.status == demuxer::ReadStatus::End) {
-            if ((video && !video->push(MediaFrame::eof(context.generation)))
-                || (audio && !audio->push(MediaFrame::eof(context.generation)))) {
-                error = "Decoder drain failed"; return Status::Failure;
+            if (audio && !audio->push(MediaFrame::eof(context.generation))) {
+                error = "Audio decoder drain failed"; return Status::Failure;
             }
             eof = true;
-        } else if ((video && result.frame.metadata.streamIndex == videoStream->index && !video->push(result.frame))
-            || (audio && result.frame.metadata.streamIndex == audioStream->index && !audio->push(result.frame))) {
-            const int code = video && video->lastError() < 0 ? video->lastError()
-                : audio && audio->lastError() < 0 ? audio->lastError() : AVERROR_INVALIDDATA;
-            error = "Decoder rejected media packet: " + ffmpegError(code); return Status::Failure;
-        }
-        return Status::Ok;
-    }
-    Status videoAt(double seconds, const Context& context, std::shared_ptr<VideoFrame>& result) {
-        if (!video) return Status::Ok;
-        InterruptScope interrupt(*demux, context);
-        const bool needSeek = selectedSeconds < 0 ? seconds > 2.0
-            : seconds + 0.0000001 < selectedSeconds || seconds - selectedSeconds > 2.0;
-        if (needSeek && seekable) {
-            const double preroll = std::max(0.0, seconds - 2.0);
-            const int status = demux->seek(preroll, videoStream->index, 1);
-            if (status < 0) {
-                error = "Video seek failed: " + ffmpegError(status);
-                return cancelled(context) ? Status::Cancelled : Status::Failure;
+        } else if (video && result.frame.metadata.streamIndex == videoStream->index) {
+            pendingVideoBytes += std::get<PacketPtr>(result.frame.payload)->size();
+            pendingVideo.push_back(std::move(result.frame));
+            if (pendingVideo.size() > kVideoPacketCapacity || pendingVideoBytes > kVideoPacketBytes) {
+                error = "Video packet lookahead exceeded bounded cache"; return Status::Failure;
             }
-            video->flush(); images.clear(); eof = false; resamplerDrained = false;
-            lastImageEnd = -1.0; inferredVideoSeconds = preroll;
-        } else if (needSeek && selectedSeconds >= 0 && seconds < selectedSeconds) {
-            error = "Cannot seek backward in non-seekable video"; return Status::Failure;
+        } else if (audio && result.frame.metadata.streamIndex == audioStream->index && !audio->push(result.frame)) {
+            error = "Decoder rejected audio packet: " + ffmpegError(audio->lastError()); return Status::Failure;
         }
-        for (;;) {
-            if (cancelled(context)) return Status::Cancelled;
-            auto status = pull(context, seconds, 0);
-            if (status != Status::Ok) return status;
-            if (eof || (videoEnd >= 0 && seconds >= videoEnd)
-                || (!images.empty() && images.back().first >= seconds - 0.0000001)) break;
-            status = read(context);
-            if (status != Status::Ok) return status;
-        }
-        selectedSeconds = seconds;
-        if (!images.empty() && images.front().first <= seconds + 0.0000001
-            && !(videoEnd >= 0 && seconds >= videoEnd)
-            && !(eof && lastImageEnd >= 0 && seconds >= lastImageEnd)) result = images.front().second;
         return Status::Ok;
     }
-    Status audioThrough(int64_t first, int64_t last, const Context& context) {
-        if (!audio) return Status::Ok;
-        InterruptScope interrupt(*demux, context);
-        // Audio is decoded from the source origin, including codec priming and
-        // resampler phase. Random seeks reopen this session and replay/prune;
-        // an arbitrary two-second FFmpeg seek cannot promise sample identity.
-        for (;;) {
-            if (cancelled(context)) return Status::Cancelled;
-            auto status = pull(context, 0.0, first);
-            if (status != Status::Ok) return status;
-            if (audioEnd > last || eof) break;
-            status = read(context);
-            if (status != Status::Ok) return status;
+    Status decode(std::optional<double> seconds, int64_t first, int64_t last, const Context& context,
+                  std::shared_ptr<VideoFrame>* result = nullptr) {
+        const auto diagnosticStart = std::chrono::steady_clock::now();
+        auto finish = [&](Status status) {
+            reportDecode(std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - diagnosticStart).count(), seconds, first, last, context, status);
+            return status;
+        };
+        const bool lostPicture = seconds && video && (videoCoverageLost
+            || (!images.empty() && *seconds + 0.0000001 < images.front().first));
+        if (lostPicture || (audio && first < discardedAudioBefore)) {
+            ++diagnosticReopens;
+            diagnosticRestartSource = seconds.value_or(-1.0);
+            diagnosticRestartSelected = selectedSeconds;
+            diagnosticRestartDecodedVideo = decodedVideoSeconds;
+            diagnosticRestartFirst = first;
+            diagnosticRestartDiscardedAudio = discardedAudioBefore;
+            diagnosticLostPictures += lostPicture;
+            diagnosticLostAudio += audio && first < discardedAudioBefore;
+            auto status = restart(context);
+            if (status != Status::Ok) return finish(status);
         }
-        return Status::Ok;
+        if (!seconds && soundReady(last)) return finish(Status::Ok);
+        if (!seconds) {
+            images.clear();
+            lookaheadVideo.reset();
+            videoCoverageLost = video != nullptr;
+        }
+        InterruptScope interrupt(*demux, context);
+        for (;;) {
+            if (cancelled(context)) return finish(Status::Cancelled);
+            auto status = pullAudio(context, first);
+            if (status != Status::Ok) return finish(status);
+            status = pullVideo(context, seconds);
+            if (status != Status::Ok) return finish(status);
+            if ((!seconds || pictureReady(*seconds)) && soundReady(last)) break;
+            status = read(context);
+            if (status != Status::Ok) return finish(status);
+        }
+        if (seconds) {
+            selectedSeconds = *seconds;
+            if (result && *result) videoCoverageLost = false;
+            if (result && !images.empty() && images.front().first <= *seconds + 0.0000001
+                && !(videoEnd >= 0 && *seconds >= videoEnd)
+                && !(videoDrained && lastImageEnd >= 0 && *seconds >= lastImageEnd))
+                *result = images.front().second;
+            if (result && !*result) images.clear();
+        }
+        return finish(Status::Ok);
     }
     float sample(int channel, int64_t position) const {
         for (const auto& frame : sound) {
@@ -288,17 +412,18 @@ struct CompositionExecutor::Impl {
     Status session(const std::string& key, const CompositionClip& clip, bool wantVideo,
                    const Context& context, DecoderSession*& result, std::string& error) {
         result = nullptr;
+        if (auto found = sessions.find(key); found != sessions.end()) { result = found->second.get(); return Status::Ok; }
         if (auto failed = failures.find(key); failed != failures.end()) {
             error = failed->second;
             return options.errorPolicy == CompositionErrorPolicy::Strict ? Status::Failure : Status::Ok;
         }
-        if (auto found = sessions.find(key); found != sessions.end()) { result = found->second.get(); return Status::Ok; }
         if (clip.sourcePath.empty()) {
             // Builder already supplies the missing-reference warning in preview.
             if (options.errorPolicy == CompositionErrorPolicy::Preview) return Status::Ok;
             return failure(key, clip.mediaRef, "Missing media source: " + clip.mediaRef, error);
         }
         auto created = std::make_unique<DecoderSession>();
+        created->diagnosticIdentity = key;
         auto status = created->open(clip.sourcePath, options.hardwareDecode, info.settings.audioSpec(), wantVideo, context);
         if (status == Status::Cancelled) return status;
         if (status == Status::Failure) return failure(key, clip.sourcePath, created->error, error);
@@ -350,7 +475,7 @@ struct CompositionExecutor::Impl {
         const auto key = identity(lane, index);
         used.push_back(key);
         DecoderSession* decoder = nullptr;
-        auto status = session(key, clip, false, context, decoder, error);
+        auto status = session(key, clip, std::string(lane) == "video:", context, decoder, error);
         if (status != Status::Ok || !decoder || !decoder->audio) return status;
         const double firstPosition = sourcePosition(clip, begin);
         const double lastPosition = sourcePosition(clip, end - 1);
@@ -361,7 +486,7 @@ struct CompositionExecutor::Impl {
         }
         const auto first = static_cast<int64_t>(std::floor(firstPosition));
         const auto last = static_cast<int64_t>(std::floor(lastPosition)) + 1;
-        status = decoder->audioThrough(first, last, context);
+        status = decoder->decode(std::nullopt, first, last, context);
         if (status == Status::Cancelled) return status;
         if (status == Status::Failure) return failure(key, clip.sourcePath, decoder->error, error);
         if (muted) return Status::Ok;
@@ -441,6 +566,7 @@ CompositionExecutor::OpenResult CompositionExecutor::openSource(const std::strin
     close();
     if (cancelled(context)) return {Status::Cancelled, {}, {}};
     auto decoder = std::make_unique<DecoderSession>();
+    decoder->diagnosticIdentity = "video:0";
     auto settings = TimelineSettings::hd1080p24();
     const auto status = decoder->open(sourcePath, options.hardwareDecode, settings.audioSpec(), true, context);
     if (status != Status::Ok) return {status, {}, status == Status::Failure ? decoder->error : std::string{}};
@@ -461,7 +587,7 @@ CompositionExecutor::OpenResult CompositionExecutor::openSource(const std::strin
     impl_->info.settings = settings; impl_->info.frameCount = static_cast<int64_t>(frames);
     impl_->info.audioSampleCount = static_cast<int64_t>(samples); impl_->info.duration = decoder->duration;
     impl_->info.sourceMode = true; impl_->info.seekable = decoder->seekable;
-    impl_->info.hasVideo = decoder->videoStream != nullptr; impl_->info.hasAudio = decoder->audioStream != nullptr;
+    impl_->info.hasVideo = decoder->video != nullptr; impl_->info.hasAudio = decoder->audio != nullptr;
     impl_->sessions.emplace("video:0", std::move(decoder));
     impl_->prepare(context);
     return {Status::Ok, impl_->info, {}};
@@ -485,7 +611,20 @@ CompositionExecutor::VideoResult CompositionExecutor::videoFrame(int64_t frame, 
         DecoderSession* decoder = nullptr;
         auto status = impl_->session(key, clip, true, context, decoder, error);
         if (status == Status::Ok && decoder) {
-            status = decoder->videoAt(sample->sourceSeconds, context, output.source);
+            const auto begin = impl_->info.settings.audioSamplePosition(frame);
+            const auto end = std::min(impl_->info.audioSampleCount, impl_->info.settings.audioSamplePosition(frame + 1));
+            const double firstPosition = impl_->sourcePosition(clip, begin);
+            const double lastPosition = impl_->sourcePosition(clip, std::max(begin, end - 1));
+            if (!std::isfinite(firstPosition) || !std::isfinite(lastPosition)
+                || firstPosition < static_cast<double>(std::numeric_limits<int64_t>::min())
+                || lastPosition >= static_cast<double>(std::numeric_limits<int64_t>::max() - 2))
+                return {Status::Failure, {}, "Audio source sample mapping overflow"};
+            const auto first = static_cast<int64_t>(std::floor(firstPosition));
+            const auto last = static_cast<int64_t>(std::floor(lastPosition)) + 1;
+            const auto prefetchLast = static_cast<int64_t>(std::min(
+                static_cast<long double>(last), static_cast<long double>(first) + kMixBlock));
+            status = decoder->decode(sample->hidden ? std::nullopt : std::optional<double>(sample->sourceSeconds),
+                first, prefetchLast, context, &output.source);
             if (status == Status::Failure) status = impl_->failure(key, clip.sourcePath, decoder->error, error);
         }
         if (status == Status::Cancelled) { reset(); return {status, {}, {}}; }
@@ -507,7 +646,7 @@ CompositionExecutor::AudioResult CompositionExecutor::audioSamples(int64_t begin
     if (impl_->audioCursor && begin < *impl_->audioCursor) {
         if (impl_->info.sourceMode && !impl_->info.seekable)
             return {Status::Failure, {}, "Cannot seek backward in non-seekable audio"};
-        impl_->retain("original-audio:", {}); impl_->retain("independent-audio:", {});
+        impl_->retain("independent-audio:", {});
     }
     end = std::min(end, impl_->info.audioSampleCount);
     auto output = std::make_shared<AudioFrame>();
@@ -529,13 +668,13 @@ CompositionExecutor::AudioResult CompositionExecutor::audioSamples(int64_t begin
             stop = std::min(stop, cursor + static_cast<int64_t>(std::max(1.0, std::floor(kMixBlock / clip->speed))));
         std::vector<std::string> original, independent;
         Status status = Status::Ok;
-        if (videoClip && (!impl_->info.sourceMode || impl_->info.hasAudio))
-            status = impl_->mixContribution(*videoClip, videoIndex, "original-audio:", plan.muted,
+        if (videoClip)
+            status = impl_->mixContribution(*videoClip, videoIndex, "video:", plan.muted,
                 cursor, stop, *output, begin, context, original, error);
         if (status == Status::Ok && audioClip)
             status = impl_->mixContribution(*audioClip, audioIndex, "independent-audio:", plan.audioMuted,
                 cursor, stop, *output, begin, context, independent, error);
-        impl_->retain("original-audio:", original); impl_->retain("independent-audio:", independent);
+        impl_->retain("video:", original); impl_->retain("independent-audio:", independent);
         if (status == Status::Cancelled) { reset(); return {status, {}, {}}; }
         if (status == Status::Failure) return {status, {}, error};
         cursor = stop;

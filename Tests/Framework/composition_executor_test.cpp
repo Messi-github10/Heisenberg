@@ -4,18 +4,31 @@
 #include <MultiMedia/DecoderContext.hpp>
 #include <Common/Packet.hpp>
 #include <Common/Stream.hpp>
+#include <Common/MediaMath.hpp>
+#include <Utiles/Logger.hpp>
+#include <spdlog/sinks/base_sink.h>
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavcodec/bsf.h>
 #include <libavformat/avformat.h>
+#include <libavutil/channel_layout.h>
 }
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <mutex>
+#include <regex>
+#include <string>
 #include <thread>
 #include <type_traits>
+#include <vector>
 
 using namespace heisenberg;
 namespace {
@@ -311,6 +324,392 @@ TEST(CompositionExecutorTest, CompressedPrimingAndRandomSeekKeepSamePcmAsSequent
 #endif
 
 #ifdef HEISENBERG_TEST_MEDIA
+namespace {
+CompositionPlan sharedMediaPlan() {
+    CompositionPlan plan; plan.frameCount = 24;
+    CompositionClip clip;
+    clip.id = "original"; clip.mediaRef = "shared-asset"; clip.sourcePath = HEISENBERG_TEST_MEDIA;
+    clip.durationFrames = plan.frameCount;
+    plan.clips = {clip};
+    return plan;
+}
+CompositionPlan originalSoundReference(const CompositionPlan& plan) {
+    auto reference = plan;
+    reference.audioClips = reference.clips;
+    reference.clips.clear();
+    reference.audioMuted = reference.muted;
+    return reference;
+}
+std::filesystem::path unsupportedDecoderFixture(bool unsupportedVideo = false) {
+    static std::atomic<unsigned> sequence{0};
+    const auto path = std::filesystem::temp_directory_path() / ("heisenberg-unsupported-decoder-"
+        + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) + "-"
+        + std::to_string(sequence.fetch_add(1)) + ".avi");
+    struct Resources {
+        AVFormatContext* source = nullptr;
+        AVFormatContext* output = nullptr;
+        AVPacket* packet = nullptr;
+        AVBSFContext* filter = nullptr;
+        std::filesystem::path path;
+        bool complete = false;
+        ~Resources() {
+            av_packet_free(&packet);
+            av_bsf_free(&filter);
+            avformat_close_input(&source);
+            if (output) {
+                if (output->pb) avio_closep(&output->pb);
+                avformat_free_context(output);
+            }
+            if (!complete) { std::error_code error; std::filesystem::remove(path, error); }
+        }
+    } resources;
+    resources.path = path;
+    if (avformat_open_input(&resources.source, HEISENBERG_TEST_MEDIA, nullptr, nullptr) < 0
+        || avformat_find_stream_info(resources.source, nullptr) < 0) return {};
+    const int inputIndex = av_find_best_stream(resources.source, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (inputIndex < 0) return {};
+    auto* inputVideo = resources.source->streams[inputIndex];
+    if (avformat_alloc_output_context2(&resources.output, nullptr, "avi", path.string().c_str()) < 0
+        || !resources.output) return {};
+    const auto* filter = av_bsf_get_by_name("h264_mp4toannexb");
+    if (!filter || av_bsf_alloc(filter, &resources.filter) < 0
+        || avcodec_parameters_copy(resources.filter->par_in, inputVideo->codecpar) < 0) return {};
+    resources.filter->time_base_in = inputVideo->time_base;
+    if (av_bsf_init(resources.filter) < 0) return {};
+    auto* video = avformat_new_stream(resources.output, nullptr);
+    auto* audio = avformat_new_stream(resources.output, nullptr);
+    if (!video || !audio || avcodec_parameters_copy(video->codecpar, resources.filter->par_out) < 0) return {};
+    video->codecpar->codec_tag = 0;
+    video->time_base = inputVideo->time_base; video->avg_frame_rate = inputVideo->avg_frame_rate;
+    audio->time_base = AVRational{1, 48000};
+    audio->codecpar->codec_type = AVMEDIA_TYPE_AUDIO; audio->codecpar->codec_id = AV_CODEC_ID_PCM_S16LE;
+    audio->codecpar->format = AV_SAMPLE_FMT_S16; audio->codecpar->sample_rate = 48000;
+    av_channel_layout_default(&audio->codecpar->ch_layout, 1);
+    audio->codecpar->bits_per_coded_sample = 16; audio->codecpar->bits_per_raw_sample = 16;
+    audio->codecpar->block_align = 2; audio->codecpar->bit_rate = 48000 * 16;
+    if (avio_open(&resources.output->pb, path.string().c_str(), AVIO_FLAG_WRITE) < 0
+        || avformat_write_header(resources.output, nullptr) < 0) return {};
+    resources.packet = av_packet_alloc();
+    if (!resources.packet) return {};
+    int64_t audioPosition = 0;
+    int read = 0;
+    while ((read = av_read_frame(resources.source, resources.packet)) >= 0) {
+        auto* packet = resources.packet;
+        if (packet->stream_index != inputIndex) { av_packet_unref(packet); continue; }
+        if (av_bsf_send_packet(resources.filter, packet) < 0
+            || av_bsf_receive_packet(resources.filter, packet) < 0) return {};
+        av_packet_rescale_ts(packet, inputVideo->time_base, video->time_base);
+        packet->stream_index = video->index; packet->pos = -1;
+        if (av_interleaved_write_frame(resources.output, packet) < 0) return {};
+        av_packet_unref(packet);
+        if (av_new_packet(packet, 4000) < 0) return {};
+        // Nonzero PCM makes the inverse (optional video failure) test meaningful.
+        std::fill_n(packet->data, packet->size, uint8_t{20});
+        packet->stream_index = audio->index; packet->pts = packet->dts = audioPosition;
+        packet->duration = 2000; packet->flags = AV_PKT_FLAG_KEY;
+        av_packet_rescale_ts(packet, AVRational{1, 48000}, audio->time_base);
+        if (av_interleaved_write_frame(resources.output, packet) < 0) return {};
+        av_packet_unref(packet); audioPosition += 2000;
+    }
+    if (read != AVERROR_EOF || audioPosition == 0 || av_write_trailer(resources.output) < 0
+        || avio_closep(&resources.output->pb) < 0) return {};
+    std::vector<uint8_t> bytes;
+    {
+        std::ifstream input(path, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+        if (input.bad()) return {};
+    }
+    bool changed = false;
+    for (size_t offset = 0; offset + 28 <= bytes.size(); ++offset) {
+        if (std::memcmp(bytes.data() + offset, "strf", 4) != 0) continue;
+        if (unsupportedVideo && bytes[offset + 8] >= 40 && bytes[offset + 9] == 0
+            && bytes[offset + 10] == 0 && bytes[offset + 11] == 0) {
+            std::fill_n(bytes.data() + offset + 24, 4, uint8_t{'Z'});
+            changed = true; break;
+        }
+        if (!unsupportedVideo && bytes[offset + 8] == 1 && bytes[offset + 9] == 0) {
+            bytes[offset + 8] = 0xff; bytes[offset + 9] = 0xff;
+            changed = true; break;
+        }
+    }
+    if (!changed) return {};
+    {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        output.close();
+        if (!output) return {};
+    }
+    resources.complete = true;
+    return path;
+}
+// Compare the stored float bytes, not a tolerance (or even signed-zero equality).
+void bitIdenticalRange(const AudioFrame& expected, const AudioFrame& actual) {
+    ASSERT_EQ(expected.spec(), actual.spec());
+    ASSERT_GE(actual.position(), expected.position());
+    ASSERT_LE(actual.position() + actual.samples(), expected.position() + expected.samples());
+    const auto offset = static_cast<int>(actual.position() - expected.position());
+    for (int channel = 0; channel < actual.spec().channels; ++channel)
+        EXPECT_EQ(std::memcmp(expected.channelRo(channel) + offset, actual.channelRo(channel),
+            static_cast<size_t>(actual.samples()) * sizeof(float)), 0) << "channel " << channel;
+}
+}
+
+TEST(CompositionExecutorTest, SequentialSharedVideoAndOriginalSoundMatchAudioOnlyInPlanAndSourceModes) {
+    const auto plan = sharedMediaPlan();
+    CompositionExecutor reference;
+    ASSERT_TRUE(reference.open(originalSoundReference(plan), {}));
+    auto baseline = reference.audioSamples(0, reference.info().audioSampleCount);
+    ASSERT_TRUE(baseline); ASSERT_TRUE(baseline.value); ASSERT_GT(energy(*baseline.value), 0.01);
+    for (const bool sourceMode : {false, true}) {
+        SCOPED_TRACE(sourceMode ? "openSource" : "open(plan)");
+        CompositionExecutor shared;
+        const auto opened = sourceMode ? shared.openSource(HEISENBERG_TEST_MEDIA, {}) : shared.open(plan, {});
+        ASSERT_TRUE(opened) << opened.error;
+        ASSERT_GE(opened.value.frameCount, 24);
+        ASSERT_EQ(opened.value.settings.timeBase(), plan.settings.timeBase());
+        for (int64_t frame = 0; frame < 24; ++frame) {
+            SCOPED_TRACE(frame);
+            auto video = shared.videoFrame(frame);
+            ASSERT_TRUE(video) << video.error; ASSERT_TRUE(video.value.source);
+            EXPECT_FALSE(video.value.blank);
+            const auto begin = plan.settings.audioSamplePosition(frame);
+            const auto end = plan.settings.audioSamplePosition(frame + 1);
+            auto audio = shared.audioSamples(begin, end);
+            ASSERT_TRUE(audio) << audio.error; ASSERT_TRUE(audio.value);
+            ASSERT_EQ(audio.value->position(), begin); ASSERT_EQ(audio.value->samples(), end - begin);
+            bitIdenticalRange(*baseline.value, *audio.value);
+        }
+    }
+}
+
+TEST(CompositionExecutorTest, SharedOriginalSoundIsBitIdenticalAcrossAudioFirstAndInterleavedFrameJumps) {
+    auto plan = sharedMediaPlan();
+    auto& clip = plan.clips.front();
+    clip.startFrame = 2; clip.durationFrames = 22; clip.trimStartFrame = 1;
+    clip.speed = 0.85; clip.volume = 0.6; clip.fadeInFrames = 2; clip.fadeOutFrames = 4;
+    CompositionExecutor reference;
+    ASSERT_TRUE(reference.open(originalSoundReference(plan), {}));
+    auto baseline = reference.audioSamples(0, reference.info().audioSampleCount);
+    ASSERT_TRUE(baseline); ASSERT_TRUE(baseline.value); ASSERT_GT(energy(*baseline.value), 0.01);
+
+    for (const bool audioFirst : {true, false}) {
+        SCOPED_TRACE(audioFirst ? "audio first" : "video first");
+        CompositionExecutor shared, pictures;
+        ASSERT_TRUE(shared.open(plan, {})); ASSERT_TRUE(pictures.open(plan, {}));
+        const std::array<int64_t, 6> frames{2, 17, 4, 23, 9, 2};
+        const std::array<std::pair<int64_t, int64_t>, 6> ranges{{
+            {4000, 8001}, {24000, 37001}, {4000, 9001}, {38000, 44000}, {12000, 20001}, {1, 4217}}};
+        for (size_t index = 0; index < frames.size(); ++index) {
+            SCOPED_TRACE(index);
+            // Most seeks stay in one generation; the last also exercises reset.
+            const CompositionExecutor::Context context(index + 1 == frames.size() ? 99 : 7);
+            const auto range = ranges[index];
+            if (audioFirst) {
+                auto actual = shared.audioSamples(range.first, range.second, context);
+                ASSERT_TRUE(actual) << actual.error; ASSERT_TRUE(actual.value);
+                ASSERT_EQ(actual.value->position(), range.first);
+                ASSERT_EQ(actual.value->samples(), range.second - range.first);
+                bitIdenticalRange(*baseline.value, *actual.value);
+            }
+            auto expectedVideo = pictures.videoFrame(frames[index], context);
+            auto actualVideo = shared.videoFrame(frames[index], context);
+            ASSERT_TRUE(expectedVideo) << expectedVideo.error; ASSERT_TRUE(expectedVideo.value.source);
+            ASSERT_TRUE(actualVideo) << actualVideo.error; ASSERT_TRUE(actualVideo.value.source);
+            EXPECT_EQ(actualVideo.value.source->pts(), expectedVideo.value.source->pts());
+            if (!audioFirst) {
+                auto actual = shared.audioSamples(range.first, range.second, context);
+                ASSERT_TRUE(actual) << actual.error; ASSERT_TRUE(actual.value);
+                ASSERT_EQ(actual.value->position(), range.first);
+                ASSERT_EQ(actual.value->samples(), range.second - range.first);
+                bitIdenticalRange(*baseline.value, *actual.value);
+            }
+        }
+    }
+}
+
+TEST(CompositionExecutorTest, HiddenSharedVideoKeepsBitIdenticalOriginalSound) {
+    auto plan = sharedMediaPlan(); plan.hidden = true;
+    CompositionExecutor reference, hidden;
+    ASSERT_TRUE(reference.open(originalSoundReference(plan), {})); ASSERT_TRUE(hidden.open(plan, {}));
+    auto baseline = reference.audioSamples(0, reference.info().audioSampleCount);
+    ASSERT_TRUE(baseline); ASSERT_TRUE(baseline.value); ASSERT_GT(energy(*baseline.value), 0.01);
+    for (const int64_t frame : {int64_t{0}, int64_t{16}, int64_t{3}}) {
+        auto video = hidden.videoFrame(frame);
+        ASSERT_TRUE(video) << video.error; EXPECT_TRUE(video.value.blank); EXPECT_FALSE(video.value.source);
+        const auto begin = plan.settings.audioSamplePosition(frame);
+        auto actual = hidden.audioSamples(begin, begin + 4000);
+        ASSERT_TRUE(actual) << actual.error; ASSERT_TRUE(actual.value);
+        ASSERT_EQ(actual.value->samples(), 4000);
+        bitIdenticalRange(*baseline.value, *actual.value);
+    }
+}
+
+TEST(CompositionExecutorTest, SamePathIndependentAudioKeepsItsOwnTrimSpeedAndContributionOffset) {
+    auto plan = sharedMediaPlan();
+    auto& original = plan.clips.front();
+    original.speed = 0.75; original.volume = 0.35; original.fadeInFrames = 2; original.fadeOutFrames = 3;
+    auto independent = original;
+    independent.id = "independent"; independent.startFrame = 5; independent.durationFrames = 17;
+    independent.trimStartFrame = 4; independent.speed = 0.6; independent.volume = 0.4;
+    independent.fadeInFrames = 3; independent.fadeOutFrames = 2;
+    plan.audioClips = {independent};
+    // Separate, nonoverlapping-lane references: both use only audioClips, so no
+    // original-video decoder/session is involved in computing the expected mix.
+    auto independentPlan = plan; independentPlan.clips.clear();
+    CompositionExecutor originalReference, independentReference, shared;
+    ASSERT_TRUE(originalReference.open(originalSoundReference(plan), {}));
+    ASSERT_TRUE(independentReference.open(independentPlan, {})); ASSERT_TRUE(shared.open(plan, {}));
+    const auto total = shared.info().audioSampleCount;
+    auto expected = originalReference.audioSamples(0, total);
+    auto extra = independentReference.audioSamples(0, total);
+    ASSERT_TRUE(expected); ASSERT_TRUE(expected.value); ASSERT_TRUE(extra); ASSERT_TRUE(extra.value);
+    ASSERT_GT(energy(*expected.value), 0.01); ASSERT_GT(energy(*extra.value), 0.005);
+    for (int channel = 0; channel < expected.value->spec().channels; ++channel)
+        for (int sample = 0; sample < expected.value->samples(); ++sample)
+            expected.value->sampleRw(channel, sample) = std::clamp(expected.value->sampleRo(channel, sample)
+                + extra.value->sampleRo(channel, sample), -1.0f, 1.0f);
+    const std::array<int64_t, 5> frames{3, 18, 7, 23, 0};
+    for (const auto frame : frames) {
+        auto video = shared.videoFrame(frame); ASSERT_TRUE(video) << video.error; ASSERT_TRUE(video.value.source);
+        const auto begin = plan.settings.audioSamplePosition(frame);
+        auto actual = shared.audioSamples(begin, std::min(total, begin + 5001));
+        ASSERT_TRUE(actual) << actual.error; ASSERT_TRUE(actual.value);
+        ASSERT_EQ(actual.value->samples(), std::min(total, begin + 5001) - begin);
+        bitIdenticalRange(*expected.value, *actual.value);
+    }
+}
+
+TEST(CompositionExecutorTest, AudioOnlyAdvanceReleasesSharedVideoImageAndCanRecoverVideo) {
+    auto plan = sharedMediaPlan();
+    CompositionExecutor executor; ASSERT_TRUE(executor.open(plan, {}));
+    std::weak_ptr<VideoFrame> image;
+    {
+        auto video = executor.videoFrame(0); ASSERT_TRUE(video); ASSERT_TRUE(video.value.source);
+        image = video.value.source;
+    }
+    ASSERT_FALSE(image.expired()); // The selected image, not a returned result, owns this reference.
+    auto audio = executor.audioSamples(24000, 30000); ASSERT_TRUE(audio) << audio.error;
+    EXPECT_TRUE(image.expired());
+    auto recovered = executor.videoFrame(2); ASSERT_TRUE(recovered) << recovered.error;
+    ASSERT_TRUE(recovered.value.source);
+    CompositionExecutor reference; ASSERT_TRUE(reference.open(plan, {}));
+    auto expected = reference.videoFrame(2); ASSERT_TRUE(expected); ASSERT_TRUE(expected.value.source);
+    EXPECT_EQ(recovered.value.source->pts(), expected.value.source->pts());
+}
+
+TEST(CompositionExecutorTest, SharedVideoRetainsOnlyChosenImageAndReleasesItInVideoGap) {
+    auto plan = sharedMediaPlan();
+    plan.clips.front().durationFrames = 20;
+    CompositionExecutor executor; ASSERT_TRUE(executor.open(plan, {}));
+    std::weak_ptr<VideoFrame> previous;
+    for (const int64_t frame : {int64_t{0}, int64_t{1}, int64_t{7}, int64_t{12}, int64_t{18}}) {
+        std::weak_ptr<VideoFrame> chosen;
+        {
+            auto video = executor.videoFrame(frame); ASSERT_TRUE(video) << video.error;
+            ASSERT_TRUE(video.value.source); chosen = video.value.source;
+        }
+        EXPECT_TRUE(previous.expired()) << "old image retained at frame " << frame;
+        EXPECT_FALSE(chosen.expired()) << "chosen image was not retained at frame " << frame;
+        previous = chosen;
+    }
+    auto gap = executor.videoFrame(22); ASSERT_TRUE(gap); EXPECT_TRUE(gap.value.blank);
+    EXPECT_FALSE(gap.value.source); EXPECT_TRUE(previous.expired());
+}
+
+TEST(CompositionExecutorTest, UnsupportedOptionalAudioDoesNotKillUsableVideo) {
+    const auto path = unsupportedDecoderFixture();
+    ASSERT_FALSE(path.empty());
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code error; std::filesystem::remove(path, error); }
+    } cleanup{path};
+
+    demuxer::DemuxContext demux;
+    ASSERT_GE(demux.open(path.string()), 0);
+    const auto audio = std::find_if(demux.streams().begin(), demux.streams().end(),
+        [](const Stream& stream) { return stream.isAudio(); });
+    const auto video = std::find_if(demux.streams().begin(), demux.streams().end(),
+        [](const Stream& stream) { return stream.isVideo(); });
+    ASSERT_NE(audio, demux.streams().end()); ASSERT_NE(video, demux.streams().end());
+    EXPECT_EQ(audio->codec.nativeCodecId, AV_CODEC_ID_NONE);
+    decoder::DecoderContext rejectedAudio;
+    EXPECT_LT(rejectedAudio.open(*audio), 0);
+
+    CompositionPlan plan; plan.frameCount = 24;
+    CompositionClip clip; clip.id = "usable-video"; clip.sourcePath = path.string(); clip.durationFrames = 24;
+    plan.clips = {clip};
+    CompositionExecutor executor; ASSERT_TRUE(executor.open(plan, {}));
+    auto picture = executor.videoFrame(0);
+    ASSERT_TRUE(picture) << picture.error; ASSERT_TRUE(picture.value.source);
+    EXPECT_EQ(picture.value.clipId, "usable-video");
+    auto silence = executor.audioSamples(0, 2000);
+    ASSERT_TRUE(silence) << silence.error; ASSERT_TRUE(silence.value);
+    EXPECT_EQ(silence.value->samples(), 2000); EXPECT_EQ(energy(*silence.value), 0.0);
+    auto stillUsable = executor.videoFrame(0);
+    ASSERT_TRUE(stillUsable) << stillUsable.error; ASSERT_TRUE(stillUsable.value.source);
+
+    CompositionExecutor source;
+    auto opened = source.openSource(path.string(), {});
+    ASSERT_TRUE(opened) << opened.error; EXPECT_TRUE(opened.value.hasVideo);
+    EXPECT_FALSE(opened.value.hasAudio);
+    auto sourcePicture = source.videoFrame(0);
+    ASSERT_TRUE(sourcePicture) << sourcePicture.error; ASSERT_TRUE(sourcePicture.value.source);
+    auto sourceSilence = source.audioSamples(0, 1000);
+    ASSERT_TRUE(sourceSilence) << sourceSilence.error; ASSERT_TRUE(sourceSilence.value);
+    EXPECT_EQ(energy(*sourceSilence.value), 0.0);
+
+    // The same failure is not optional for an independent audio-only lane.
+    CompositionExecutor independent;
+    ASSERT_TRUE(independent.open(originalSoundReference(plan), {}));
+    auto failed = independent.audioSamples(0, 1000);
+    EXPECT_EQ(failed.status, CompositionStatus::Failure);
+    EXPECT_FALSE(failed.value); EXPECT_FALSE(failed.error.empty());
+
+    plan.audioClips = plan.clips;
+    plan.audioClips.front().id = "unsupported-independent-audio";
+    CompositionExecutor mixed;
+    ASSERT_TRUE(mixed.open(plan, {}));
+    auto beforeFailure = mixed.videoFrame(0);
+    ASSERT_TRUE(beforeFailure) << beforeFailure.error; ASSERT_TRUE(beforeFailure.value.source);
+    EXPECT_EQ(mixed.audioSamples(0, 2000).status, CompositionStatus::Failure);
+    auto afterFailure = mixed.videoFrame(1);
+    ASSERT_TRUE(afterFailure) << afterFailure.error; ASSERT_TRUE(afterFailure.value.source);
+}
+
+TEST(CompositionExecutorTest, UnsupportedVideoDecoderStillAllowsOriginalAndIndependentAudio) {
+    const auto path = unsupportedDecoderFixture(true);
+    ASSERT_FALSE(path.empty());
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code error; std::filesystem::remove(path, error); }
+    } cleanup{path};
+    demuxer::DemuxContext demux; ASSERT_GE(demux.open(path.string()), 0);
+    const auto video = std::find_if(demux.streams().begin(), demux.streams().end(),
+        [](const Stream& stream) { return stream.isVideo(); });
+    const auto audio = std::find_if(demux.streams().begin(), demux.streams().end(),
+        [](const Stream& stream) { return stream.isAudio(); });
+    ASSERT_NE(video, demux.streams().end()); ASSERT_NE(audio, demux.streams().end());
+    decoder::DecoderContext rejectedVideo, usableAudio;
+    ASSERT_LT(rejectedVideo.open(*video), 0); ASSERT_GE(usableAudio.open(*audio), 0);
+    auto plan = sharedMediaPlan(); plan.clips.front().sourcePath = path.string();
+    CompositionExecutor reference; ASSERT_TRUE(reference.open(originalSoundReference(plan), {}));
+    auto baseline = reference.audioSamples(0, 4000);
+    ASSERT_TRUE(baseline) << baseline.error; ASSERT_TRUE(baseline.value);
+    ASSERT_GT(energy(*baseline.value), 0.01);
+    for (const bool sourceMode : {false, true}) {
+        SCOPED_TRACE(sourceMode ? "openSource" : "open(plan)");
+        CompositionExecutor executor;
+        const auto opened = sourceMode ? executor.openSource(path.string(), {}) : executor.open(plan, {});
+        ASSERT_TRUE(opened) << opened.error;
+        auto blank = executor.videoFrame(0);
+        ASSERT_TRUE(blank) << blank.error; EXPECT_TRUE(blank.value.blank); EXPECT_FALSE(blank.value.source);
+        auto actual = executor.audioSamples(0, 4000);
+        ASSERT_TRUE(actual) << actual.error; ASSERT_TRUE(actual.value);
+        ASSERT_EQ(actual.value->samples(), 4000);
+        bitIdenticalRange(*baseline.value, *actual.value);
+    }
+}
+
 TEST(CompositionExecutorTest, VideoNativePtsAndOwnedClipPlanSurviveIndependentReuse) {
     CompositionExecutor executor;
     CompositionPlan plan; plan.frameCount = 24;
@@ -329,4 +728,170 @@ TEST(CompositionExecutorTest, VideoNativePtsAndOwnedClipPlanSurviveIndependentRe
     EXPECT_EQ(result.value.source->pts(), source.value.source->pts());
     EXPECT_TRUE(source.value.sourceMode);
 }
+
+#ifdef HEISENBERG_TEST_EXECUTOR_LOOKAHEAD
+namespace {
+CompositionPlan executorLookaheadPlan() {
+    CompositionPlan plan;
+    plan.settings = TimelineSettings::fromTimelineSettings(160, 90, 30);
+    plan.frameCount = 300;
+    CompositionClip clip;
+    clip.id = "lookahead";
+    clip.mediaRef = "executor-lookahead";
+    clip.sourcePath = HEISENBERG_TEST_EXECUTOR_LOOKAHEAD;
+    clip.durationFrames = plan.frameCount;
+    plan.clips = {clip};
+    return plan;
+}
+
+CompositionPlan executorLookaheadAudioPlan(const CompositionPlan& source) {
+    auto plan = source;
+    plan.audioClips = plan.clips;
+    plan.clips.clear();
+    plan.audioMuted = plan.muted;
+    return plan;
+}
+
+class ExecutorDiagnosticSink final : public spdlog::sinks::base_sink<std::mutex> {
+public:
+    std::vector<std::string> messages() {
+        std::lock_guard lock(mutex_);
+        return messages_;
+    }
+private:
+    void sink_it_(const spdlog::details::log_msg& message) override {
+        if (message.level != spdlog::level::info) return;
+        const std::string text(message.payload.data(), message.payload.size());
+        if (text.starts_with("[PlaybackDiag] session ")) messages_.push_back(text);
+    }
+    void flush_() override {}
+    std::vector<std::string> messages_;
+};
+
+class CaptureExecutorDiagnostics {
+public:
+    CaptureExecutorDiagnostics() {
+        logger_ = Logger::ModuleLogger("Framework/Compositing/CompositionExecutor.cpp");
+        sinks_ = logger_->sinks();
+        level_ = logger_->level();
+        logger_->sinks().push_back(sink);
+        logger_->set_level(spdlog::level::info);
+    }
+    ~CaptureExecutorDiagnostics() {
+        logger_->sinks() = std::move(sinks_);
+        logger_->set_level(level_);
+    }
+    std::shared_ptr<ExecutorDiagnosticSink> sink = std::make_shared<ExecutorDiagnosticSink>();
+private:
+    spdlog::logger* logger_ = nullptr;
+    std::vector<spdlog::sink_ptr> sinks_;
+    spdlog::level::level_enum level_ = spdlog::level::info;
+};
+
+struct ExecutorDiagnosticTotals {
+    uint64_t reopens = 0;
+    uint64_t videoFrames = 0;
+    bool found = false;
+};
+
+ExecutorDiagnosticTotals diagnosticTotals(const std::vector<std::string>& messages,
+                                          const std::string& path) {
+    ExecutorDiagnosticTotals totals;
+    const std::regex pathPattern("path='([^']*)'");
+    const std::regex reopenPattern("reopens=([0-9]+)");
+    const std::regex videoPattern("video_frames=([0-9]+)");
+    for (const auto& message : messages) {
+        std::smatch match;
+        if (!std::regex_search(message, match, pathPattern) || match[1].str() != path) continue;
+        totals.found = true;
+        if (std::regex_search(message, match, reopenPattern))
+            totals.reopens += std::stoull(match[1].str());
+        if (std::regex_search(message, match, videoPattern))
+            totals.videoFrames += std::stoull(match[1].str());
+    }
+    return totals;
+}
+}
+
+TEST(CompositionExecutorTest, MappedThirtyFpsSequentialPlaybackDoesNotReplayOrigin) {
+    const auto plan = executorLookaheadPlan();
+    CompositionExecutor reference;
+    ASSERT_TRUE(reference.open(executorLookaheadAudioPlan(plan), {}));
+    auto baseline = reference.audioSamples(0, reference.info().audioSampleCount);
+    ASSERT_TRUE(baseline) << baseline.error;
+    ASSERT_TRUE(baseline.value);
+    ASSERT_EQ(baseline.value->samples(), 480000);
+
+    CaptureExecutorDiagnostics logs;
+    CompositionExecutor executor;
+    const auto opened = executor.open(plan, {});
+    ASSERT_TRUE(opened) << opened.error;
+    ASSERT_EQ(opened.value.settings.frameRate(), Rational(30, 1));
+    ASSERT_EQ(opened.value.settings.timeBase(), Rational(1, 30));
+    ASSERT_EQ(opened.value.frameCount, 300);
+
+    for (int64_t frame = 0; frame < plan.frameCount; ++frame) {
+        SCOPED_TRACE(frame);
+        auto picture = executor.videoFrame(frame);
+        ASSERT_TRUE(picture) << picture.error;
+        ASSERT_TRUE(picture.value.source);
+        const auto expectedSourceFrame = (24 * frame) / 30;
+        EXPECT_EQ(frameIndexFromTimestamp(*picture.value.source->native(), AVRational{24, 1}),
+                  expectedSourceFrame);
+
+        const auto begin = plan.settings.audioSamplePosition(frame);
+        const auto end = plan.settings.audioSamplePosition(frame + 1);
+        auto audio = executor.audioSamples(begin, end);
+        ASSERT_TRUE(audio) << audio.error;
+        ASSERT_TRUE(audio.value);
+        ASSERT_EQ(audio.value->position(), begin);
+        ASSERT_EQ(audio.value->samples(), end - begin);
+        bitIdenticalRange(*baseline.value, *audio.value);
+
+        if (frame == plan.frameCount - 2)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    }
+
+    const auto totals = diagnosticTotals(logs.sink->messages(),
+                                         HEISENBERG_TEST_EXECUTOR_LOOKAHEAD);
+    ASSERT_TRUE(totals.found);
+    EXPECT_EQ(totals.reopens, 0u);
+    EXPECT_LE(totals.videoFrames, 24u * 10u + 4u);
+}
+
+TEST(CompositionExecutorTest, MappedPlaybackBackwardRequestReopensAndPreservesPtsAndPcm) {
+    const auto plan = executorLookaheadPlan();
+    CompositionExecutor reference;
+    ASSERT_TRUE(reference.open(executorLookaheadAudioPlan(plan), {}));
+    auto baseline = reference.audioSamples(0, reference.info().audioSampleCount);
+    ASSERT_TRUE(baseline) << baseline.error;
+    ASSERT_TRUE(baseline.value);
+
+    CaptureExecutorDiagnostics logs;
+    CompositionExecutor executor;
+    ASSERT_TRUE(executor.open(plan, {}));
+    auto forward = executor.videoFrame(240);
+    ASSERT_TRUE(forward) << forward.error;
+    ASSERT_TRUE(forward.value.source);
+    EXPECT_EQ(frameIndexFromTimestamp(*forward.value.source->native(), AVRational{24, 1}), 192);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    auto backward = executor.videoFrame(30);
+    ASSERT_TRUE(backward) << backward.error;
+    ASSERT_TRUE(backward.value.source);
+    EXPECT_EQ(frameIndexFromTimestamp(*backward.value.source->native(), AVRational{24, 1}), 24);
+
+    const auto begin = plan.settings.audioSamplePosition(30);
+    const auto end = plan.settings.audioSamplePosition(31);
+    auto audio = executor.audioSamples(begin, end);
+    ASSERT_TRUE(audio) << audio.error;
+    ASSERT_TRUE(audio.value);
+    bitIdenticalRange(*baseline.value, *audio.value);
+
+    const auto totals = diagnosticTotals(logs.sink->messages(),
+                                         HEISENBERG_TEST_EXECUTOR_LOOKAHEAD);
+    ASSERT_TRUE(totals.found);
+    EXPECT_GT(totals.reopens, 0u);
+}
+#endif
 #endif

@@ -174,8 +174,8 @@ int D3D11Decoder::open(const Stream& stream) {
     if (result < 0) { impl_->close(); return result; }
     impl_->pixelFormat = AV_PIX_FMT_D3D11;
     impl_->open = true;
-    LOG_INFO("D3D11Decoder: opened {} ({})", impl_->codec->name,
-             softwareFormat == AV_PIX_FMT_P010 ? "p010" : "nv12");
+    LOG_DEBUG("D3D11Decoder: opened {} ({})", impl_->codec->name,
+              softwareFormat == AV_PIX_FMT_P010 ? "p010" : "nv12");
     return 0;
 }
 

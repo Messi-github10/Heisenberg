@@ -16,7 +16,9 @@
 
 #include <Utiles/Logger.hpp>
 
+#include <chrono>
 #include <cstdint>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -29,6 +31,12 @@ extern "C" {
 
 namespace heisenberg {
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+double elapsedMs(Clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
 
 class Previewer final : public IPreviewer {
 public:
@@ -422,9 +430,79 @@ private:
         render_.setPlaying(true);
     }
 
+    struct PlaybackTiming {
+        uint64_t count = 0;
+        double sumMs = 0.0;
+        double maxMs = 0.0;
+        int64_t worstTargetFrame = 0;
+
+        void add(double ms, int64_t targetFrame) {
+            if (ms < 0.0) return; // This stage was not reached.
+            if (count == 0 || ms > maxMs) {
+                maxMs = ms;
+                worstTargetFrame = targetFrame;
+            }
+            ++count;
+            sumMs += ms;
+        }
+
+        double averageMs() const { return count ? sumMs / count : 0.0; }
+    };
+
+    struct PlaybackStats {
+        Clock::time_point lastSummary{};
+        PlaybackTiming render, output, present, total;
+        uint64_t fallbacks = 0;
+        uint64_t failures = 0;
+    };
+
+    void recordPlaybackTiming(const DecodedFrame& packet, double renderMs,
+                              double outputMs, double presentMs, double totalMs,
+                              bool fallback, bool presented) {
+        // Render-thread-only, retaining each clip's throttle when switching back.
+        if (playbackStatsGeneration_ != packet.generation) {
+            playbackStats_.clear();
+            playbackStatsGeneration_ = packet.generation;
+        }
+        auto& stats = playbackStats_[packet.clipId];
+        stats.render.add(renderMs, packet.targetPosition);
+        stats.output.add(outputMs, packet.targetPosition);
+        stats.present.add(presentMs, packet.targetPosition);
+        stats.total.add(totalMs, packet.targetPosition);
+        stats.fallbacks += fallback ? 1 : 0;
+        stats.failures += presented ? 0 : 1;
+        const auto now = Clock::now();
+        if (stats.lastSummary != Clock::time_point{} &&
+            now - stats.lastSummary < std::chrono::seconds(1)) return;
+
+        const auto extent = lastRendered_.image().extent; // Metadata only; no GPU readback.
+        LOG_INFO("[PlaybackDiag] render summary generation={} clipId='{}' mediaRef='{}' sourceMode={} "
+                 "source={}x{} output={}x{} surface={}x{} target_frame={} count={} fallbacks={} failures={} "
+                 "timings=API_wall_ms_not_GPU_timestamps "
+                 "render_ms_wall(count/avg/max/worst_target_frame)={}/{:.3f}/{:.3f}/{} "
+                 "output_ms_wall(count/avg/max/worst_target_frame)={}/{:.3f}/{:.3f}/{} "
+                 "present_ms_wall(count/avg/max/worst_target_frame)={}/{:.3f}/{:.3f}/{} "
+                 "total_ms_wall(count/avg/max/worst_target_frame)={}/{:.3f}/{:.3f}/{}",
+                 packet.generation, packet.clipId, packet.mediaRef, packet.sourceMode,
+                 packet.source ? packet.source->spec().width : 0,
+                 packet.source ? packet.source->spec().height : 0,
+                 extent.width, extent.height, videoWidth_, videoHeight_, packet.targetPosition,
+                 stats.total.count, stats.fallbacks, stats.failures,
+                 stats.render.count, stats.render.averageMs(), stats.render.maxMs, stats.render.worstTargetFrame,
+                 stats.output.count, stats.output.averageMs(), stats.output.maxMs, stats.output.worstTargetFrame,
+                 stats.present.count, stats.present.averageMs(), stats.present.maxMs, stats.present.worstTargetFrame,
+                 stats.total.count, stats.total.averageMs(), stats.total.maxMs, stats.total.worstTargetFrame);
+        Logger::ModuleLogger(__FILE__)->flush();
+        stats = {};
+        stats.lastSummary = Clock::now();
+    }
+
     void renderPacket() {
         if (!lastPacket_ || !presenter_ || !compositionRenderer_
             || !playback_->isCurrentGeneration(lastPacket_->generation)) return;
+        // API wall durations include existing internal waits, not GPU execution timestamps.
+        // Total covers request preparation through output failure/present, excluding this summary.
+        const auto totalStart = Clock::now();
         const auto& packet = *lastPacket_;
         const bool projectSourceColor = packet.sourceMode && sourceColorGeneration_ != 0
             && packet.generation >= sourceColorGeneration_;
@@ -447,13 +525,19 @@ private:
         std::vector<std::string> diagnostics; request.diagnostics = &diagnostics;
         std::string error;
         lastRendered_ = {};
+        auto renderStart = Clock::now();
         auto working = compositionRenderer_->render(request, &error);
+        double renderMs = elapsedMs(renderStart);
+        bool fallback = false;
         if (!working) {
             LOG_ERROR("IPreviewer: composition render failed: {}", error);
             notifyListener([error](Listener& listener) { listener.onFilterGraphFailed(error); });
             // Do not leave a stale successful frame visible after a failed request.
             request.blank = true; request.source.reset();
+            fallback = true;
+            renderStart = Clock::now();
             working = compositionRenderer_->render(request, nullptr);
+            renderMs += elapsedMs(renderStart);
         }
         renderer::ColorOutputRequest output;
         if (request.plan) {
@@ -463,10 +547,16 @@ private:
                 output.display == "sRGB - Display" && output.view == "Un-tone-mapped")
                 output.intent = renderer::ColorOutputIntent::SdrVideoPreview;
         } else output.intent = renderer::ColorOutputIntent::SdrVideoPreview;
-        if (working) lastRendered_ = compositionRenderer_->output(working, output, &error);
+        double outputMs = -1.0;
+        if (working) {
+            const auto outputStart = Clock::now();
+            lastRendered_ = compositionRenderer_->output(working, output, &error);
+            outputMs = elapsedMs(outputStart);
+        }
         if (!lastRendered_) {
             LOG_ERROR("IPreviewer: output transform failed: {}", error);
             notifyListener([error](Listener& listener) { listener.onFilterGraphFailed(error); });
+            recordPlaybackTiming(packet, renderMs, outputMs, -1.0, elapsedMs(totalStart), fallback, false);
             return;
         }
         std::string diagnosticSource = projectSourceColor ? sourceMediaRef_ : packet.mediaRef;
@@ -483,7 +573,11 @@ private:
             LOG_WARN("IPreviewer: {}", diagnostic);
             notifyListener([diagnostic](Listener& listener) { listener.onFilterGraphFailed(diagnostic); }, packet.generation);
         }
-        if (!presenter_->presentFrame(lastRendered_)) return;
+        const auto presentStart = Clock::now();
+        const bool presented = presenter_->presentFrame(lastRendered_);
+        const double presentMs = elapsedMs(presentStart);
+        recordPlaybackTiming(packet, renderMs, outputMs, presentMs, elapsedMs(totalStart), fallback, presented);
+        if (!presented) return;
         const auto generation = packet.generation;
         const double seconds = packet.targetPosition * packet.targetTimeBase.toDouble();
         events_->generation.store(playback_->snapshot().generation, std::memory_order_release);
@@ -585,6 +679,8 @@ private:
     filtergraph::VulkanGraphDocument graphDocument_;
     renderer::RenderedFrame lastRendered_;
     std::set<std::pair<std::string, std::string>> reportedDiagnostics_;
+    std::map<std::string, PlaybackStats> playbackStats_;
+    uint64_t playbackStatsGeneration_ = 0;
     ColorSettings sourceColorSettings_;
     std::string sourceMediaRef_;
     uint64_t sourceColorGeneration_ = 0;
