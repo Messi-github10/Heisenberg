@@ -31,7 +31,9 @@ AVCodecID toAVCodecID(CodecParams::ID id) {
     }
 }
 
-void avframeDeleter(AVFrame* frame) { av_frame_free(&frame); }
+void avframeDeleter(AVFrame* frame) {
+    av_frame_free(&frame);
+}
 
 AVPixelFormat selectD3D11Format(AVCodecContext*, const AVPixelFormat* formats) {
     for (const AVPixelFormat* format = formats;
@@ -179,8 +181,12 @@ int D3D11Decoder::open(const Stream& stream) {
     return 0;
 }
 
-void D3D11Decoder::close() { impl_->close(); }
-bool D3D11Decoder::isOpen() const { return impl_->open; }
+void D3D11Decoder::close() {
+    impl_->close();
+}
+bool D3D11Decoder::isOpen() const {
+    return impl_->open;
+}
 
 int D3D11Decoder::sendPacket(std::shared_ptr<const Packet> packet) {
     if (!impl_->open) return impl_->record(AVERROR(EINVAL));
@@ -219,15 +225,23 @@ std::shared_ptr<AVFrame> D3D11Decoder::receiveFrame() {
     return std::shared_ptr<AVFrame>(raw, avframeDeleter);
 }
 
-int D3D11Decoder::lastError() const { return impl_->lastError; }
+int D3D11Decoder::lastError() const {
+    return impl_->lastError;
+}
 
 void D3D11Decoder::flush() {
     impl_->lastError = 0;
     if (impl_->ctx) avcodec_flush_buffers(impl_->ctx);
 }
 
-DecoderBackend D3D11Decoder::backend() const { return DecoderBackend::D3D11; }
-bool D3D11Decoder::isHardware() const { return true; }
-int D3D11Decoder::outputPixelFormat() const { return impl_->pixelFormat; }
+DecoderBackend D3D11Decoder::backend() const {
+    return DecoderBackend::D3D11;
+}
+bool D3D11Decoder::isHardware() const {
+    return true;
+}
+int D3D11Decoder::outputPixelFormat() const {
+    return impl_->pixelFormat;
+}
 
 } // namespace heisenberg::decoder

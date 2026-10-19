@@ -30,14 +30,18 @@ ColorProcessor::ColorProcessor() = default;
 ColorProcessor::~ColorProcessor() = default;
 ColorProcessor::ColorProcessor(const ColorProcessor&) = default;
 ColorProcessor& ColorProcessor::operator=(const ColorProcessor&) = default;
-ColorProcessor::operator bool() const { return bool(impl_); }
+ColorProcessor::operator bool() const {
+    return bool(impl_);
+}
 void ColorProcessor::applyRGBA(float* pixels, size_t count) const {
     if (!impl_ || (!pixels && count)) throw std::invalid_argument("Invalid ColorProcessor/pixel buffer");
     // Applying RGB individually explicitly excludes alpha from every transform,
     // including externally supplied LUTs/matrices that might otherwise alter it.
     for (size_t i = 0; i < count; ++i) impl_->cpu->applyRGB(pixels + i * 4);
 }
-GpuProgram ColorProcessor::gpuProgram() const { return *gpuProgramSnapshot(); }
+GpuProgram ColorProcessor::gpuProgram() const {
+    return *gpuProgramSnapshot();
+}
 std::shared_ptr<const GpuProgram> ColorProcessor::gpuProgramSnapshot() const {
     if (!impl_) throw std::invalid_argument("Empty ColorProcessor");
     std::lock_guard lock(impl_->gpuMutex);

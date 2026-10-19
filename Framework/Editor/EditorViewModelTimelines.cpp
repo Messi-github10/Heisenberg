@@ -1,5 +1,4 @@
 #include "EditorViewModelTimelines.hpp"
-
 #include <algorithm>
 
 namespace heisenberg {
@@ -12,20 +11,24 @@ EditorViewModelTimelines::EditorViewModelTimelines() {
     project_.openTimelineIds = std::vector<std::string>{timeline.id};
     project_.viewStates = std::unordered_map<std::string, TimelineViewState>{};
 }
+
 const Track* EditorViewModelTimelines::activeTrack() const {
     const auto* timeline = activeTimeline();
     if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported) return nullptr;
     for (const auto& track : timeline->tracks) if (track.type == ClipType::Video) return &track;
     return timeline->tracks.empty() ? nullptr : &timeline->tracks.front();
 }
+
 Track* EditorViewModelTimelines::activeTrack() {
     return const_cast<Track*>(static_cast<const EditorViewModelTimelines&>(*this).activeTrack());
 }
+
 void EditorViewModelTimelines::replace(ProjectFile project) {
     project_ = std::move(project);
     undo_.clear();
     redo_.clear();
 }
+
 bool EditorViewModelTimelines::undo() {
     if (undo_.empty()) return false;
     if (undo_.back().colorBefore) {
@@ -44,6 +47,7 @@ bool EditorViewModelTimelines::undo() {
     redo_.push_back(std::move(entry));
     return true;
 }
+
 bool EditorViewModelTimelines::redo() {
     if (redo_.empty()) return false;
     if (redo_.back().colorAfter) {

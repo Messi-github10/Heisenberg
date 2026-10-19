@@ -54,9 +54,15 @@ public:
     bool loadFromJsonFile(const std::string& path,
                           std::string* error = nullptr);
 
-    uint32_t version() const { return version_; }
-    const std::vector<VulkanGraphNodeDesc>& nodes() const { return nodes_; }
-    const std::vector<GraphEdge>& edges() const { return edges_; }
+    uint32_t version() const {
+        return version_;
+    }
+    const std::vector<VulkanGraphNodeDesc>& nodes() const {
+        return nodes_;
+    }
+    const std::vector<GraphEdge>& edges() const {
+        return edges_;
+    }
 
     VulkanGraphNodeId addNode(
         std::string filterId,

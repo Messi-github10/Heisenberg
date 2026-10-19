@@ -12,7 +12,9 @@
 namespace heisenberg {
 namespace {
 namespace fs = std::filesystem;
-void setError(std::string* error, const std::string& message) { if (error) *error = message; }
+void setError(std::string* error, const std::string& message) {
+    if (error) *error = message;
+}
 std::string utf8(const fs::path& path) {
     const auto value = path.u8string();
     return {reinterpret_cast<const char*>(value.c_str()), value.size()};

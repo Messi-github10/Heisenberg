@@ -2,7 +2,6 @@
 
 #include "AudioFrame.hpp"
 #include "Rational.hpp"
-
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -33,15 +32,11 @@ inline double frameTimeMilliseconds(const AVFrame& frame) {
     return frameTimeSeconds(frame) * 1000.0;
 }
 
-// Invalid scales are programmer/input errors; overflow is never silently cast
-// into a sample index. Nearest ties round away from zero, including preroll.
-inline int64_t checkedRescale(int64_t value, AVRational from, AVRational to) {
+inline int64_t rescaleTimestamp(int64_t value, AVRational from, AVRational to) {
     if (!isValidTimeBase(from) || !isValidTimeBase(to)) {
         throw std::invalid_argument("Invalid media rescale time base");
     }
     const int64_t result = av_rescale_q_rnd(value, from, to, AV_ROUND_NEAR_INF);
-    // libavutil uses INT64_MIN as its overflow sentinel. An identity rescale
-    // of INT64_MIN is representable and does not need the arithmetic path.
     if (result == std::numeric_limits<int64_t>::min() &&
         !(value == result && av_cmp_q(from, to) == 0)) {
         throw std::overflow_error("Media position rescale overflow");
@@ -51,7 +46,7 @@ inline int64_t checkedRescale(int64_t value, AVRational from, AVRational to) {
 
 inline int64_t frameIndexFromTimestamp(const AVFrame& frame, AVRational frameRate) {
     if (!hasFrameTimestamp(frame) || !isValidTimeBase(frameRate)) return AV_NOPTS_VALUE;
-    return checkedRescale(frame.pts, frame.time_base, av_inv_q(frameRate));
+    return rescaleTimestamp(frame.pts, frame.time_base, av_inv_q(frameRate));
 }
 
 inline int64_t timestampFromSeconds(double seconds, AVRational timeBase) {
@@ -67,25 +62,23 @@ inline int64_t timestampFromSeconds(double seconds, AVRational timeBase) {
 
 inline int64_t samplesToPosition(const Rational& frameRate, int sampleRate, int64_t position) {
     if (frameRate.numerator() <= 0 || frameRate.denominator() <= 0 || sampleRate <= 0) return 0;
-    // av_rescale_q performs its products using checked wide integer arithmetic.
-    // In particular 30000/1001 is never approximated as a decimal frame rate.
-    return checkedRescale(position, av_inv_q(frameRate.toAVRational()), {1, sampleRate});
+    
+    return rescaleTimestamp(position, av_inv_q(frameRate.toAVRational()), {1, sampleRate});
 }
 
 inline int64_t samplesToPosition(double fps, int sampleRate, int64_t position) {
-    bool ok = false;
-    const auto frameRate = Rational::fromDouble(fps, &ok);
-    return ok ? samplesToPosition(frameRate, sampleRate, position) : 0;
+    bool converted = false;
+    const auto frameRate = Rational::fromDouble(fps, &converted);
+    return converted ? samplesToPosition(frameRate, sampleRate, position) : 0;
 }
 
 inline int samplesForFrame(const Rational& fps, int sampleRate, int64_t position) {
     if (position == std::numeric_limits<int64_t>::max()) {
         throw std::overflow_error("Frame end position overflow");
     }
+
     const auto begin = samplesToPosition(fps, sampleRate, position);
     const auto end = samplesToPosition(fps, sampleRate, position + 1);
-    // Monotone positive scales make the difference nonnegative. Check before
-    // subtracting as even two valid int64 indices can have an invalid span.
     if (end < begin || (begin <= std::numeric_limits<int64_t>::max() -
         std::numeric_limits<int>::max() && end > begin + std::numeric_limits<int>::max())) {
         throw std::overflow_error("Audio samples per frame overflow");
@@ -94,9 +87,9 @@ inline int samplesForFrame(const Rational& fps, int sampleRate, int64_t position
 }
 
 inline int samplesForFrame(double fps, int sampleRate, int64_t position) {
-    bool ok = false;
-    const auto frameRate = Rational::fromDouble(fps, &ok);
-    return ok ? samplesForFrame(frameRate, sampleRate, position) : 0;
+    bool converted = false;
+    const auto frameRate = Rational::fromDouble(fps, &converted);
+    return converted ? samplesForFrame(frameRate, sampleRate, position) : 0;
 }
 
 inline double frameDuration(double fps) {

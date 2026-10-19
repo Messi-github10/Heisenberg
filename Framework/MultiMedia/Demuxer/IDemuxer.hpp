@@ -40,7 +40,9 @@ public:
         auto packet = readPacket();
         return {packet ? ReadStatus::Packet : ReadStatus::End, std::move(packet), 0};
     }
-    virtual void setInterrupt(std::function<bool()> cancelled) { (void)cancelled; }
+    virtual void setInterrupt(std::function<bool()> cancelled) {
+        (void)cancelled;
+    }
 
     // Seeks to a zero-based media time. The implementation converts it to
     // the selected stream's native time base.

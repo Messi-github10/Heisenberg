@@ -68,9 +68,15 @@ protected:
         timeline.show();
         QCoreApplication::processEvents();
     }
-    std::string json() const { return heisenberg::ProjectCodec::encode(session.editor().project()); }
-    const heisenberg::Clip* first() const { return session.editor().activeTimeline()->clipById(firstId.toStdString()); }
-    const heisenberg::Clip* second() const { return session.editor().activeTimeline()->clipById(secondId.toStdString()); }
+    std::string json() const {
+        return heisenberg::ProjectCodec::encode(session.editor().project());
+    }
+    const heisenberg::Clip* first() const {
+        return session.editor().activeTimeline()->clipById(firstId.toStdString());
+    }
+    const heisenberg::Clip* second() const {
+        return session.editor().activeTimeline()->clipById(secondId.toStdString());
+    }
     bool reloadProject(const heisenberg::ProjectFile& project) {
         const auto text = heisenberg::ProjectCodec::encode(project);
         const auto package = QString::fromStdString(session.editor().projectDir());
@@ -81,7 +87,9 @@ protected:
         return session.loadPackage(package);
     }
     // Default geometry: 160px header, 4px/frame. The grab is ten frames into the first clip.
-    QPointF target(qint64 start, int y = 48) const { return {160.0 + (start + 10) * 4.0, double(y)}; }
+    QPointF target(qint64 start, int y = 48) const {
+        return {160.0 + (start + 10) * 4.0, double(y)};
+    }
     heisenberg::ui::EditorSession session;
     TimelineWidget timeline;
     QTemporaryDir directory;
@@ -644,8 +652,12 @@ protected:
         audioId = QString::fromStdString(session.editor().activeTimeline()->tracks[1].clips.front().id);
         ASSERT_TRUE(session.savePackage(QString::fromStdString(session.editor().projectDir())));
     }
-    const heisenberg::Clip* audio() const { return session.editor().activeTimeline()->clipById(audioId.toStdString()); }
-    const heisenberg::Track* audioTrack() const { return session.editor().activeTimeline()->trackById(audioTrackId.toStdString()); }
+    const heisenberg::Clip* audio() const {
+        return session.editor().activeTimeline()->clipById(audioId.toStdString());
+    }
+    const heisenberg::Track* audioTrack() const {
+        return session.editor().activeTimeline()->trackById(audioTrackId.toStdString());
+    }
     QString audioRef, audioId, audioTrackId;
 };
 

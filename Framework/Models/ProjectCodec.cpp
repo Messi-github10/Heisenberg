@@ -1,12 +1,15 @@
 #include "ProjectCodec.hpp"
-
 #include <algorithm>
 #include <stdexcept>
 
 namespace heisenberg {
 namespace {
 using json = nlohmann::ordered_json;
-void setError(std::string* error, const std::string& message) { if (error) *error = message; }
+
+void setError(std::string* error, const std::string& message) {
+    if (error) *error = message;
+}
+
 template <typename T>
 T valueOr(const json& object, const char* key, T fallback) {
     const auto found = object.find(key);

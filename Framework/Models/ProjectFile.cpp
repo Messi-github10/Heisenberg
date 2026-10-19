@@ -3,8 +3,13 @@
 #include <unordered_set>
 
 namespace heisenberg {
+
 namespace {
-void setError(std::string* error, const std::string& message) { if (error) *error = message; }
+
+void setError(std::string* error, const std::string& message) {
+    if (error) *error = message;
+}
+
 }
 
 Timeline* ProjectFile::activeTimeline() {

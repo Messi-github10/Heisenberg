@@ -5,7 +5,6 @@
 #include "EditorViewModelTimelines.hpp"
 #include <Models/TimelineSettings.hpp>
 #include <functional>
-
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -19,7 +18,10 @@ struct EditResult {
     EditStatus status = EditStatus::NoOp;
     std::vector<std::string> affectedIds;
     std::string message;
-    bool changed() const { return status == EditStatus::Changed; }
+
+    bool changed() const {
+        return status == EditStatus::Changed;
+    }
 };
 
 enum class TrimEdge { Left, Right };
@@ -32,7 +34,6 @@ public:
     EditorViewModel& operator=(const EditorViewModel&) = delete;
 
     void setHardwareDecode(bool enabled);
-    // Compatibility spelling; settings are a value and changes enter undo history.
     void setProfile(TimelineSettings settings);
     EditResult applyTimelineSettings(const TimelineSettings& settings);
     const EditorViewModelTimelines& timelines() const;
@@ -42,24 +43,20 @@ public:
     EditResult placeClip(const std::string& mediaRef, int64_t startFrame,
                          int64_t durationFrames = -1, int64_t trimStartFrame = 0,
                          const std::string& targetTrackId = {});
-    // Volume is linear amplitude (0..2), fades are timeline frames. Changing a
-    // fade length makes that fade linear; unchanged nonlinear fades and volume
-    // automation remain preserved and are reported as preview warnings.
     EditResult setClipAudio(const std::string& clipId, double volume,
                             int64_t fadeInFrames, int64_t fadeOutFrames);
     EditResult setTrackMuted(const std::string& trackId, bool muted);
     EditResult setColorSettings(const ColorSettings& settings);
-    // Empty space removes an override and restores the versioned input policy.
     EditResult setMediaInputColorSpace(const std::string& mediaRef, const std::string& space);
     EditResult setClipEffects(const std::string& clipId, std::optional<JsonValue> effects);
     EditResult moveClip(const std::string& clipId, int64_t startFrame);
     EditResult splitClip(const std::string& clipId, int64_t atFrame);
     EditResult trimClip(const std::string& clipId, TrimEdge edge, int64_t deltaFrames);
     EditResult removeClips(const std::vector<std::string>& clipIds);
+
     bool undo();
     bool redo();
 
-    // In-memory document installation. No package I/O belongs to the editor.
     bool replaceDocument(ProjectFile project, MediaManifest manifest,
                          std::string packageDir = {}, std::string* error = nullptr);
 

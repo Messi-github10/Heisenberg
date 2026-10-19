@@ -241,7 +241,9 @@ std::shared_ptr<AVFrame> SoftwareDecoder::receiveFrame() {
     return std::shared_ptr<AVFrame>(raw, avframeDeleter);
 }
 
-int SoftwareDecoder::lastError() const { return impl_->lastError; }
+int SoftwareDecoder::lastError() const {
+    return impl_->lastError;
+}
 
 void SoftwareDecoder::flush() {
     impl_->lastError = 0;

@@ -13,8 +13,6 @@ class MediaManifest;
 class ProjectSnapshot;
 struct ColorSettings;
 
-// Raw source image and intended presentation timing are deliberately separate.
-// Native AVFrame timestamps are never rewritten by decode or timeline mapping.
 using DecodedFrame = CompositionVideoSample;
 
 class VideoEngine {
@@ -63,22 +61,12 @@ public:
     void goToStart();
     void goToEnd();
     void setHardwareDecode(bool enabled);
-    // Configure while closed/paused. Disabled output still prepares real mixed
-    // PCM, but uses the presentation clock and never queues device audio.
     void setAudioOutputEnabled(bool enabled);
-    // Optional externally advanced monotonic clock for deterministic consumers.
-    // No timer, callback or extra thread is created. Configure before open().
     void setManualClock(double monotonicSeconds);
     Snapshot snapshot() const;
     bool isCurrentGeneration(uint64_t generation) const;
-
-    // Render-thread-only: ALL decoded callbacks, including first/seek/scrub,
-    // originate here. A negative wait stops the render clock until onWakeRender.
     Pump pumpFrame(int& waitMs);
     std::function<void(DecodedFrame)> onFrameDecoded;
-    // Decode-worker observer/sink of the actual post-mix PCM, including silence.
-    // Install before opening; do not mutate callbacks while decoding. The sink
-    // must not block and must reject old generations after seek/close.
     std::function<void(std::shared_ptr<const AudioFrame>, uint64_t)> onAudioPrepared;
     std::function<void()> onWakeRender;
     std::function<void(State)> onStateChanged;

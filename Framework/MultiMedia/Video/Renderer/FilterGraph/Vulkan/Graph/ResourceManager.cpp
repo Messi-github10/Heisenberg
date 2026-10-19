@@ -5,8 +5,7 @@
 namespace heisenberg::filtergraph {
 
 ResourceManager::ResourceManager(const VulkanGraphContext& context)
-    : context_(context) {
-}
+    : context_(context) {}
 
 ResourceManager::~ResourceManager() {
     clear();

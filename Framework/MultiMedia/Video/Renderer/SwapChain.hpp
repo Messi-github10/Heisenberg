@@ -38,7 +38,9 @@ public:
     void swapBuffers();
     bool resize(int* width, int* height);
 
-    bool isValid() const { return sw_ != nullptr; }
+    bool isValid() const {
+        return sw_ != nullptr;
+    }
 
 private:
     pl_swapchain  sw_      = nullptr;

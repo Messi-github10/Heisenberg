@@ -1,5 +1,4 @@
 #include "Timeline.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -18,7 +17,9 @@ void setError(std::string* error, const std::string& message) {
     if (error) *error = message;
 }
 
-bool finite(double value) { return std::isfinite(value); }
+bool finite(double value) {
+    return std::isfinite(value);
+}
 
 } // namespace
 
@@ -89,8 +90,6 @@ void Clip::clampFadesToDuration() {
 
 namespace {
 void clampTrack(std::optional<KeyframeTrackPayload>& track, int64_t duration) {
-    // Tracks are clip-local curves, not events. Keys outside the visible range
-    // are interpolation anchors and must survive split/trim and later extension.
     (void)track;
     (void)duration;
 }
@@ -115,7 +114,9 @@ void Clip::rescaleWordTimings(int64_t oldDuration) {
     }
 }
 
-int64_t TimelineMarker::endFrame() const { return startFrame + durationFrames; }
+int64_t TimelineMarker::endFrame() const {
+    return startFrame + durationFrames;
+}
 
 int64_t Track::endFrame() const {
     int64_t result = 0;

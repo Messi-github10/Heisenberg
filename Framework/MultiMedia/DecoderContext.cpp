@@ -1,5 +1,4 @@
 #include <MultiMedia/DecoderContext.hpp>
-
 #include <Common/AudioFrame.hpp>
 #include <Common/AudioSpec.hpp>
 #include <Common/Packet.hpp>

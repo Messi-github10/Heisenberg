@@ -27,16 +27,34 @@ public:
     Packet(Packet &&) noexcept = default;
     Packet &operator=(Packet &&) noexcept = default;
 
-    uint8_t *data() { return data_.data(); }
-    const uint8_t *data() const { return data_.data(); }
-    int size() const { return static_cast<int>(data_.size()); }
-    bool empty() const { return data_.empty(); }
+    uint8_t *data() {
+        return data_.data();
+    }
 
-    void resize(size_t n) { data_.resize(n); }
-    void reserve(size_t n) { data_.reserve(n); }
-    void clear() { data_.clear(); }
+    const uint8_t *data() const {
+        return data_.data();
+    }
 
-    // Native demuxer timestamps. Interpret them with timeBaseNum/timeBaseDen.
+    int size() const {
+        return static_cast<int>(data_.size());
+    }
+
+    bool empty() const {
+        return data_.empty();
+    }
+
+    void resize(size_t n) {
+        data_.resize(n);
+    }
+
+    void reserve(size_t n) {
+        data_.reserve(n);
+    }
+
+    void clear() {
+        data_.clear();
+    }
+
     int64_t pts = 0;
     int64_t dts = 0;
     int64_t duration = 0;

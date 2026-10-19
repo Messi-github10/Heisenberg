@@ -6,17 +6,31 @@ namespace heisenberg {
 
 class EditorViewModel;
 
-// Timeline values and their edit history form a member of the one editor.
 class EditorViewModelTimelines {
 public:
     EditorViewModelTimelines();
-    const ProjectFile& project() const { return project_; }
-    const Timeline* activeTimeline() const { return project_.activeTimeline(); }
-    Timeline* activeTimeline() { return project_.activeTimeline(); }
+    const ProjectFile& project() const {
+        return project_;
+    }
+
+    const Timeline* activeTimeline() const {
+        return project_.activeTimeline();
+    }
+
+    Timeline* activeTimeline() {
+        return project_.activeTimeline();
+    }
+
     const Track* activeTrack() const;
     Track* activeTrack();
-    bool canUndo() const { return !undo_.empty(); }
-    bool canRedo() const { return !redo_.empty(); }
+
+    bool canUndo() const {
+        return !undo_.empty();
+    }
+
+    bool canRedo() const {
+        return !redo_.empty();
+    }
 
 private:
     friend class EditorViewModel;

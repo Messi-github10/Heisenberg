@@ -2,7 +2,6 @@
 
 #include <Common/AudioSpec.hpp>
 #include <Common/VideoSpec.hpp>
-
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -12,8 +11,6 @@ namespace heisenberg {
 
 using Fraction = Rational;
 
-// Runtime settings are values, not disk documents. Palmier persists its existing
-// integer timeline dimensions/rate; project settings explicitly enforce that boundary.
 class TimelineSettings {
 public:
     static constexpr int kVersion = 1;
@@ -27,22 +24,63 @@ public:
     static std::vector<TimelineSettings> presets();
     static const TimelineSettings* findPreset(std::string_view id);
 
-    int version() const { return kVersion; }
-    const std::string& id() const { return id_; }
-    const std::string& description() const { return description_; }
-    const VideoSpec& videoSpec() const { return video_; }
-    const AudioSpec& audioSpec() const { return audio_; }
+    int version() const {
+        return kVersion;
+    }
+
+    const std::string& id() const {
+        return id_;
+    }
+
+    const std::string& description() const {
+        return description_;
+    }
+
+    const VideoSpec& videoSpec() const {
+        return video_;
+    }
+
+    const AudioSpec& audioSpec() const {
+        return audio_;
+    }
+
     void setVideoSpec(VideoSpec video);
-    void setAudioSpec(AudioSpec audio) { audio_ = audio; }
-    int width() const { return video_.width; }
-    int height() const { return video_.height; }
-    Rational frameRate() const { return video_.frameRate; }
-    Rational sampleAspect() const { return video_.sampleAspect; }
-    Rational timeBase() const { return video_.timeBase; }
+
+    void setAudioSpec(AudioSpec audio) {
+        audio_ = audio;
+    }
+
+    int width() const {
+        return video_.width;
+    }
+
+    int height() const {
+        return video_.height;
+    }
+
+    Rational frameRate() const {
+        return video_.frameRate;
+    }
+
+    Rational sampleAspect() const {
+        return video_.sampleAspect;
+    }
+
+    Rational timeBase() const {
+        return video_.timeBase;
+    }
+    
     WorkingFormat workingFormat() const;
     void setWorkingFormat(WorkingFormat format);
-    int sampleRate() const { return audio_.sampleRate; }
-    int channels() const { return audio_.channels; }
+
+    int sampleRate() const {
+        return audio_.sampleRate;
+    }
+
+    int channels() const {
+        return audio_.channels;
+    }
+    
     ColorPrimaries primaries() const;
     ColorTransfer transfer() const;
     ColorRange range() const;

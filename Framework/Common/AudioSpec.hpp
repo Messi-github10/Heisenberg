@@ -30,16 +30,20 @@ enum class ChannelLayout : uint8_t {
 };
 
 struct AudioSpec {
-    int sampleRate  = 48000;
-    int channels    = 2;
+    int sampleRate = 0;
+    int channels = 0;
     ChannelLayout layout = ChannelLayout::Auto;
 
-    bool valid() const { return sampleRate > 0 && channels > 0; }
+    bool valid() const {
+        return sampleRate > 0 && channels > 0;
+    }
 
     bool operator==(const AudioSpec& rhs) const {
         return sampleRate == rhs.sampleRate && channels == rhs.channels;
     }
-    bool operator!=(const AudioSpec& rhs) const { return !(*this == rhs); }
+    bool operator!=(const AudioSpec& rhs) const {
+        return !(*this == rhs);
+    }
 };
 
 // 根据布局获取声道数

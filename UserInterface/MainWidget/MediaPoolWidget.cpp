@@ -89,8 +89,12 @@ MediaListWidget::MediaListWidget(heisenberg::ui::EditorSession* session, QWidget
     setObjectName("mediaList");
 }
 
-QStringList MediaListWidget::mimeTypes() const { return {heisenberg::ui::kMediaMimeType}; }
-Qt::DropActions MediaListWidget::supportedDropActions() const { return Qt::CopyAction; }
+QStringList MediaListWidget::mimeTypes() const {
+    return {heisenberg::ui::kMediaMimeType};
+}
+Qt::DropActions MediaListWidget::supportedDropActions() const {
+    return Qt::CopyAction;
+}
 
 QMimeData* MediaListWidget::mimeData(const QList<QListWidgetItem*>& items) const {
     auto* mime = new QMimeData;

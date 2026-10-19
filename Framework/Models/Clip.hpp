@@ -1,7 +1,6 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
-
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -42,8 +41,6 @@ struct WordTiming {
     bool operator==(const WordTiming&) const = default;
 };
 
-// Retain Palmier's complete Codable keyframe payload while the common frame
-// offsets remain editable before every advanced renderer is implemented.
 struct KeyframeTrackPayload {
     JsonValue value = JsonValue::object();
     bool operator==(const KeyframeTrackPayload&) const = default;

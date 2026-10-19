@@ -216,7 +216,9 @@ public:
         if (!pl_tex_download(gpu_,&transfer)) { error="Cannot download final presentation attachment"; return false; }
         return true;
     }
-    float quantum() const { return 1.0f / float((1 << surface_.fbo->params.format->component_depth[0])-1); }
+    float quantum() const {
+        return 1.0f / float((1 << surface_.fbo->params.format->component_depth[0])-1);
+    }
     std::array<float,4> pixel(int x, int y) const {
         const auto format=surface_.fbo->params.format;
         uint64_t packed=0;

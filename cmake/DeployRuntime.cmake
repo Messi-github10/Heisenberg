@@ -23,8 +23,6 @@ function(heisenberg_deploy_runtime target)
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${target}>/licenses/heisenberg"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/LICENSE"
             "$<TARGET_FILE_DIR:${target}>/licenses/heisenberg/LICENSE"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/docs/composition-color-export.md"
-            "$<TARGET_FILE_DIR:${target}>/licenses/heisenberg/dependencies-and-pipeline.md"
         VERBATIM)
     foreach(dependency OpenColorIO::OpenColorIO heisenberg_shaderc)
         get_target_property(license_directory ${dependency} HEISENBERG_LICENSE_DIRECTORY)

@@ -51,7 +51,7 @@ TEST(MediaMathRegression, AdjacentSampleRangesTelescopeIncludingNegativePreroll)
 TEST(MediaMathRegression, InvalidScalesAndOverflowNeverProduceWrappedIndices) {
     EXPECT_EQ(samplesToPosition(Rational(0, 1), 48000, 42), 0);
     EXPECT_EQ(samplesToPosition(Rational(24, 1), 0, 42), 0);
-    EXPECT_THROW(checkedRescale(42, AVRational{0, 1}, AVRational{1, 48000}),
+    EXPECT_THROW(rescaleTimestamp(42, AVRational{0, 1}, AVRational{1, 48000}),
                  std::invalid_argument);
     EXPECT_THROW(samplesToPosition(Rational(1, 1), 48000,
                                    std::numeric_limits<int64_t>::max()), std::overflow_error);

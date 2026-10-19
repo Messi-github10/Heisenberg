@@ -23,8 +23,12 @@ public:
     explicit MainWindow(heisenberg::ui::EditorSession* session, QWidget* parent = nullptr);
     ~MainWindow() override = default;
 
-    VideoWidget* videoWidget() const { return videoWidget_; }
-    TimelineWidget* timelineWidget() const { return timelineWidget_; }
+    VideoWidget* videoWidget() const {
+        return videoWidget_;
+    }
+    TimelineWidget* timelineWidget() const {
+        return timelineWidget_;
+    }
     bool hardwareDecodeEnabled() const;
     bool loadProjectPackage(const QString& path, bool showError = true);
     bool saveProjectPackage(bool saveAs = false);

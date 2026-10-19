@@ -1,5 +1,4 @@
 #include "ExportEngine.hpp"
-
 #include <Compositing/CompositionBuilder.hpp>
 #include <Compositing/CompositionExecutor.hpp>
 #include <Compositing/Grade/GradeCompiler.hpp>
@@ -11,7 +10,6 @@
 #include <Platform/D3D11/D3D11Context.hpp>
 #include <Platform/GpuContext.hpp>
 #include <Platform/Vulkan/VulkanContext.hpp>
-
 #include <algorithm>
 #include <atomic>
 #include <filesystem>
@@ -67,7 +65,9 @@ public:
     ~StagedOutput() {
         if (!committed_) { std::error_code ignored; fs::remove(staging_, ignored); }
     }
-    std::string path() const { return utf8(staging_); }
+    std::string path() const {
+        return utf8(staging_);
+    }
     void commit() {
         const DWORD flags = MOVEFILE_WRITE_THROUGH | (overwrite_ ? MOVEFILE_REPLACE_EXISTING : 0);
         if (!MoveFileExW(staging_.c_str(), target_.c_str(), flags))
@@ -118,7 +118,9 @@ struct ExportEngine::Impl {
     ExportProgress progress;
     ExportResult result;
 
-    void checkCancel() const { if (cancelled.load(std::memory_order_acquire)) throw Cancelled{}; }
+    void checkCancel() const {
+        if (cancelled.load(std::memory_order_acquire)) throw Cancelled{};
+    }
     void publish(ExportProgress value) {
         { std::lock_guard lock(mutex); progress = value; }
         if (owner.onProgress) { try { owner.onProgress(value); } catch (...) {} }
@@ -133,7 +135,10 @@ struct ExportEngine::Impl {
         active.store(false, std::memory_order_release);
         if (owner.onFinished) { try { owner.onFinished(value); } catch (...) {} }
     }
-    ExportProgress snapshotProgress() const { std::lock_guard lock(mutex); return progress; }
+    ExportProgress snapshotProgress() const {
+        std::lock_guard lock(mutex);
+        return progress;
+    }
 
     void run(ExportRequest request) {
         struct WorkerScope {
@@ -296,15 +301,33 @@ bool ExportEngine::start(ExportRequest request, std::string* error) {
     }
     return true;
 }
-void ExportEngine::cancel() { impl_->cancelled.store(true, std::memory_order_release); }
+
+void ExportEngine::cancel() {
+    impl_->cancelled.store(true, std::memory_order_release);
+}
+
 void ExportEngine::wait() {
     if (currentExportWorker == this) return;
     std::lock_guard lifecycle(impl_->lifecycle);
     if (impl_->worker.joinable() && impl_->worker.get_id() != std::this_thread::get_id()) impl_->worker.join();
 }
-void ExportEngine::shutdown() { cancel(); wait(); }
-bool ExportEngine::running() const { return impl_->active.load(std::memory_order_acquire); }
-ExportProgress ExportEngine::progress() const { return impl_->snapshotProgress(); }
-ExportResult ExportEngine::result() const { std::lock_guard lock(impl_->mutex); return impl_->result; }
+
+void ExportEngine::shutdown() {
+    cancel();
+    wait();
+}
+
+bool ExportEngine::running() const {
+    return impl_->active.load(std::memory_order_acquire);
+}
+
+ExportProgress ExportEngine::progress() const {
+    return impl_->snapshotProgress();
+}
+
+ExportResult ExportEngine::result() const {
+    std::lock_guard lock(impl_->mutex);
+    return impl_->result;
+}
 
 } // namespace heisenberg

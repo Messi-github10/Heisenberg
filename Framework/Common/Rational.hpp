@@ -173,20 +173,26 @@ public:
         return (int64_t)num_ * rhs.den_ > (int64_t)rhs.num_ * den_;
     }
 
-    bool operator<=(const Rational &rhs) const { return !(*this > rhs); }
-    bool operator>=(const Rational &rhs) const { return !(*this < rhs); }
+    bool operator<=(const Rational &rhs) const {
+        return !(*this > rhs);
+    }
+    bool operator>=(const Rational &rhs) const {
+        return !(*this < rhs);
+    }
 
-    const Rational &operator+() const { return *this; }
+    const Rational &operator+() const {
+        return *this;
+    }
 
-    Rational operator-() const
-    {
+    Rational operator-() const {
         return Rational(-num_, den_);
     }
 
-    bool operator!() const { return !num_; }
+    bool operator!() const {
+        return !num_;
+    }
 
-    double toDouble() const
-    {
+    double toDouble() const {
         if (isNaN()) return std::numeric_limits<double>::quiet_NaN();
         if (den_ == 0) return num_ >= 0
             ? std::numeric_limits<double>::infinity()
@@ -194,62 +200,63 @@ public:
         return static_cast<double>(num_) / static_cast<double>(den_);
     }
 
-    AVRational toAVRational() const
-    {
+    AVRational toAVRational() const {
         AVRational r;
         r.num = num_;
         r.den = den_;
         return r;
     }
 
-    Rational flipped() const
-    {
+    Rational flipped() const {
         return Rational(den_, num_);
     }
 
-    void flip()
-    {
+    void flip() {
         std::swap(num_, den_);
         fixSigns();
     }
 
-    bool isNull() const { return num_ == 0; }
+    bool isNull() const {
+        return num_ == 0;
+    }
 
-    bool isNaN() const { return den_ == 0; }
+    bool isNaN() const {
+        return den_ == 0;
+    }
 
-    int numerator() const { return num_; }
-    int denominator() const { return den_; }
+    int numerator() const {
+        return num_;
+    }
+    int denominator() const {
+        return den_;
+    }
 
-    std::string toString() const
-    {
+    std::string toString() const {
         if (isNaN()) return "NaN";
         if (den_ == 1) return std::to_string(num_);
         return std::to_string(num_) + '/' + std::to_string(den_);
     }
 
-    friend std::ostream &operator<<(std::ostream &out, const Rational &value)
-    {
+    friend std::ostream &operator<<(std::ostream &out, const Rational &value) {
         out << value.toString();
         return out;
     }
 
 private:
-    void fixSigns()
-    {
+    void fixSigns() {
         if (den_ < 0) {
             num_ = -num_;
             den_ = -den_;
         }
     }
 
-    void reduce()
-    {
-        // A zero denominator is the invalid sentinel, including 0/0.
+    void reduce() {
         if (den_ == 0) return;
         if (num_ == 0) {
             den_ = 1;
             return;
         }
+
         const int64_t g = std::gcd(static_cast<int64_t>(num_),
                                    static_cast<int64_t>(den_));
         num_ = static_cast<int>(num_ / g);

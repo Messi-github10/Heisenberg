@@ -31,11 +31,17 @@ public:
 
     void setSession(heisenberg::ui::EditorSession* session);
     void refreshProject();
-    qint64 currentFrame() const { return currentFrame_; }
-    QString selectedClipId() const { return QString::fromStdString(selectedClipId_); }
+    qint64 currentFrame() const {
+        return currentFrame_;
+    }
+    QString selectedClipId() const {
+        return QString::fromStdString(selectedClipId_);
+    }
     bool cancelInteraction();
     void setSnappingEnabled(bool enabled);
-    bool snappingEnabled() const { return snappingEnabled_; }
+    bool snappingEnabled() const {
+        return snappingEnabled_;
+    }
     void splitSelectedClip();
     void removeSelectedClip();
     void editSelectedClipAudio();

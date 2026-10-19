@@ -7,7 +7,6 @@
 #include <memory>
 #include <vector>
 #include <vulkan/vulkan.hpp>
-
 #include <Common/NonCopy.hpp>
 
 extern "C" {
@@ -24,8 +23,6 @@ struct VulkanResources {
     uint32_t graphicsQF = 0;
     vk::Queue graphicsQueue = nullptr;
     PFN_vkGetInstanceProcAddr getProcAddr = nullptr;
-    // Actual vkCreateDevice contract, not physical-device support. Chain owner
-    // must outlive GpuContext construction. Required for non-singleton devices.
     const VkPhysicalDeviceFeatures2* enabledFeatures = nullptr;
     std::vector<const char*> enabledExtensions;
     uint32_t apiVersion = VK_API_VERSION_1_2;

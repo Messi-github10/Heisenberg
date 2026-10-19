@@ -52,7 +52,9 @@ struct CompositionPlan {
 
     std::optional<CompositionSample> videoSampleAt(int64_t frame) const;
     std::optional<CompositionSample> audioSampleAt(int64_t frame) const;
-    std::optional<CompositionSample> sampleAt(int64_t frame) const { return videoSampleAt(frame); }
+    std::optional<CompositionSample> sampleAt(int64_t frame) const {
+        return videoSampleAt(frame);
+    }
 };
 
 } // namespace heisenberg

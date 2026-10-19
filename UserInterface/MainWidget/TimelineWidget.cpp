@@ -330,8 +330,12 @@ void TimelineWidget::fitToContent() {
     update();
 }
 
-void TimelineWidget::zoomIn() { setZoom(pixelsPerFrame_ * 1.25, width() * 0.6); }
-void TimelineWidget::zoomOut() { setZoom(pixelsPerFrame_ / 1.25, width() * 0.6); }
+void TimelineWidget::zoomIn() {
+    setZoom(pixelsPerFrame_ * 1.25, width() * 0.6);
+}
+void TimelineWidget::zoomOut() {
+    setZoom(pixelsPerFrame_ / 1.25, width() * 0.6);
+}
 
 QString TimelineWidget::timelineName() const {
     const auto* active = timeline();

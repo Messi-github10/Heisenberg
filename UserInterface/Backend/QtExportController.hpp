@@ -18,7 +18,9 @@ public:
     QtExportController(EditorSession* session, PlayerController* player, QObject* parent = nullptr);
     ~QtExportController() override;
     bool start(ExportRequest request, QString* error = nullptr);
-    bool running() const { return engine_.running(); }
+    bool running() const {
+        return engine_.running();
+    }
     void chooseAndExport(QWidget* parent);
     void cancel();
     void shutdown();

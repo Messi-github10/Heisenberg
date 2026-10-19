@@ -292,7 +292,9 @@ struct VulkanSyncPoint {
     VkSemaphore semaphore = VK_NULL_HANDLE;
     uint64_t    value     = 0;
 
-    bool valid() const { return semaphore != VK_NULL_HANDLE; }
+    bool valid() const {
+        return semaphore != VK_NULL_HANDLE;
+    }
 };
 
 struct VulkanImageRef {

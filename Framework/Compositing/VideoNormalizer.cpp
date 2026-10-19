@@ -5,9 +5,7 @@
 #include <MultiMedia/Video/Renderer/ColorSpaceUtils.hpp>
 #include <MultiMedia/Video/Renderer/RenderEngine.hpp>
 #include <Utiles/Logger.hpp>
-
 #include <d3d11.h>
-
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -164,7 +162,6 @@ struct WrappedSource {
     pl_tex planes[2]{};
 
     ~WrappedSource() {
-        // textures are owned by the caller via destroy()
     }
 
     void destroy(pl_gpu gpu) {
@@ -265,7 +262,7 @@ bool wrapHardwareSource(pl_gpu gpu, const AVFrame* source, WrappedSource& wrappe
         wrapped.frame.repr.bits.color_depth = 8;
         wrapped.frame.repr.bits.bit_shift = 0;
     }
-    // AVChromaLocation and pl_chroma_location have different numbering.
+
     pl_chroma_location chroma = PL_CHROMA_LEFT;
     switch (source->chroma_location) {
         case AVCHROMA_LOC_CENTER: chroma = PL_CHROMA_CENTER; break;
@@ -370,8 +367,6 @@ pl_rect2df letterbox(const AVFrame& source, const TimelineSettings& settings) {
     const int dstHeight = settings.height();
     const double sourceSar = source.sample_aspect_ratio.num > 0 &&
         source.sample_aspect_ratio.den > 0 ? av_q2d(source.sample_aspect_ratio) : 1.0;
-    // Compare display aspect ratios in destination pixel coordinates so
-    // anamorphic inputs and non-square target pixels are both preserved.
     const float srcAspect = static_cast<float>(
         source.width * sourceSar / std::max(source.height, 1) /
         settings.sampleAspect().toDouble());
@@ -414,8 +409,6 @@ struct VideoNormalizer::Impl {
         const auto format = static_cast<AVPixelFormat>(source->format);
         if (format != AV_PIX_FMT_RGBA && format != AV_PIX_FMT_RGBAF16 &&
             format != AV_PIX_FMT_RGBAF32) return software->uploadAvFrame(source);
-        // SoftwareContext only supports a subset of packed formats. Upload all
-        // three working formats correctly without treating float32 as UNORM16.
         const int bits = format == AV_PIX_FMT_RGBA ? 8 :
             format == AV_PIX_FMT_RGBAF16 ? 16 : 32;
         pl_plane_data data{};
@@ -639,8 +632,6 @@ std::shared_ptr<AVFrame> VideoNormalizer::normalize(const AVFrame* source,
     target.color = profileColor(impl_->profile);
     target.crop = letterbox(*source, impl_->profile);
 
-    // Wrapped D3D11 textures do not advertise blit_dst. Letterbox bars are
-    // cleared with an RTV so libplacebo does not have to blit-clear the canvas.
     if (impl_->context && impl_->canvasRtv) {
         const float level = impl_->profile.range() == ColorRange::Full ? 0.0f : 16.0f / 255.0f;
         const float black[4] = {level, level, level, 1.0f};
@@ -659,9 +650,6 @@ std::shared_ptr<AVFrame> VideoNormalizer::normalize(const AVFrame* source,
     }
     if (impl_->context) impl_->context->Flush();
 
-    // The presenter's D3D11/Vulkan interop contract is half-float. Other
-    // working formats must use their matching CPU AVFrame representation,
-    // never CopyResource a differently formatted texture into that backend.
     if (hardwareSource && impl_->profile.workingFormat() == WorkingFormat::Rgba16f) {
         return makeHardwareCanvas(impl_->canvasTexture, source,
                                   impl_->profile, error);
@@ -692,8 +680,6 @@ std::shared_ptr<AVFrame> VideoNormalizer::normalize(const AVFrame* source,
         return {};
     }
 
-    // Texture format, AV pixel format and copied row size must agree; the old
-    // fixed eight-byte copy corrupted RGBA8/RGBA32F output buffers.
     const size_t packedTexel = texelSize(impl_->profile.workingFormat());
     const size_t srcPitch = mapped.RowPitch;
     for (int y = 0; y < out->height; ++y) {

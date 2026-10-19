@@ -25,7 +25,9 @@ struct OutputFolder {
     fs::path root = fs::temp_directory_path() / ("heisenberg-export-" + makeUuid());
     OutputFolder() { fs::create_directories(root); }
     ~OutputFolder() { std::error_code ignored; fs::remove_all(root, ignored); }
-    fs::path output() const { return root / "成片.mp4"; }
+    fs::path output() const {
+        return root / "成片.mp4";
+    }
     bool noStaging() const {
         for (const auto& entry : fs::directory_iterator(root))
             if (entry.path().extension() == ".partial") return false;

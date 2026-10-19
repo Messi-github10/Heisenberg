@@ -56,7 +56,9 @@ struct Wave {
         }
     }
     ~Wave() { std::error_code error; std::filesystem::remove(path, error); }
-    std::string name() const { return path.string(); }
+    std::string name() const {
+        return path.string();
+    }
 };
 CompositionPlan audioPlan(const std::string& path, int64_t frames = 48) {
     CompositionPlan plan;

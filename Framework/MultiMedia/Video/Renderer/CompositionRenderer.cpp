@@ -31,7 +31,9 @@ namespace {
 using namespace filtergraph;
 constexpr VkImageUsageFlags imageUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
     | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
+void require(bool ok, const char* message) {
+    if (!ok) throw std::runtime_error(message);
+}
 void wait(VkDevice device, VulkanSyncPoint point) {
     if (!point.valid()) return;
     VkSemaphoreWaitInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
@@ -90,10 +92,18 @@ struct RenderedFrame::Storage {
         require(vkSignalSemaphore(context.device, &signal) == VK_SUCCESS, "Cannot signal frame ready"); ready = {completion, 1};
     }
 };
-RenderedFrame::operator bool() const { return storage_ && storage_->resource.ref().valid(); }
-VulkanImageRef RenderedFrame::image() const { return storage_ ? storage_->resource.ref(storage_->ready) : VulkanImageRef{}; }
-int64_t RenderedFrame::position() const { return storage_ ? storage_->position : 0; }
-bool RenderedFrame::encoded() const { return storage_ && storage_->encoded; }
+RenderedFrame::operator bool() const {
+    return storage_ && storage_->resource.ref().valid();
+}
+VulkanImageRef RenderedFrame::image() const {
+    return storage_ ? storage_->resource.ref(storage_->ready) : VulkanImageRef{};
+}
+int64_t RenderedFrame::position() const {
+    return storage_ ? storage_->position : 0;
+}
+bool RenderedFrame::encoded() const {
+    return storage_ && storage_->encoded;
+}
 const ColorOutputRequest& RenderedFrame::outputSelectionMetadata() const {
     static const ColorOutputRequest empty;
     return storage_ ? storage_->outputSelection : empty;
@@ -131,8 +141,13 @@ struct CompositionRenderer::Impl {
         reportedColorPaths.push_back(path);
         LOG_INFO("CompositionRenderer color path: {}", path);
     }
-    void observeCancellation() { if (cancelled && cancelled()) cancellationObserved = true; }
-    void checkCancellation() { observeCancellation(); require(!cancellationObserved, "Rendering cancelled"); }
+    void observeCancellation() {
+        if (cancelled && cancelled()) cancellationObserved = true;
+    }
+    void checkCancellation() {
+        observeCancellation();
+        require(!cancellationObserved, "Rendering cancelled");
+    }
     void waitGpu(VulkanSyncPoint point) {
         if (!point.valid()) return;
         VkSemaphoreWaitInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
@@ -143,7 +158,9 @@ struct CompositionRenderer::Impl {
         require(status == VK_SUCCESS, "Renderer timeline wait failed");
         // Caller returns/destroys wrappers before reporting cancellation.
     }
-    void check() const { require(gpu && owner == std::this_thread::get_id(), "CompositionRenderer requires its initializing worker"); }
+    void check() const {
+        require(gpu && owner == std::this_thread::get_id(), "CompositionRenderer requires its initializing worker");
+    }
     RenderedFrame allocate(VkExtent2D extent, GraphImageContract contract, int64_t position, AVRational timeBase) {
         RenderedFrame frame; frame.storage_ = std::make_shared<RenderedFrame::Storage>(context);
         require(frame.storage_->resource.ensure(extent, imageUsage, contract), "Cannot allocate renderer RGBA16F image");
@@ -391,7 +408,9 @@ bool CompositionRenderer::setFilterGraphSnapshot(const VulkanGraphDocument& docu
     try { impl_->check(); std::unique_ptr<VulkanFilterGraph> next; if (!document.nodes().empty()) next = std::make_unique<VulkanFilterGraph>(impl_->context,document); impl_->graph = std::move(next); impl_->graphDocument = document; return true; }
     catch (const std::exception& e) { if (error) *error = e.what(); return false; }
 }
-VulkanGraphDocument CompositionRenderer::filterGraphSnapshot() const { return impl_->graphDocument; }
+VulkanGraphDocument CompositionRenderer::filterGraphSnapshot() const {
+    return impl_->graphDocument;
+}
 bool CompositionRenderer::setNodeParameter(uint64_t id, const std::string& name, float value) {
     impl_->check(); auto next = impl_->graphDocument; if (!impl_->graph || !next.updateParameter(id,{{name,value}})) return false;
     for (const auto& node : next.nodes()) if (node.id == id) { if (!impl_->graph->setParameters(id,node.parameter)) return false; impl_->graphDocument = std::move(next); return true; } return false;

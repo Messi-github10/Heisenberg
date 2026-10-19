@@ -1,5 +1,4 @@
 #include "MediaResolver.hpp"
-
 #include <filesystem>
 
 namespace heisenberg {

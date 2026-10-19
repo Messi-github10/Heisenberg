@@ -1,5 +1,4 @@
 #include <MultiMedia/DemuxContext.hpp>
-
 #include <Common/Packet.hpp>
 #include <Common/Stream.hpp>
 #include <MultiMedia/Demuxer/DemuxerFactory.hpp>

@@ -16,13 +16,17 @@ public:
         VIDEO, AUDIO
     };
 
-    bool isVideo() const { return type == VIDEO; }
-    bool isAudio() const { return type == AUDIO; }
+    bool isVideo() const {
+        return type == VIDEO;
+    }
+    bool isAudio() const {
+        return type == AUDIO;
+    }
 
     int index = -1;
     int demuxerId = -1;
-    int64_t startTime = 0; // In stream time-base units.
-    int64_t originTime = 0; // Shared source origin, rescaled to this stream.
+    int64_t startTime = 0;
+    int64_t originTime = 0;
     bool originKnown = false;
     int64_t duration = 0;
     bool durationKnown = false;

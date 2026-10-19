@@ -35,7 +35,9 @@ struct TempOutput {
         std::filesystem::create_directories(directory);
     }
     ~TempOutput() { std::error_code error; std::filesystem::remove_all(directory, error); }
-    std::string path() const { return (directory / "encoded.mp4").string(); }
+    std::string path() const {
+        return (directory / "encoded.mp4").string();
+    }
 };
 struct InputDeleter { void operator()(AVFormatContext* p) const { avformat_close_input(&p); } };
 using InputPtr = std::unique_ptr<AVFormatContext, InputDeleter>;

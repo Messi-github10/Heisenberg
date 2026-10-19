@@ -56,9 +56,15 @@ struct LogicalResourceState {
 struct LogicalResourceId {
     uint32_t id = 0;
 
-    bool valid() const { return id != 0; }
-    bool operator==(const LogicalResourceId& other) const { return id == other.id; }
-    bool operator!=(const LogicalResourceId& other) const { return id != other.id; }
+    bool valid() const {
+        return id != 0;
+    }
+    bool operator==(const LogicalResourceId& other) const {
+        return id == other.id;
+    }
+    bool operator!=(const LogicalResourceId& other) const {
+        return id != other.id;
+    }
 };
 
 /// 资源的读写访问模式

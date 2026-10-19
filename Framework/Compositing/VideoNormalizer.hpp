@@ -1,7 +1,6 @@
 #pragma once
 
 #include <Models/TimelineSettings.hpp>
-
 #include <memory>
 #include <string>
 
@@ -9,9 +8,6 @@ struct AVFrame;
 
 namespace heisenberg {
 
-// Per-renderer offscreen working-format conversion. No cache/singleton and no
-// additional worker: initialization, normalization and shutdown must all occur
-// on the application's render worker. AVFrames returned own their pixel storage.
 class VideoNormalizer {
 public:
     VideoNormalizer();

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "VideoFrame.hpp"
-
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -15,8 +14,6 @@ class AudioFrame;
 class Packet;
 class VideoFrame;
 
-// A media item travelling through the demux/decode/filter pipeline.
-// The payload is type-safe; shared ownership supports queues and seek caches.
 enum class MediaFrameType {
     None,
     Packet,
@@ -36,10 +33,8 @@ struct FrameMetadata {
 
 using PacketPtr = std::shared_ptr<const Packet>;
 using VideoFramePtr = std::shared_ptr<VideoFrame>;
-using OwnedVideoFrame = VideoFramePtr;
 using AudioFramePtr = std::shared_ptr<AudioFrame>;
-using MediaPayload = std::variant<std::monostate, PacketPtr, VideoFramePtr,
-                                  AudioFramePtr>;
+using MediaPayload = std::variant<std::monostate, PacketPtr, VideoFramePtr, AudioFramePtr>;
 
 struct MediaFrame {
     MediaFrameType type = MediaFrameType::None;
@@ -89,7 +84,9 @@ struct MediaFrame {
                type == MediaFrameType::Audio;
     }
 
-    bool isSignal() const { return type == MediaFrameType::Eof; }
+    bool isEof() const {
+        return type == MediaFrameType::Eof;
+    }
 
     VideoFramePtr videoFrame() const {
         if (type != MediaFrameType::Video) return {};
@@ -97,7 +94,6 @@ struct MediaFrame {
         return frame ? *frame : VideoFramePtr{};
     }
 
-    // Explicit backend boundary; video payloads themselves are never AVFrames.
     std::shared_ptr<AVFrame> nativeVideoFrame() const {
         const auto frame = videoFrame();
         return frame ? frame->native() : std::shared_ptr<AVFrame>{};

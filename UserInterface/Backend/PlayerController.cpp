@@ -91,7 +91,9 @@ bool PlayerController::getFilterParameter(const QString& filterId,
                                           name.toStdString(), value);
 }
 
-bool PlayerController::openFile(const QString& path) { return openSource(path); }
+bool PlayerController::openFile(const QString& path) {
+    return openSource(path);
+}
 
 bool PlayerController::openSource(const QString& path, const std::string& mediaRef) {
     if (!previewer_) return false;
@@ -176,9 +178,15 @@ void PlayerController::closeFile() {
     emit isPlayingChanged();
 }
 
-void PlayerController::play()            { if (previewer_) previewer_->play(); }
-void PlayerController::pause()           { if (previewer_) previewer_->pause(); }
-void PlayerController::togglePlayPause() { if (previewer_) previewer_->togglePlayPause(); }
+void PlayerController::play() {
+    if (previewer_) previewer_->play();
+}
+void PlayerController::pause() {
+    if (previewer_) previewer_->pause();
+}
+void PlayerController::togglePlayPause() {
+    if (previewer_) previewer_->togglePlayPause();
+}
 void PlayerController::seek(double seconds) {
     if (!previewer_) return;
     // A newer explicit selection supersedes the initial timeline focus. Do not
@@ -213,10 +221,18 @@ void PlayerController::endScrub(qint64 frame) {
     }
     previewer_->endScrub(frame);
 }
-void PlayerController::stepForward(int n)  { if (previewer_) previewer_->stepForward(n); }
-void PlayerController::stepBackward(int n) { if (previewer_) previewer_->stepBackward(n); }
-void PlayerController::goToStart()         { if (previewer_) previewer_->goToStart(); }
-void PlayerController::goToEnd()           { if (previewer_) previewer_->goToEnd(); }
+void PlayerController::stepForward(int n) {
+    if (previewer_) previewer_->stepForward(n);
+}
+void PlayerController::stepBackward(int n) {
+    if (previewer_) previewer_->stepBackward(n);
+}
+void PlayerController::goToStart() {
+    if (previewer_) previewer_->goToStart();
+}
+void PlayerController::goToEnd() {
+    if (previewer_) previewer_->goToEnd();
+}
 
 void PlayerController::onStateChanged(heisenberg::IPreviewer::State state) {
     const bool playing = (state == heisenberg::IPreviewer::State::Playing);

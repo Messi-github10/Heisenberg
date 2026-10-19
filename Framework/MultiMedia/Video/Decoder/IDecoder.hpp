@@ -39,7 +39,9 @@ public:
 
     // Sticky fatal FFmpeg error since open/flush. EAGAIN and EOF are not
     // errors. Consumers must check after a null receiveFrame(), not infer EOF.
-    virtual int lastError() const { return 0; }
+    virtual int lastError() const {
+        return 0;
+    }
 
     virtual DecoderBackend backend() const = 0;
 

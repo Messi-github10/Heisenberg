@@ -28,7 +28,10 @@ struct Capture {
     std::vector<std::shared_ptr<const AudioFrame>> frames(uint64_t generation) {
         std::lock_guard lock(mutex); return pcm[generation];
     }
-    std::thread::id workerId() { std::lock_guard lock(mutex); return worker; }
+    std::thread::id workerId() {
+        std::lock_guard lock(mutex);
+        return worker;
+    }
 };
 template<class Predicate> bool pumpUntil(VideoEngine& engine, Predicate predicate) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);

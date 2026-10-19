@@ -20,7 +20,9 @@ public:
     explicit PipeGraph(GraphicApiBackend gpuType);
     ~PipeGraph() override;
 
-    GraphicApiBackend getGpuType() override { return gpuType_; }
+    GraphicApiBackend getGpuType() override {
+        return gpuType_;
+    }
     void reset() override;
     IBaseNode* getNode(int32_t index) override;
     IBaseNode* addNode(IBaseNode* node) override;
@@ -38,9 +40,15 @@ public:
     bool run(const FrameContext& frame) override;
 
 protected:
-    const std::vector<BaseNode*>& nodes() const { return nodes_; }
-    const std::vector<RuntimeGraphEdge>& edges() const { return edges_; }
-    const std::vector<int32_t>& executionOrder() const { return executionOrder_; }
+    const std::vector<BaseNode*>& nodes() const {
+        return nodes_;
+    }
+    const std::vector<RuntimeGraphEdge>& edges() const {
+        return edges_;
+    }
+    const std::vector<int32_t>& executionOrder() const {
+        return executionOrder_;
+    }
 
     const RuntimeGraphEdge* inputEdge(int32_t nodeIndex,
                                       int32_t inputPin) const;

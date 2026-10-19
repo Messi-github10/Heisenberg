@@ -37,11 +37,17 @@ public:
     static int interrupt(void* opaque) noexcept;
     int seek(double seconds, int streamIndex = -1, int flags = 1 /* AVSEEK_FLAG_BACKWARD */) override;
 
-    const std::vector<Stream> &streams() const override { return streams_; }
+    const std::vector<Stream> &streams() const override {
+        return streams_;
+    }
     double duration() const override;
     bool seekable() const override;
-    bool isOpen() const override { return formatCtx_ != nullptr; }
-    const std::string &url() const override { return url_; }
+    bool isOpen() const override {
+        return formatCtx_ != nullptr;
+    }
+    const std::string &url() const override {
+        return url_;
+    }
     double startTime() const override;
     std::string formatName() const override;
 

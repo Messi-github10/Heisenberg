@@ -3,9 +3,9 @@
 #include "EditorViewModel.hpp"
 
 namespace heisenberg {
+
 class VideoProject;
 
-// Settings intents share the editor's timeline transaction/undo history.
 class ProjectSettings {
 public:
     explicit ProjectSettings(VideoProject& project);

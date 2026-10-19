@@ -1,5 +1,5 @@
 #include "CompositionExecutor.hpp"
-#include <Common/FrameTime.hpp>
+#include <Common/MediaMath.hpp>
 #include <Common/MediaFrame.hpp>
 #include <Common/Packet.hpp>
 #include <Common/Stream.hpp>
@@ -13,43 +13,47 @@
 #include <deque>
 #include <limits>
 #include <unordered_map>
+
 extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
 }
 
 namespace heisenberg {
+
 namespace {
 constexpr size_t kVideoPacketCapacity = 256;
 constexpr size_t kVideoPacketBytes = 16 * 1024 * 1024;
 constexpr size_t kAudioCapacity = 256;
 constexpr int64_t kMixBlock = 2048;
-// Bound a returned allocation as well as internal lookahead. Callers can request
-// arbitrarily long streams through multiple half-open blocks.
 constexpr int64_t kMaxAudioRequest = 1024 * 1024;
 using Context = CompositionExecutor::Context;
 using Status = CompositionStatus;
+
 bool cancelled(const Context& context) noexcept {
-    try { return context.cancelled && context.cancelled(); }
-    catch (...) { return true; }
+    try {
+        return context.cancelled && context.cancelled();
+    } catch (...) {
+        return true;
+    }
 }
+
 std::string ffmpegError(int code) {
     char text[AV_ERROR_MAX_STRING_SIZE]{};
     av_strerror(code, text, sizeof(text));
     return text;
 }
-// A cancellation callable is installed only inside a synchronous call. In
-// particular no session retains the caller's stack, generation atomic or sink.
+
 struct InterruptScope {
     demuxer::DemuxContext& demux;
     InterruptScope(demuxer::DemuxContext& value, const Context& context) : demux(value) {
         demux.setInterrupt([&context] { return cancelled(context); });
     }
-    ~InterruptScope() { demux.setInterrupt({}); }
+    ~InterruptScope() {
+        demux.setInterrupt({});
+    }
 };
 
-// A clip shares one demux cursor for picture and original sound. Independent
-// audio contributions own another session, even for the same source path.
 struct DecoderSession {
     std::unique_ptr<demuxer::DemuxContext> demux;
     std::unique_ptr<decoder::DecoderContext> video, audio;
@@ -90,18 +94,25 @@ struct DecoderSession {
         sourcePath = path;
         hardwareDecode = hardware;
         wantsVideo = wantVideo;
-        video.reset(); audio.reset();
-        videoStream = nullptr; audioStream = nullptr;
-        resampler.reset(); sound.clear(); images.clear(); pendingVideo.clear();
+        video.reset();
+        audio.reset();
+        videoStream = nullptr;
+        audioStream = nullptr;
+        resampler.reset();
+        sound.clear();
+        images.clear();
+        pendingVideo.clear();
         lookaheadVideo.reset();
         pendingVideoBytes = 0;
         rate = Rational(24, 1);
-        duration = 0.0; videoEnd = lastImageEnd = selectedSeconds = -1.0;
+        duration = 0.0;
+        videoEnd = lastImageEnd = selectedSeconds = -1.0;
         decodedVideoSeconds = -std::numeric_limits<double>::infinity();
         inferredVideoSeconds = 0.0;
         audioEnd = discardedAudioBefore = std::numeric_limits<int64_t>::min();
         inferredAudioPosition = expectedInputPosition = 0;
-        inputPositionKnown = eof = resamplerDrained = videoDrainSent = videoDrained = videoCoverageLost = false;
+        inputPositionKnown = false;
+        eof = resamplerDrained = videoDrainSent = videoDrained = videoCoverageLost = false;
         error.clear();
         outputSpec = output;
         demux = std::make_unique<demuxer::DemuxContext>();
@@ -147,8 +158,9 @@ struct DecoderSession {
         error.clear();
         diagnosticOpenMs += std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - diagnosticStart).count();
-        return Status::Ok;
+        return Status::Succeeded;
     }
+
     void reportDecode(double elapsedMs, std::optional<double> seconds, int64_t first, int64_t last,
                       const Context& context, Status status) {
         ++diagnosticCalls;
@@ -181,16 +193,17 @@ struct DecoderSession {
         diagnosticReads = diagnosticVideoFrames = diagnosticAudioFrames = 0;
         diagnosticDecodeMs = diagnosticMaxDecodeMs = diagnosticOpenMs = 0.0;
     }
+
     Status restart(const Context& context) {
         if (!seekable) {
             error = "Cannot seek backward in non-seekable media";
             return Status::Failure;
         }
-        // Replay the origin to preserve compressed priming and resampler phase.
         const auto path = sourcePath;
         const auto spec = outputSpec;
         return open(path, hardwareDecode, spec, wantsVideo, context);
     }
+
     void appendSound(std::shared_ptr<AudioFrame> converted) {
         if (!converted) return;
         if (!converted->hasPosition()) converted->setPosition(inferredAudioPosition);
@@ -198,6 +211,7 @@ struct DecoderSession {
         audioEnd = std::max(audioEnd, inferredAudioPosition);
         sound.push_back(std::move(converted));
     }
+
     void pruneAudio(int64_t before) {
         sound.erase(std::remove_if(sound.begin(), sound.end(), [&](const auto& frame) {
             const auto end = frame->position() + frame->samples();
@@ -206,15 +220,20 @@ struct DecoderSession {
             return true;
         }), sound.end());
     }
+
     bool pictureReady(double seconds) const {
         return !video || videoDrained || (videoEnd >= 0 && seconds >= videoEnd)
             || (!images.empty() && lookaheadVideo && lookaheadVideo->first > seconds + 0.0000001)
             || (!images.empty() && images.front().first <= seconds + 0.0000001
                 && decodedVideoSeconds >= seconds - 0.0000001);
     }
-    bool soundReady(int64_t last) const { return !audio || audioEnd > last || eof; }
+
+    bool soundReady(int64_t last) const {
+        return !audio || audioEnd > last || eof;
+    }
+
     Status pullVideo(const Context& context, std::optional<double> seconds) {
-        if (!video) return Status::Ok;
+        if (!video) return Status::Succeeded;
         if (seconds && lookaheadVideo && lookaheadVideo->first <= *seconds + 0.0000001) {
             images.clear();
             images.emplace_back(std::move(*lookaheadVideo));
@@ -229,10 +248,12 @@ struct DecoderSession {
                 return Status::Failure;
             }
             if (item.type == MediaFrameType::Eof) videoDrained = true;
+
             auto image = item.videoFrame();
             if (!image) {
                 if (!pendingVideo.empty()) {
-                    auto packet = std::move(pendingVideo.front()); pendingVideo.pop_front();
+                    auto packet = std::move(pendingVideo.front());
+                    pendingVideo.pop_front();
                     pendingVideoBytes -= std::get<PacketPtr>(packet.payload)->size();
                     if (!video->push(packet)) {
                         error = "Decoder rejected video packet: " + ffmpegError(video->lastError());
@@ -243,13 +264,15 @@ struct DecoderSession {
                 if (eof && !videoDrainSent) {
                     videoDrainSent = true;
                     if (!video->push(MediaFrame::eof(context.generation))) {
-                        error = "Video decoder drain failed"; return Status::Failure;
+                        error = "Video decoder drain failed";
+                        return Status::Failure;
                     }
                     continue;
                 }
                 break;
             }
             ++diagnosticVideoFrames;
+
             const auto native = image->native();
             const double position = hasFrameTimestamp(*native) ? frameTimeSeconds(*native) : inferredVideoSeconds;
             const double span = native->duration > 0 ? native->duration * av_q2d(native->time_base) : 1.0 / rate.toDouble();
@@ -266,8 +289,9 @@ struct DecoderSession {
             images.clear();
             images.emplace_back(position, std::move(image));
         }
-        return Status::Ok;
+        return Status::Succeeded;
     }
+
     Status pullAudio(const Context& context, int64_t before) {
         if (audio) for (;;) {
             if (cancelled(context)) return Status::Cancelled;
@@ -278,51 +302,62 @@ struct DecoderSession {
             }
             auto frame = item.audioFrame();
             if (!frame) break;
+
             ++diagnosticAudioFrames;
-            // Drain the old filter before a PTS discontinuity resets its phase.
             if (frame->hasPosition() && inputPositionKnown
                 && std::abs(static_cast<long double>(frame->position()) - expectedInputPosition) > 2) {
                 while (auto tail = resampler.drain()) appendSound(std::move(tail));
                 resampler.reset();
             }
             if (frame->hasPosition()) {
-                expectedInputPosition = frame->position() + frame->samples(); inputPositionKnown = true;
-            } else if (inputPositionKnown) expectedInputPosition += frame->samples();
+                expectedInputPosition = frame->position() + frame->samples();
+                inputPositionKnown = true;
+            } else if (inputPositionKnown) {
+                expectedInputPosition += frame->samples();
+            }
             appendSound(resampler.convert(*frame, outputSpec));
             pruneAudio(before);
             if (sound.size() > kAudioCapacity) {
-                error = "Audio decoder lookahead exceeded bounded cache"; return Status::Failure;
+                error = "Audio decoder lookahead exceeded bounded cache";
+                return Status::Failure;
             }
         }
         if (eof && !resamplerDrained) {
             while (auto tail = resampler.drain()) appendSound(std::move(tail));
-            resamplerDrained = true; pruneAudio(before);
+            resamplerDrained = true;
+            pruneAudio(before);
         }
-        return Status::Ok;
+        return Status::Succeeded;
     }
+
     Status read(const Context& context) {
         ++diagnosticReads;
         auto result = demux->readResult(context.generation);
         if (result.status == demuxer::ReadStatus::Cancelled) return Status::Cancelled;
         if (result.status == demuxer::ReadStatus::Failure) {
-            error = "Media read failed: " + ffmpegError(result.error); return Status::Failure;
+            error = "Media read failed: " + ffmpegError(result.error);
+            return Status::Failure;
         }
         if (result.status == demuxer::ReadStatus::End) {
             if (audio && !audio->push(MediaFrame::eof(context.generation))) {
-                error = "Audio decoder drain failed"; return Status::Failure;
+                error = "Audio decoder drain failed";
+                return Status::Failure;
             }
             eof = true;
         } else if (video && result.frame.metadata.streamIndex == videoStream->index) {
             pendingVideoBytes += std::get<PacketPtr>(result.frame.payload)->size();
             pendingVideo.push_back(std::move(result.frame));
             if (pendingVideo.size() > kVideoPacketCapacity || pendingVideoBytes > kVideoPacketBytes) {
-                error = "Video packet lookahead exceeded bounded cache"; return Status::Failure;
+                error = "Video packet lookahead exceeded bounded cache";
+                return Status::Failure;
             }
         } else if (audio && result.frame.metadata.streamIndex == audioStream->index && !audio->push(result.frame)) {
-            error = "Decoder rejected audio packet: " + ffmpegError(audio->lastError()); return Status::Failure;
+            error = "Decoder rejected audio packet: " + ffmpegError(audio->lastError());
+            return Status::Failure;
         }
-        return Status::Ok;
+        return Status::Succeeded;
     }
+
     Status decode(std::optional<double> seconds, int64_t first, int64_t last, const Context& context,
                   std::shared_ptr<VideoFrame>* result = nullptr) {
         const auto diagnosticStart = std::chrono::steady_clock::now();
@@ -342,25 +377,28 @@ struct DecoderSession {
             diagnosticRestartDiscardedAudio = discardedAudioBefore;
             diagnosticLostPictures += lostPicture;
             diagnosticLostAudio += audio && first < discardedAudioBefore;
+
             auto status = restart(context);
-            if (status != Status::Ok) return finish(status);
+            if (status != Status::Succeeded) return finish(status);
         }
-        if (!seconds && soundReady(last)) return finish(Status::Ok);
+
+        if (!seconds && soundReady(last)) return finish(Status::Succeeded);
         if (!seconds) {
             images.clear();
             lookaheadVideo.reset();
             videoCoverageLost = video != nullptr;
         }
+
         InterruptScope interrupt(*demux, context);
         for (;;) {
             if (cancelled(context)) return finish(Status::Cancelled);
             auto status = pullAudio(context, first);
-            if (status != Status::Ok) return finish(status);
+            if (status != Status::Succeeded) return finish(status);
             status = pullVideo(context, seconds);
-            if (status != Status::Ok) return finish(status);
+            if (status != Status::Succeeded) return finish(status);
             if ((!seconds || pictureReady(*seconds)) && soundReady(last)) break;
             status = read(context);
-            if (status != Status::Ok) return finish(status);
+            if (status != Status::Succeeded) return finish(status);
         }
         if (seconds) {
             selectedSeconds = *seconds;
@@ -371,13 +409,15 @@ struct DecoderSession {
                 *result = images.front().second;
             if (result && !*result) images.clear();
         }
-        return finish(Status::Ok);
+        return finish(Status::Succeeded);
     }
     float sample(int channel, int64_t position) const {
         for (const auto& frame : sound) {
             if (position < frame->position()) continue;
             const uint64_t offset = static_cast<uint64_t>(position) - static_cast<uint64_t>(frame->position());
-            if (offset < static_cast<uint64_t>(frame->samples())) return frame->sampleRo(channel, static_cast<int>(offset));
+            if (offset < static_cast<uint64_t>(frame->samples())) {
+                return frame->sampleRo(channel, static_cast<int>(offset));
+            }
         }
         return 0.0f;
     }
@@ -393,33 +433,45 @@ struct CompositionExecutor::Impl {
     std::unordered_map<std::string, std::string> failures;
     std::optional<uint64_t> generation;
     std::optional<int64_t> audioCursor;
-    void reset() { sessions.clear(); failures.clear(); audioCursor.reset(); generation.reset(); }
+    void reset() {
+        sessions.clear();
+        failures.clear();
+        audioCursor.reset();
+        generation.reset();
+    }
+
     void prepare(const Context& context) {
         if (generation && *generation != context.generation) reset();
         generation = context.generation;
     }
-    std::string identity(const char* lane, size_t index) const { return std::string(lane) + std::to_string(index); }
+
+    std::string identity(const char* lane, size_t index) const {
+        return std::string(lane) + std::to_string(index);
+    }
+
     Status failure(const std::string& key, const std::string& path, const std::string& message, std::string& error) {
-        // message may refer to the session we are about to erase.
         error = message;
         failures[key] = error;
         sessions.erase(key);
         if (options.errorPolicy == CompositionErrorPolicy::Strict) return Status::Failure;
         const std::string warning = "unavailable media: " + path + " (" + error + ")";
         if (std::find(warnings.begin(), warnings.end(), warning) == warnings.end()) warnings.push_back(warning);
-        return Status::Ok;
+        return Status::Succeeded;
     }
+
     Status session(const std::string& key, const CompositionClip& clip, bool wantVideo,
                    const Context& context, DecoderSession*& result, std::string& error) {
         result = nullptr;
-        if (auto found = sessions.find(key); found != sessions.end()) { result = found->second.get(); return Status::Ok; }
+        if (auto found = sessions.find(key); found != sessions.end()) {
+            result = found->second.get();
+            return Status::Succeeded;
+        }
         if (auto failed = failures.find(key); failed != failures.end()) {
             error = failed->second;
-            return options.errorPolicy == CompositionErrorPolicy::Strict ? Status::Failure : Status::Ok;
+            return options.errorPolicy == CompositionErrorPolicy::Strict ? Status::Failure : Status::Succeeded;
         }
         if (clip.sourcePath.empty()) {
-            // Builder already supplies the missing-reference warning in preview.
-            if (options.errorPolicy == CompositionErrorPolicy::Preview) return Status::Ok;
+            if (options.errorPolicy == CompositionErrorPolicy::Preview) return Status::Succeeded;
             return failure(key, clip.mediaRef, "Missing media source: " + clip.mediaRef, error);
         }
         auto created = std::make_unique<DecoderSession>();
@@ -427,20 +479,25 @@ struct CompositionExecutor::Impl {
         auto status = created->open(clip.sourcePath, options.hardwareDecode, info.settings.audioSpec(), wantVideo, context);
         if (status == Status::Cancelled) return status;
         if (status == Status::Failure) return failure(key, clip.sourcePath, created->error, error);
-        result = created.get(); sessions.emplace(key, std::move(created));
-        return Status::Ok;
+        result = created.get();
+        sessions.emplace(key, std::move(created));
+        return Status::Succeeded;
     }
+
     void retain(const std::string& lane, const std::vector<std::string>& keys) {
         auto unused = [&](const std::string& key) {
             return key.compare(0, lane.size(), lane) == 0 && std::find(keys.begin(), keys.end(), key) == keys.end();
         };
         for (auto it = sessions.begin(); it != sessions.end();) {
-            if (unused(it->first)) it = sessions.erase(it); else ++it;
+            if (unused(it->first)) it = sessions.erase(it);
+            else ++it;
         }
         for (auto it = failures.begin(); it != failures.end();) {
-            if (unused(it->first)) it = failures.erase(it); else ++it;
+            if (unused(it->first)) it = failures.erase(it);
+            else ++it;
         }
     }
+
     const CompositionClip* clipAt(const std::vector<CompositionClip>& clips, int64_t sample, size_t& index) const {
         auto next = std::upper_bound(clips.begin(), clips.end(), sample,
             [&](int64_t p, const CompositionClip& clip) { return p < info.settings.audioSamplePosition(clip.startFrame); });
@@ -450,6 +507,7 @@ struct CompositionExecutor::Impl {
         index = static_cast<size_t>(found - clips.begin());
         return &*found;
     }
+
     int64_t boundary(const std::vector<CompositionClip>& clips, int64_t begin, int64_t end) const {
         for (const auto& clip : clips) {
             const auto start = info.settings.audioSamplePosition(clip.startFrame);
@@ -459,8 +517,7 @@ struct CompositionExecutor::Impl {
         }
         return end;
     }
-    // Evaluate mapping from the *absolute* output sample, never from the start
-    // of this request. This makes interpolation and fades chunk/seek invariant.
+
     double sourcePosition(const CompositionClip& clip, int64_t target) const {
         const long double rate = info.settings.sampleRate();
         const long double timeBase = static_cast<long double>(info.settings.timeBase().numerator())
@@ -469,6 +526,7 @@ struct CompositionExecutor::Impl {
             - info.settings.audioSamplePosition(clip.startFrame);
         return static_cast<double>(clip.trimStartFrame * timeBase * rate + local * clip.speed);
     }
+
     Status mixContribution(const CompositionClip& clip, size_t index, const char* lane, bool muted,
                            int64_t begin, int64_t end, AudioFrame& output, int64_t outputBegin,
                            const Context& context, std::vector<std::string>& used, std::string& error) {
@@ -476,20 +534,21 @@ struct CompositionExecutor::Impl {
         used.push_back(key);
         DecoderSession* decoder = nullptr;
         auto status = session(key, clip, std::string(lane) == "video:", context, decoder, error);
-        if (status != Status::Ok || !decoder || !decoder->audio) return status;
+        if (status != Status::Succeeded || !decoder || !decoder->audio) return status;
         const double firstPosition = sourcePosition(clip, begin);
         const double lastPosition = sourcePosition(clip, end - 1);
         if (!std::isfinite(firstPosition) || !std::isfinite(lastPosition)
             || firstPosition < static_cast<double>(std::numeric_limits<int64_t>::min())
             || lastPosition >= static_cast<double>(std::numeric_limits<int64_t>::max() - 2)) {
-            error = "Audio source sample mapping overflow"; return Status::Failure;
+            error = "Audio source sample mapping overflow";
+            return Status::Failure;
         }
         const auto first = static_cast<int64_t>(std::floor(firstPosition));
         const auto last = static_cast<int64_t>(std::floor(lastPosition)) + 1;
         status = decoder->decode(std::nullopt, first, last, context);
         if (status == Status::Cancelled) return status;
         if (status == Status::Failure) return failure(key, clip.sourcePath, decoder->error, error);
-        if (muted) return Status::Ok;
+        if (muted) return Status::Succeeded;
         const int rate = info.settings.sampleRate();
         const auto clipStart = info.settings.audioSamplePosition(clip.startFrame);
         const double duration = info.settings.secondsFromFrame(clip.durationFrames);
@@ -511,24 +570,34 @@ struct CompositionExecutor::Impl {
             }
         }
         decoder->pruneAudio(static_cast<int64_t>(std::floor(sourcePosition(clip, end))));
-        return Status::Ok;
+        return Status::Succeeded;
     }
 };
 
 CompositionExecutor::CompositionExecutor() : impl_(std::make_unique<Impl>()) {}
 CompositionExecutor::~CompositionExecutor() = default;
-void CompositionExecutor::reset() { impl_->reset(); }
-void CompositionExecutor::close() { impl_->reset(); impl_->snapshot.reset(); impl_->info = {}; impl_->warnings.clear(); }
-const CompositionExecutor::Info& CompositionExecutor::info() const { return impl_->info; }
+void CompositionExecutor::reset() {
+    impl_->reset();
+}
+void CompositionExecutor::close() {
+    impl_->reset();
+    impl_->snapshot.reset();
+    impl_->info = {};
+    impl_->warnings.clear();
+}
+
+const CompositionExecutor::Info& CompositionExecutor::info() const {
+    return impl_->info;
+}
 const CompositionPlan& CompositionExecutor::plan() const {
     static const CompositionPlan empty;
     return impl_->snapshot ? *impl_->snapshot : empty;
 }
-const std::vector<std::string>& CompositionExecutor::warnings() const { return impl_->warnings; }
+const std::vector<std::string>& CompositionExecutor::warnings() const {
+    return impl_->warnings;
+}
 
 CompositionExecutor::OpenResult CompositionExecutor::open(const CompositionPlan& plan, Options options, Context context) {
-    // Support reopening with executor.plan() itself without invalidating the
-    // caller's reference during close().
     auto snapshot = std::make_shared<const CompositionPlan>(plan);
     close();
     if (cancelled(context)) return {Status::Cancelled, {}, {}};
@@ -559,8 +628,9 @@ CompositionExecutor::OpenResult CompositionExecutor::open(const CompositionPlan&
     impl_->info.hasVideo = !impl_->snapshot->clips.empty();
     impl_->info.hasAudio = !impl_->snapshot->clips.empty() || !impl_->snapshot->audioClips.empty();
     impl_->prepare(context);
-    return {Status::Ok, impl_->info, {}};
+    return {Status::Succeeded, impl_->info, {}};
 }
+
 CompositionExecutor::OpenResult CompositionExecutor::openSource(const std::string& path, Options options, Context context) {
     const std::string sourcePath = path;
     close();
@@ -569,29 +639,44 @@ CompositionExecutor::OpenResult CompositionExecutor::openSource(const std::strin
     decoder->diagnosticIdentity = "video:0";
     auto settings = TimelineSettings::hd1080p24();
     const auto status = decoder->open(sourcePath, options.hardwareDecode, settings.audioSpec(), true, context);
-    if (status != Status::Ok) return {status, {}, status == Status::Failure ? decoder->error : std::string{}};
+    if (status != Status::Succeeded) return {status, {}, status == Status::Failure ? decoder->error : std::string{}};
     auto video = settings.videoSpec();
-    if (decoder->videoStream) { video.width = decoder->videoStream->codec.width(); video.height = decoder->videoStream->codec.height(); }
-    video.frameRate = decoder->rate; video.timeBase = decoder->rate.flipped();
+    if (decoder->videoStream) {
+        video.width = decoder->videoStream->codec.width();
+        video.height = decoder->videoStream->codec.height();
+    }
+    video.frameRate = decoder->rate;
+    video.timeBase = decoder->rate.flipped();
     settings = TimelineSettings(video, settings.audioSpec());
     const double frames = std::ceil(decoder->duration * settings.fps());
     const double samples = std::round(decoder->duration * settings.sampleRate());
     if (!std::isfinite(frames) || frames <= 0 || frames >= static_cast<double>(std::numeric_limits<int64_t>::max())
-        || !std::isfinite(samples) || samples >= static_cast<double>(std::numeric_limits<int64_t>::max()))
+        || !std::isfinite(samples) || samples >= static_cast<double>(std::numeric_limits<int64_t>::max())) {
         return {Status::Failure, {}, "Media duration is empty or exceeds sample/frame range"};
-    CompositionPlan sourcePlan; sourcePlan.settings = settings; sourcePlan.frameCount = static_cast<int64_t>(frames);
-    CompositionClip clip; clip.sourcePath = sourcePath; clip.durationFrames = sourcePlan.frameCount;
+    }
+
+    CompositionPlan sourcePlan;
+    sourcePlan.settings = settings;
+    sourcePlan.frameCount = static_cast<int64_t>(frames);
+    CompositionClip clip;
+    clip.sourcePath = sourcePath;
+    clip.durationFrames = sourcePlan.frameCount;
     sourcePlan.clips = {clip};
     impl_->snapshot = std::make_shared<const CompositionPlan>(std::move(sourcePlan));
     impl_->options = options;
-    impl_->info.settings = settings; impl_->info.frameCount = static_cast<int64_t>(frames);
-    impl_->info.audioSampleCount = static_cast<int64_t>(samples); impl_->info.duration = decoder->duration;
-    impl_->info.sourceMode = true; impl_->info.seekable = decoder->seekable;
-    impl_->info.hasVideo = decoder->video != nullptr; impl_->info.hasAudio = decoder->audio != nullptr;
+    impl_->info.settings = settings;
+    impl_->info.frameCount = static_cast<int64_t>(frames);
+    impl_->info.audioSampleCount = static_cast<int64_t>(samples);
+    impl_->info.duration = decoder->duration;
+    impl_->info.sourceMode = true;
+    impl_->info.seekable = decoder->seekable;
+    impl_->info.hasVideo = decoder->video != nullptr;
+    impl_->info.hasAudio = decoder->audio != nullptr;
     impl_->sessions.emplace("video:0", std::move(decoder));
     impl_->prepare(context);
-    return {Status::Ok, impl_->info, {}};
+    return {Status::Succeeded, impl_->info, {}};
 }
+
 CompositionExecutor::VideoResult CompositionExecutor::videoFrame(int64_t frame, Context context) {
     if (cancelled(context)) return {Status::Cancelled, {}, {}};
     if (!impl_->snapshot) return {Status::Failure, {}, "Composition is not open"};
@@ -599,26 +684,33 @@ CompositionExecutor::VideoResult CompositionExecutor::videoFrame(int64_t frame, 
     if (frame >= impl_->info.frameCount) return {Status::End, {}, {}};
     impl_->prepare(context);
     CompositionVideoSample output;
-    output.settings = impl_->info.settings; output.targetPosition = frame;
-    output.targetTimeBase = output.settings.timeBase(); output.generation = context.generation;
-    output.sourceMode = impl_->info.sourceMode; output.plan = impl_->snapshot;
+    output.settings = impl_->info.settings;
+    output.targetPosition = frame;
+    output.targetTimeBase = output.settings.timeBase();
+    output.generation = context.generation;
+    output.sourceMode = impl_->info.sourceMode;
+    output.plan = impl_->snapshot;
     std::vector<std::string> used;
     std::string error;
     if (auto sample = impl_->snapshot->videoSampleAt(frame)) {
         const auto& clip = impl_->snapshot->clips[sample->clipIndex];
-        output.clipId = clip.id; output.mediaRef = clip.mediaRef; output.clipLocalFrame = sample->clipLocalFrame;
-        const auto key = impl_->identity("video:", sample->clipIndex); used.push_back(key);
+        output.clipId = clip.id;
+        output.mediaRef = clip.mediaRef;
+        output.clipLocalFrame = sample->clipLocalFrame;
+        const auto key = impl_->identity("video:", sample->clipIndex);
+        used.push_back(key);
         DecoderSession* decoder = nullptr;
         auto status = impl_->session(key, clip, true, context, decoder, error);
-        if (status == Status::Ok && decoder) {
+        if (status == Status::Succeeded && decoder) {
             const auto begin = impl_->info.settings.audioSamplePosition(frame);
             const auto end = std::min(impl_->info.audioSampleCount, impl_->info.settings.audioSamplePosition(frame + 1));
             const double firstPosition = impl_->sourcePosition(clip, begin);
             const double lastPosition = impl_->sourcePosition(clip, std::max(begin, end - 1));
             if (!std::isfinite(firstPosition) || !std::isfinite(lastPosition)
                 || firstPosition < static_cast<double>(std::numeric_limits<int64_t>::min())
-                || lastPosition >= static_cast<double>(std::numeric_limits<int64_t>::max() - 2))
+                || lastPosition >= static_cast<double>(std::numeric_limits<int64_t>::max() - 2)) {
                 return {Status::Failure, {}, "Audio source sample mapping overflow"};
+            }
             const auto first = static_cast<int64_t>(std::floor(firstPosition));
             const auto last = static_cast<int64_t>(std::floor(lastPosition)) + 1;
             const auto prefetchLast = static_cast<int64_t>(std::min(
@@ -627,15 +719,22 @@ CompositionExecutor::VideoResult CompositionExecutor::videoFrame(int64_t frame, 
                 first, prefetchLast, context, &output.source);
             if (status == Status::Failure) status = impl_->failure(key, clip.sourcePath, decoder->error, error);
         }
-        if (status == Status::Cancelled) { reset(); return {status, {}, {}}; }
+        if (status == Status::Cancelled) {
+            reset();
+            return {status, {}, {}};
+        }
         if (status == Status::Failure) return {status, {}, error};
         if (sample->hidden) output.source.reset();
     }
     impl_->retain("video:", used);
-    if (cancelled(context)) { reset(); return {Status::Cancelled, {}, {}}; }
+    if (cancelled(context)) {
+        reset();
+        return {Status::Cancelled, {}, {}};
+    }
     output.blank = !output.source;
-    return {Status::Ok, std::move(output), {}};
+    return {Status::Succeeded, std::move(output), {}};
 }
+
 CompositionExecutor::AudioResult CompositionExecutor::audioSamples(int64_t begin, int64_t end, Context context) {
     if (cancelled(context)) return {Status::Cancelled, {}, {}};
     if (!impl_->snapshot) return {Status::Failure, {}, "Composition is not open"};
@@ -650,40 +749,55 @@ CompositionExecutor::AudioResult CompositionExecutor::audioSamples(int64_t begin
     }
     end = std::min(end, impl_->info.audioSampleCount);
     auto output = std::make_shared<AudioFrame>();
-    output->setSpec(impl_->info.settings.audioSpec()); output->setSamples(static_cast<int>(end - begin), true);
-    output->setPosition(begin); output->clear();
+    output->setSpec(impl_->info.settings.audioSpec());
+    output->setSamples(static_cast<int>(end - begin), true);
+    output->setPosition(begin);
+    output->clear();
     const auto& plan = *impl_->snapshot;
     std::string error;
     for (int64_t cursor = begin; cursor < end;) {
-        if (cancelled(context)) { reset(); return {Status::Cancelled, {}, {}}; }
+        if (cancelled(context)) {
+            reset();
+            return {Status::Cancelled, {}, {}};
+        }
+
         int64_t stop = std::min(end, cursor + std::min(kMixBlock, end - cursor));
         stop = impl_->boundary(plan.clips, cursor, stop);
         stop = impl_->boundary(plan.audioClips, cursor, stop);
-        // Speed can make one output block span too many decoded packets. Limit
-        // source lookahead to approximately one source block as well.
         size_t videoIndex = 0, audioIndex = 0;
         const auto* videoClip = impl_->clipAt(plan.clips, cursor, videoIndex);
         const auto* audioClip = impl_->clipAt(plan.audioClips, cursor, audioIndex);
-        for (const auto* clip : {videoClip, audioClip}) if (clip && clip->speed > 1.0)
-            stop = std::min(stop, cursor + static_cast<int64_t>(std::max(1.0, std::floor(kMixBlock / clip->speed))));
+        for (const auto* clip : {videoClip, audioClip}) {
+            if (clip && clip->speed > 1.0) {
+                stop = std::min(stop, cursor + static_cast<int64_t>(std::max(1.0, std::floor(kMixBlock / clip->speed))));
+            }
+        }
+
         std::vector<std::string> original, independent;
-        Status status = Status::Ok;
+        Status status = Status::Succeeded;
         if (videoClip)
             status = impl_->mixContribution(*videoClip, videoIndex, "video:", plan.muted,
                 cursor, stop, *output, begin, context, original, error);
-        if (status == Status::Ok && audioClip)
+        if (status == Status::Succeeded && audioClip)
             status = impl_->mixContribution(*audioClip, audioIndex, "independent-audio:", plan.audioMuted,
                 cursor, stop, *output, begin, context, independent, error);
-        impl_->retain("video:", original); impl_->retain("independent-audio:", independent);
-        if (status == Status::Cancelled) { reset(); return {status, {}, {}}; }
+        impl_->retain("video:", original);
+        impl_->retain("independent-audio:", independent);
+        if (status == Status::Cancelled) {
+            reset();
+            return {status, {}, {}};
+        }
         if (status == Status::Failure) return {status, {}, error};
         cursor = stop;
     }
     for (int channel = 0; channel < output->spec().channels; ++channel)
         for (int sample = 0; sample < output->samples(); ++sample)
             output->sampleRw(channel, sample) = std::clamp(output->sampleRo(channel, sample), -1.0f, 1.0f);
-    if (cancelled(context)) { reset(); return {Status::Cancelled, {}, {}}; }
+    if (cancelled(context)) {
+        reset();
+        return {Status::Cancelled, {}, {}};
+    }
     impl_->audioCursor = end;
-    return {Status::Ok, std::move(output), {}};
+    return {Status::Succeeded, std::move(output), {}};
 }
 } // namespace heisenberg

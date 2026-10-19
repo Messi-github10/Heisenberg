@@ -146,8 +146,12 @@ struct VideoEncoder::Impl {
 
 VideoEncoder::VideoEncoder(const VideoEncoderSettings& settings) : impl_(std::make_unique<Impl>(settings)) {}
 VideoEncoder::~VideoEncoder() = default;
-CodecParameters VideoEncoder::codecParameters() const { return CodecParameters(*impl_->context); }
-AVRational VideoEncoder::timeBase() const noexcept { return impl_->context->time_base; }
+CodecParameters VideoEncoder::codecParameters() const {
+    return CodecParameters(*impl_->context);
+}
+AVRational VideoEncoder::timeBase() const noexcept {
+    return impl_->context->time_base;
+}
 EncodedPackets VideoEncoder::encode(const EncodedRgbFrameView& rgb, int64_t pts) {
     impl_->state();
     require(pts >= 0 && pts < std::numeric_limits<int64_t>::max() && pts > impl_->lastPts,

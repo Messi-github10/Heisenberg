@@ -19,10 +19,18 @@ public:
     VulkanFilterGraph(const VulkanFilterGraph&) = delete;
     VulkanFilterGraph& operator=(const VulkanFilterGraph&) = delete;
 
-    IPipeGraph* graph() const { return graph_.get(); }
-    VulkanNodeFactory& nodes() { return nodeFactory_; }
-    IInputNode* input() const { return input_; }
-    IOutputNode* output() const { return output_; }
+    IPipeGraph* graph() const {
+        return graph_.get();
+    }
+    VulkanNodeFactory& nodes() {
+        return nodeFactory_;
+    }
+    IInputNode* input() const {
+        return input_;
+    }
+    IOutputNode* output() const {
+        return output_;
+    }
     IBaseNode* node(VulkanGraphNodeId nodeId) const;
     bool setParameters(VulkanGraphNodeId nodeId,
                        const VulkanGraphParameter& parameter);

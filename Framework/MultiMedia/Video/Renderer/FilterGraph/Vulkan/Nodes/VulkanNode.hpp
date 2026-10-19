@@ -29,18 +29,24 @@ public:
     virtual std::vector<LogicalResourceRequest> declareResourceRequests() const {
         return {};
     }
-    virtual std::vector<ResourceAccess> declareResourceAccess() const { return {}; }
+    virtual std::vector<ResourceAccess> declareResourceAccess() const {
+        return {};
+    }
     virtual void bindDeclaredResources(
         const std::vector<LogicalResourceId>& resources);
 
-    void setResourceManager(ResourceManager* manager) { resourceManager_ = manager; }
+    void setResourceManager(ResourceManager* manager) {
+        resourceManager_ = manager;
+    }
     void bindInputResources(std::vector<LogicalResourceId> resources);
 
 protected:
     LogicalResourceId inputResource(int32_t index) const;
 
     /// 获取 ResourceManager（子类可以用来获取资源）
-    ResourceManager* resourceManager() const { return resourceManager_; }
+    ResourceManager* resourceManager() const {
+        return resourceManager_;
+    }
 
 private:
     friend class VulkanGroupNode;

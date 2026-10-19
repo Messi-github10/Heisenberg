@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Clip.hpp"
-
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -58,9 +57,19 @@ public:
     bool validate(std::string* error = nullptr) const;
     bool add(MediaManifestEntry entry, std::string* error = nullptr);
     const MediaManifestEntry* find(const std::string& id) const;
-    const std::vector<MediaManifestEntry>& entries() const { return entries_; }
-    const std::vector<MediaFolder>& folders() const { return folders_; }
-    std::vector<MediaFolder>& folders() { return folders_; }
+
+    const std::vector<MediaManifestEntry>& entries() const {
+        return entries_;
+    }
+
+    const std::vector<MediaFolder>& folders() const {
+        return folders_;
+    }
+
+    std::vector<MediaFolder>& folders() {
+        return folders_;
+    }
+    
     bool operator==(const MediaManifest&) const = default;
 
 private:

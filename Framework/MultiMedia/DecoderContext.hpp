@@ -2,7 +2,6 @@
 
 #include <Common/MediaFrame.hpp>
 #include <MultiMedia/Video/Decoder/DecoderFactory.hpp>
-
 #include <memory>
 #include <deque>
 
@@ -30,8 +29,9 @@ public:
     MediaFrame pull(uint64_t generation);
 
     bool isOpen() const;
-    // Sticky negative error until open/flush/close; never EAGAIN or EOF.
-    int lastError() const { return lastError_; }
+    int lastError() const {
+        return lastError_;
+    }
 
 private:
     struct AudioConverter;
@@ -43,8 +43,6 @@ private:
     bool audio_ = false;
     bool draining_ = false;
     bool eofReturned_ = false;
-    // Frames pulled to satisfy send_packet EAGAIN are returned before newer
-    // decoder output. The input packet is retried, never silently discarded.
     std::deque<std::shared_ptr<AVFrame>> pendingFrames_;
 };
 

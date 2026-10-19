@@ -3,7 +3,7 @@
 //
 
 #include <MultiMedia/Audio/Decoder/FFmpegAudioDecoder.hpp>
-#include <Common/AudioMath.hpp>
+#include <Common/MediaMath.hpp>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -221,7 +221,7 @@ int64_t FFmpegAudioDecoder::totalFrames(double fps) const {
     int64_t frame = 0;
     int64_t accumulated = 0;
     while (accumulated < impl_->totalSamplesPerChannel) {
-        int samples = audio::samplesForFrame(fps, impl_->spec_.sampleRate, frame);
+        int samples = heisenberg::samplesForFrame(fps, impl_->spec_.sampleRate, frame);
         if (samples <= 0) break;
         accumulated += samples;
         ++frame;
@@ -246,10 +246,10 @@ double FFmpegAudioDecoder::duration() const {
 bool FFmpegAudioDecoder::decode(AudioFrame& frame, int64_t position, double fps) {
     if (!isOpen() || fps <= 0.0) return false;
 
-    const int samples = audio::samplesForFrame(fps, impl_->spec_.sampleRate, position);
+    const int samples = heisenberg::samplesForFrame(fps, impl_->spec_.sampleRate, position);
     if (samples <= 0) return false;
 
-    const int64_t startSample = audio::samplesToPosition(
+    const int64_t startSample = heisenberg::samplesToPosition(
         fps, impl_->spec_.sampleRate, position);
 
     const int64_t endSample   = startSample + samples;

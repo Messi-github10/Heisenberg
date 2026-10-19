@@ -55,7 +55,9 @@ bool QtExportController::start(ExportRequest request, QString* error) {
     if (!engine_.start(std::move(request), &reason)) { if (error) *error = QString::fromUtf8(reason.c_str()); return false; }
     return true;
 }
-void QtExportController::cancel() { engine_.cancel(); }
+void QtExportController::cancel() {
+    engine_.cancel();
+}
 void QtExportController::shutdown() {
     if (shutdown_) return;
     shutdown_ = true;

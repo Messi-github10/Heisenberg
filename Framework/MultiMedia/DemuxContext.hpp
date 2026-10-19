@@ -2,7 +2,6 @@
 
 #include <Common/MediaFrame.hpp>
 #include <Common/Stream.hpp>
-
 #include <memory>
 #include <functional>
 #include <MultiMedia/Demuxer/IDemuxer.hpp>

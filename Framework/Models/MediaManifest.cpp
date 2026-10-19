@@ -1,5 +1,4 @@
 #include "MediaManifest.hpp"
-
 #include <cmath>
 #include <unordered_set>
 
@@ -7,7 +6,9 @@ namespace heisenberg {
 namespace {
 using json = nlohmann::ordered_json;
 
-void setError(std::string* error, const std::string& message) { if (error) *error = message; }
+void setError(std::string* error, const std::string& message) {
+    if (error) *error = message;
+}
 
 template <typename T>
 std::optional<T> optionalValue(const json& object, const char* key) {

@@ -91,11 +91,21 @@ struct AudioEncoder::Impl {
 
 AudioEncoder::AudioEncoder() : impl_(std::make_unique<Impl>()) {}
 AudioEncoder::~AudioEncoder() = default;
-CodecParameters AudioEncoder::codecParameters() const { return CodecParameters(*impl_->context); }
-AVRational AudioEncoder::timeBase() const noexcept { return impl_->context->time_base; }
-int AudioEncoder::frameSize() const noexcept { return impl_->context->frame_size; }
-int AudioEncoder::initialPadding() const noexcept { return impl_->context->initial_padding; }
-int64_t AudioEncoder::samplesSubmitted() const noexcept { return impl_->total; }
+CodecParameters AudioEncoder::codecParameters() const {
+    return CodecParameters(*impl_->context);
+}
+AVRational AudioEncoder::timeBase() const noexcept {
+    return impl_->context->time_base;
+}
+int AudioEncoder::frameSize() const noexcept {
+    return impl_->context->frame_size;
+}
+int AudioEncoder::initialPadding() const noexcept {
+    return impl_->context->initial_padding;
+}
+int64_t AudioEncoder::samplesSubmitted() const noexcept {
+    return impl_->total;
+}
 EncodedPackets AudioEncoder::encode(const float* left, const float* right, int samples) {
     impl_->state();
     require(samples >= 0, "negative PCM sample count");

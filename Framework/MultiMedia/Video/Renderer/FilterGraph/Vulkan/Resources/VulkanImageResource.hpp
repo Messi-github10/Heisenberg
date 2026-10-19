@@ -17,8 +17,12 @@ public:
     void reset();
     VulkanImageRef ref(VulkanSyncPoint ready = {}) const;
 
-    VkImageLayout layout() const { return layout_; }
-    void setLayout(VkImageLayout layout) { layout_ = layout; }
+    VkImageLayout layout() const {
+        return layout_;
+    }
+    void setLayout(VkImageLayout layout) {
+        layout_ = layout;
+    }
 
 private:
     uint32_t findMemoryType(uint32_t bits, VkMemoryPropertyFlags flags) const;

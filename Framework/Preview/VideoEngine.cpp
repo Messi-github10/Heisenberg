@@ -81,6 +81,7 @@ struct VideoEngine::Impl {
         return wallOffset + (manualClock ? manualNow - manualStart
             : std::chrono::duration<double>(Clock::now() - wallStart).count());
     }
+
     void anchorClockLocked(double seconds) {
         wallOffset = seconds; wallStart = Clock::now(); manualStart = manualNow;
     }
@@ -98,13 +99,18 @@ struct VideoEngine::Impl {
         };
         if (dispatch) dispatch(std::move(task)); else task();
     }
-    void wake() { if (owner->onWakeRender) owner->onWakeRender(); }
+
+    void wake() {
+        if (owner->onWakeRender) owner->onWakeRender();
+    }
+
     void stopAudio() {
         std::lock_guard deviceLock(deviceMutex);
         if (device) device->stop();
         std::lock_guard lock(mutex);
         audioClock = false;
     }
+
     void audioData(float* output, uint32_t samples) {
         std::lock_guard lock(mutex);
         const int channels = audioSpec.channels;
@@ -135,6 +141,7 @@ struct VideoEngine::Impl {
         }
         cv.notify_all();
     }
+
     void startAudio() {
         std::lock_guard deviceLock(deviceMutex);
         AudioSpec spec;
@@ -168,6 +175,7 @@ struct VideoEngine::Impl {
         videoQueue.clear(); audioQueue.clear(); currentAudio.reset(); audioOffset = 0;
         return generation;
     }
+
     void fail(uint64_t generation, const std::string& message) {
         { std::lock_guard lock(mutex);
           if (state.generation != generation) return;
@@ -180,6 +188,7 @@ struct VideoEngine::Impl {
             return active.load(std::memory_order_acquire) != generation;
         }};
     }
+
     void reportDecode(int64_t frame, uint64_t generation, const DecodedFrame& video,
                       double videoMs, double audioMs) {
         auto& stats = decodeDiagnostics;
@@ -223,6 +232,7 @@ struct VideoEngine::Impl {
         stats.last = now; stats.frames = stats.commands = 0;
         stats.videoMs = stats.audioMs = stats.maxTotalMs = 0.0;
     }
+    
     bool execute(int64_t frame, uint64_t generation, bool urgent) {
         const auto diagnosticStart = Clock::now();
         auto video = executor.videoFrame(frame, context(generation));
@@ -240,8 +250,6 @@ struct VideoEngine::Impl {
             std::chrono::duration<double, std::milli>(diagnosticVideoEnd - diagnosticStart).count(),
             std::chrono::duration<double, std::milli>(diagnosticAudioEnd - diagnosticVideoEnd).count());
         const auto sound = audio.value;
-        // The observer still receives exactly the PCM sent to the audio queue,
-        // including silence, on the existing sole decode worker.
         if (sound && owner->onAudioPrepared && active.load(std::memory_order_acquire) == generation)
             owner->onAudioPrepared(sound, generation);
         { std::lock_guard lock(mutex);
@@ -252,6 +260,7 @@ struct VideoEngine::Impl {
         wake();
         return true;
     }
+
     void run() {
         bool decodeHardware = true;
         uint64_t generation = 0;
@@ -340,12 +349,24 @@ struct VideoEngine::Impl {
 
 VideoEngine::VideoEngine() : impl_(std::make_unique<Impl>(this)) {}
 VideoEngine::~VideoEngine() { shutdown(); }
+
 void VideoEngine::setTaskDispatcher(TaskDispatcher dispatcher) {
     std::lock_guard lock(impl_->mutex); impl_->dispatcher = std::move(dispatcher);
 }
-VideoEngine::Snapshot VideoEngine::snapshot() const { std::lock_guard lock(impl_->mutex); return impl_->state; }
-bool VideoEngine::isCurrentGeneration(uint64_t value) const { return impl_->active.load(std::memory_order_acquire) == value; }
-void VideoEngine::setHardwareDecode(bool enabled) { std::lock_guard lock(impl_->mutex); impl_->hardware = enabled; }
+VideoEngine::Snapshot VideoEngine::snapshot() const {
+    std::lock_guard lock(impl_->mutex);
+    return impl_->state;
+}
+
+bool VideoEngine::isCurrentGeneration(uint64_t value) const {
+    return impl_->active.load(std::memory_order_acquire) == value;
+}
+
+void VideoEngine::setHardwareDecode(bool enabled) {
+    std::lock_guard lock(impl_->mutex);
+    impl_->hardware = enabled;
+}
+
 void VideoEngine::setAudioOutputEnabled(bool enabled) {
     impl_->stopAudio();
     { std::lock_guard lock(impl_->mutex);
@@ -355,6 +376,7 @@ void VideoEngine::setAudioOutputEnabled(bool enabled) {
     impl_->cv.notify_all();
     if (enabled) impl_->startAudio();
 }
+
 void VideoEngine::setManualClock(double seconds) {
     if (!std::isfinite(seconds)) return;
     { std::lock_guard lock(impl_->mutex);
@@ -375,6 +397,7 @@ bool VideoEngine::open(const std::string& path) {
       impl_->request = std::move(command); }
     impl_->notify(generation, onStateChanged, State::Loading); impl_->cv.notify_all(); return true;
 }
+
 bool VideoEngine::openTimeline(const Timeline& timeline, const MediaManifest& manifest, const std::string& dir) {
     CompositionPlan plan;
     std::string error;
@@ -383,6 +406,7 @@ bool VideoEngine::openTimeline(const Timeline& timeline, const MediaManifest& ma
     }
     return openComposition(plan);
 }
+
 bool VideoEngine::openTimeline(const Timeline& timeline, const MediaManifest& manifest,
                                const std::string& dir, const ColorSettings& colorSettings) {
     CompositionPlan plan;
@@ -392,6 +416,7 @@ bool VideoEngine::openTimeline(const Timeline& timeline, const MediaManifest& ma
     }
     return openComposition(plan);
 }
+
 bool VideoEngine::openSnapshot(const ProjectSnapshot& snapshotValue) {
     CompositionPlan plan;
     std::string error;
@@ -400,6 +425,7 @@ bool VideoEngine::openSnapshot(const ProjectSnapshot& snapshotValue) {
     }
     return openComposition(plan);
 }
+
 bool VideoEngine::openComposition(const CompositionPlan& plan) {
     for (const auto& warning : plan.warnings) LOG_WARN("Composition: {}", warning);
     impl_->stopAudio(); uint64_t generation;
@@ -413,6 +439,7 @@ bool VideoEngine::openComposition(const CompositionPlan& plan) {
       impl_->request = std::move(command); }
     impl_->notify(generation, onStateChanged, State::Loading); impl_->cv.notify_all(); return true;
 }
+
 bool VideoEngine::openPlaylist(const std::string& path) {
     const auto requested = std::filesystem::u8path(path);
     const auto directory = std::filesystem::is_directory(requested) ? requested : requested.parent_path();
@@ -430,6 +457,7 @@ bool VideoEngine::openPlaylist(const std::string& path) {
     } else error = "project has no active timeline";
     close(); impl_->notify(snapshot().generation, onOpenFailed, error); return false;
 }
+
 void VideoEngine::close() {
     impl_->stopAudio(); uint64_t generation;
     { std::lock_guard lock(impl_->mutex);
@@ -438,6 +466,7 @@ void VideoEngine::close() {
     impl_->notify(generation, onStateChanged, State::Idle); impl_->notify(generation, onDurationChanged, 0.0);
     impl_->cv.notify_all(); impl_->wake();
 }
+
 void VideoEngine::shutdown() {
     if (!impl_) return;
     impl_->stopAudio();
@@ -447,6 +476,7 @@ void VideoEngine::shutdown() {
     if (impl_->worker.joinable()) impl_->worker.join();
     std::lock_guard deviceLock(impl_->deviceMutex); impl_->device.reset();
 }
+
 void VideoEngine::play() {
     auto before = snapshot();
     if (before.state == State::Ended) { requestFrame(0, false, true); return; }
@@ -457,13 +487,19 @@ void VideoEngine::play() {
     impl_->startAudio(); impl_->notify(before.generation, onStateChanged, State::Playing);
     impl_->cv.notify_all(); impl_->wake();
 }
+
 void VideoEngine::pause() {
     auto before = snapshot(); if (before.state != State::Playing) return;
     impl_->stopAudio();
     { std::lock_guard lock(impl_->mutex); if (impl_->state.generation != before.generation) return; impl_->state.state = State::Paused; }
     impl_->notify(before.generation, onStateChanged, State::Paused); impl_->wake();
 }
-void VideoEngine::togglePlayPause() { if (snapshot().state == State::Playing) pause(); else play(); }
+
+void VideoEngine::togglePlayPause() {
+    if (snapshot().state == State::Playing) pause();
+    else play();
+}
+
 void VideoEngine::requestFrame(int64_t frame, bool scrub, bool resume) {
     impl_->stopAudio(); uint64_t generation;
     { std::lock_guard lock(impl_->mutex);
@@ -477,12 +513,14 @@ void VideoEngine::requestFrame(int64_t frame, bool scrub, bool resume) {
     impl_->notify(generation, onStateChanged, scrub ? State::Scrubbing : State::Loading);
     impl_->cv.notify_all(); impl_->wake();
 }
+
 void VideoEngine::seek(double seconds) {
     const auto value = snapshot();
     if (!std::isfinite(seconds) || value.state == State::Scrubbing) return;
     requestFrame(static_cast<int64_t>(std::llround(std::clamp(seconds, 0.0, value.duration) * value.fps)),
                  false, value.state == State::Playing);
 }
+
 void VideoEngine::beginScrub() {
     const auto value = snapshot();
     if (!value.seekable || value.state == State::Loading || value.state == State::Scrubbing) return;
@@ -490,17 +528,35 @@ void VideoEngine::beginScrub() {
     { std::lock_guard lock(impl_->mutex); impl_->resumeAfterScrub = value.state == State::Playing; impl_->state.state = State::Scrubbing; }
     impl_->notify(value.generation, onStateChanged, State::Scrubbing); impl_->wake();
 }
-void VideoEngine::scrubToFrame(int64_t frame) { if (snapshot().state == State::Scrubbing) requestFrame(frame, true, false); }
+
+void VideoEngine::scrubToFrame(int64_t frame) {
+    if (snapshot().state == State::Scrubbing) requestFrame(frame, true, false);
+}
+
 void VideoEngine::endScrub(int64_t frame) {
     bool resume;
     { std::lock_guard lock(impl_->mutex); if (impl_->state.state != State::Scrubbing) return;
       resume = impl_->resumeAfterScrub; impl_->resumeAfterScrub = false; }
     requestFrame(frame, false, resume);
 }
-void VideoEngine::stepForward(int frames) { const auto s = snapshot(); seek(s.currentTime + frames / std::max(s.fps, 1.0)); }
-void VideoEngine::stepBackward(int frames) { stepForward(-frames); }
-void VideoEngine::goToStart() { seek(0.0); }
-void VideoEngine::goToEnd() { const auto s = snapshot(); seek(std::max(0.0, (s.frameCount - 1) / std::max(s.fps, 1.0))); }
+
+void VideoEngine::stepForward(int frames) {
+    const auto s = snapshot();
+    seek(s.currentTime + frames / std::max(s.fps, 1.0));
+}
+
+void VideoEngine::stepBackward(int frames) {
+    stepForward(-frames);
+}
+
+void VideoEngine::goToStart() {
+    seek(0.0);
+}
+
+void VideoEngine::goToEnd() {
+    const auto s = snapshot();
+    seek(std::max(0.0, (s.frameCount - 1) / std::max(s.fps, 1.0)));
+}
 
 VideoEngine::Pump VideoEngine::pumpFrame(int& waitMs) {
     waitMs = 2;

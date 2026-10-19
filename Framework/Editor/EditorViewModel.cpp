@@ -1,8 +1,6 @@
 #include "EditorViewModel.hpp"
-
 #include <Common/Stream.hpp>
 #include <MultiMedia/Demuxer/DemuxerFactory.hpp>
-
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -12,7 +10,9 @@
 namespace heisenberg {
 namespace {
 
-void setError(std::string* error, const std::string& message) { if (error) *error = message; }
+void setError(std::string* error, const std::string& message) {
+    if (error) *error = message;
+}
 
 std::string utf8(const std::filesystem::path& path) {
     const auto value = path.u8string();
@@ -35,10 +35,18 @@ struct EditorViewModel::Impl {
     MediaManifest manifest;
     uint64_t revision = 0;
 
-    Timeline* active() { return timelines.activeTimeline(); }
-    const Timeline* active() const { return timelines.activeTimeline(); }
-    Track* track() { return timelines.activeTrack(); }
-    const Track* track() const { return timelines.activeTrack(); }
+    Timeline* active() {
+        return timelines.activeTimeline();
+    }
+    const Timeline* active() const {
+        return timelines.activeTimeline();
+    }
+    Track* track() {
+        return timelines.activeTrack();
+    }
+    const Track* track() const {
+        return timelines.activeTrack();
+    }
 };
 
 namespace {
@@ -111,9 +119,6 @@ void shiftJsonKeyframeTracks(JsonValue& value, int64_t shift, int64_t duration) 
         for (JsonValue keyframe : *keyframes) {
             if (!keyframe.is_object() || !keyframe.contains("frame") || !keyframe["frame"].is_number_integer()) continue;
             int64_t frame = 0;
-            // Keep bracketing/history keys on both sides of the visible interval.
-            // Rebased negative/future keys preserve exact Hold/Linear evaluation,
-            // including unknown payloads, and allow a subsequent trim extension.
             if (!addChecked(keyframe["frame"].get<int64_t>(), shift, frame)) continue;
             keyframe["frame"] = frame;
             kept.push_back(std::move(keyframe));
@@ -193,11 +198,24 @@ std::vector<std::string> clearRegion(Track& track, int64_t start, int64_t end,
 }
 
 EditorViewModel::EditorViewModel() : impl_(std::make_unique<Impl>()) {}
+
 EditorViewModel::~EditorViewModel() = default;
-void EditorViewModel::setHardwareDecode(bool enabled) { impl_->hardwareDecode = enabled; }
-void EditorViewModel::setProfile(TimelineSettings settings) { applyTimelineSettings(settings); }
-const EditorViewModelTimelines& EditorViewModel::timelines() const { return impl_->timelines; }
-uint64_t EditorViewModel::revision() const { return impl_->revision; }
+
+void EditorViewModel::setHardwareDecode(bool enabled) {
+    impl_->hardwareDecode = enabled;
+}
+
+void EditorViewModel::setProfile(TimelineSettings settings) {
+    applyTimelineSettings(settings);
+}
+
+const EditorViewModelTimelines& EditorViewModel::timelines() const {
+    return impl_->timelines;
+}
+
+uint64_t EditorViewModel::revision() const {
+    return impl_->revision;
+}
 
 EditResult EditorViewModel::applyTimelineSettings(const TimelineSettings& settings) {
     auto* timeline = impl_->active();
@@ -258,12 +276,30 @@ bool EditorViewModel::importMedia(const std::string& path, std::string* error) {
     return true;
 }
 
-const ProjectFile& EditorViewModel::project() const { return impl_->timelines.project(); }
-const MediaManifest& EditorViewModel::manifest() const { return impl_->manifest; }
-MediaResolver EditorViewModel::resolver() const { return MediaResolver(impl_->manifest, impl_->packageDir); }
-const Timeline* EditorViewModel::activeTimeline() const { return impl_->active(); }
-const Track* EditorViewModel::activeTrack() const { return impl_->track(); }
-const std::string& EditorViewModel::projectDir() const { return impl_->packageDir; }
+const ProjectFile& EditorViewModel::project() const {
+    return impl_->timelines.project();
+}
+
+const MediaManifest& EditorViewModel::manifest() const {
+    return impl_->manifest;
+}
+
+MediaResolver EditorViewModel::resolver() const {
+    return MediaResolver(impl_->manifest, impl_->packageDir);
+}
+
+const Timeline* EditorViewModel::activeTimeline() const {
+    return impl_->active();
+}
+
+const Track* EditorViewModel::activeTrack() const {
+    return impl_->track();
+}
+
+const std::string& EditorViewModel::projectDir() const {
+    return impl_->packageDir;
+}
+
 ProjectCompatibility EditorViewModel::compatibility() const {
     const Timeline* timeline = impl_->active();
     if (!timeline) return {CompatibilityLevel::Unsupported, {"project has no active timeline"}};
@@ -598,6 +634,7 @@ bool EditorViewModel::undo() {
     ++impl_->revision;
     return true;
 }
+
 bool EditorViewModel::redo() {
     if (!impl_->timelines.redo()) return false;
     ++impl_->revision;
@@ -613,6 +650,8 @@ bool EditorViewModel::replaceDocument(ProjectFile project, MediaManifest manifes
     ++impl_->revision;
     return true;
 }
-void EditorViewModel::setProjectDir(std::string root) { impl_->packageDir = std::move(root); }
+void EditorViewModel::setProjectDir(std::string root) {
+    impl_->packageDir = std::move(root);
+}
 
 } // namespace heisenberg

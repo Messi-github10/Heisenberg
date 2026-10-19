@@ -105,7 +105,9 @@ struct PresentationListener final : heisenberg::IPreviewer::Listener {
     double seconds = -1.0;
     std::thread::id uiThread = std::this_thread::get_id();
     bool allNotificationsOnUi = true;
-    void onFilterGraphFailed(const std::string& message) override { ++diagnostics[message]; }
+    void onFilterGraphFailed(const std::string& message) override {
+        ++diagnostics[message];
+    }
     void onFramePresented(double value) override {
         ++frames;
         seconds = value;

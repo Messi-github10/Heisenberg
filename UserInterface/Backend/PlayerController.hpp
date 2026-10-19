@@ -31,14 +31,30 @@ public:
     explicit PlayerController(EditorSession* session, QObject* parent = nullptr);
     ~PlayerController() override;
 
-    bool    isPlaying()   const { return isPlaying_; }
-    double  currentTime() const { return currentTime_; }
-    double  duration()    const { return duration_; }
-    qint64  frameCount()  const { return frameCount_; }
-    bool    isSeekable()  const { return isSeekable_; }
-    QString currentFile() const { return currentFile_; }
-    QString filterGraphPath() const { return filterGraphPath_; }
-    bool previewingSource() const { return previewingSource_; }
+    bool    isPlaying()   const {
+        return isPlaying_;
+    }
+    double  currentTime() const {
+        return currentTime_;
+    }
+    double  duration()    const {
+        return duration_;
+    }
+    qint64  frameCount()  const {
+        return frameCount_;
+    }
+    bool    isSeekable()  const {
+        return isSeekable_;
+    }
+    QString currentFile() const {
+        return currentFile_;
+    }
+    QString filterGraphPath() const {
+        return filterGraphPath_;
+    }
+    bool previewingSource() const {
+        return previewingSource_;
+    }
     std::optional<filtergraph::VulkanGraphDocument> filterGraphSnapshot() const;
     void showTimeline(qint64 focusFrame = -1);
     void previewAsset(const QString& mediaRef);

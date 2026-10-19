@@ -23,9 +23,15 @@ bool VideoProject::loadPackage(const std::string& path, std::string* error) {
     savedRevision_ = revision();
     return true;
 }
-bool VideoProject::savePackage(const std::string& path, std::string* error) { return saveSnapshot(snapshot(), path, error); }
-bool VideoProject::save(std::string* error) { return savePackage(editor_.projectDir(), error); }
-bool VideoProject::saveAs(const std::string& path, std::string* error) { return savePackage(path, error); }
+bool VideoProject::savePackage(const std::string& path, std::string* error) {
+    return saveSnapshot(snapshot(), path, error);
+}
+bool VideoProject::save(std::string* error) {
+    return savePackage(editor_.projectDir(), error);
+}
+bool VideoProject::saveAs(const std::string& path, std::string* error) {
+    return savePackage(path, error);
+}
 bool VideoProject::saveSnapshot(const ProjectSnapshot& capture, const std::string& path, std::string* error) {
     if (capture.ownerId_ != ownerId_ || capture.generation_ != generation_) {
         if (error) *error = "snapshot belongs to a different project or document generation";

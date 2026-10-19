@@ -1,7 +1,6 @@
 #pragma once
 
 #include "VideoSpec.hpp"
-
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -12,9 +11,6 @@ extern "C" {
 
 namespace heisenberg {
 
-// Shared AVFrame storage plus an immutable snapshot of source metadata. Output
-// position is in timeline frames, NOT an alias for a decoder PTS. Native backend
-// access is explicit; generic scheduling never needs to inspect an AVFrame.
 class VideoFrame {
 public:
     VideoFrame() = default;
@@ -48,31 +44,57 @@ public:
         return std::make_shared<VideoFrame>(std::move(image), position, frameRate);
     }
 
-    // Native adapters retain ownership when the consumer stores the handle.
-    const std::shared_ptr<AVFrame>& native() const { return image_; }
-    const std::shared_ptr<AVFrame>& image() const { return native(); }
-    AVFrame* get() const { return image_.get(); }
-    explicit operator bool() const { return static_cast<bool>(image_); }
+    const std::shared_ptr<AVFrame>& native() const {
+        return image_;
+    }
 
-    const VideoSpec& spec() const { return spec_; }
-    int64_t pts() const { return pts_; }
-    int64_t duration() const { return duration_; }
-    const Rational& timeBase() const { return spec_.timeBase; }
+    const std::shared_ptr<AVFrame>& image() const {
+        return native();
+    }
+
+    AVFrame* get() const {
+        return image_.get();
+    }
+
+    explicit operator bool() const {
+        return static_cast<bool>(image_);
+    }
+
+    const VideoSpec& spec() const {
+        return spec_;
+    }
+
+    int64_t pts() const {
+        return pts_;
+    }
+
+    int64_t duration() const {
+        return duration_;
+    }
+
+    const Rational& timeBase() const {
+        return spec_.timeBase;
+    }
+
     bool hasTimestamp() const {
         return pts_ != AV_NOPTS_VALUE && spec_.timeBase.numerator() > 0 &&
                spec_.timeBase.denominator() > 0;
     }
-    int64_t position() const { return position_; }
-    bool hasPosition() const { return position_ != -1; }
 
-    // Scheduling another output position never mutates cached/shared metadata.
+    int64_t position() const {
+        return position_;
+    }
+
+    bool hasPosition() const {
+        return position_ != -1;
+    }
+
     std::shared_ptr<VideoFrame> withPosition(int64_t position) const {
         auto result = std::make_shared<VideoFrame>(*this);
         result->position_ = position;
         return result;
     }
 
-    // av_frame_clone refs its buffers; its AVFrame header/metadata are separate.
     std::shared_ptr<VideoFrame> clone() const {
         if (!image_) return {};
         AVFrame* copy = av_frame_clone(image_.get());

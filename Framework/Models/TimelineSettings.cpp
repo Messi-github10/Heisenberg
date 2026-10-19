@@ -1,6 +1,5 @@
 #include "TimelineSettings.hpp"
 #include <Common/MediaMath.hpp>
-
 #include <cmath>
 #include <limits>
 
@@ -41,7 +40,9 @@ const char* toString(ColorTransfer value) {
         default: return "bt1886";
     }
 }
-const char* toString(ColorRange value) { return value == ColorRange::Limited ? "limited" : "full"; }
+const char* toString(ColorRange value) {
+    return value == ColorRange::Limited ? "limited" : "full";
+}
 
 TimelineSettings::TimelineSettings() {
     video_.width = 1920;
@@ -53,6 +54,8 @@ TimelineSettings::TimelineSettings() {
     setPrimaries(ColorPrimaries::Bt709);
     setTransfer(ColorTransfer::Bt1886);
     setRange(ColorRange::Full);
+    audio_.sampleRate = 48000;
+    audio_.channels = 2;
     audio_.layout = ChannelLayout::Stereo;
 }
 
@@ -106,6 +109,7 @@ std::vector<TimelineSettings> TimelineSettings::presets() {
         makePreset("uhd_2160p_60", "UHD 2160p 60 fps", 3840, 2160, 60, 1),
     };
 }
+
 const TimelineSettings* TimelineSettings::findPreset(std::string_view id) {
     static const auto values = presets();
     for (const auto& value : values) if (value.id() == id) return &value;
@@ -117,20 +121,24 @@ WorkingFormat TimelineSettings::workingFormat() const {
     if (video_.format == AV_PIX_FMT_RGBAF32) return WorkingFormat::Rgba32f;
     return WorkingFormat::Rgba16f;
 }
+
 void TimelineSettings::setWorkingFormat(WorkingFormat value) {
     video_.format = value == WorkingFormat::Rgba8 ? AV_PIX_FMT_RGBA :
                     value == WorkingFormat::Rgba32f ? AV_PIX_FMT_RGBAF32 : AV_PIX_FMT_RGBAF16;
 }
+
 ColorPrimaries TimelineSettings::primaries() const {
     if (video_.colorPrimaries == AVCOL_PRI_BT2020) return ColorPrimaries::Bt2020;
     if (video_.colorPrimaries == AVCOL_PRI_SMPTE432) return ColorPrimaries::DisplayP3;
     return ColorPrimaries::Bt709;
 }
+
 void TimelineSettings::setPrimaries(ColorPrimaries value) {
     video_.colorPrimaries = value == ColorPrimaries::Bt2020 ? AVCOL_PRI_BT2020 :
                             value == ColorPrimaries::DisplayP3 ? AVCOL_PRI_SMPTE432 : AVCOL_PRI_BT709;
     video_.colorSpace = value == ColorPrimaries::Bt2020 ? AVCOL_SPC_BT2020_NCL : AVCOL_SPC_BT709;
 }
+
 ColorTransfer TimelineSettings::transfer() const {
     switch (video_.colorTransfer) {
         case AVCOL_TRC_IEC61966_2_1: return ColorTransfer::Srgb;
@@ -140,6 +148,7 @@ ColorTransfer TimelineSettings::transfer() const {
         default: return ColorTransfer::Bt1886;
     }
 }
+
 void TimelineSettings::setTransfer(ColorTransfer value) {
     switch (value) {
         case ColorTransfer::Srgb: video_.colorTransfer = AVCOL_TRC_IEC61966_2_1; break;
@@ -149,23 +158,39 @@ void TimelineSettings::setTransfer(ColorTransfer value) {
         default: video_.colorTransfer = AVCOL_TRC_BT709; break;
     }
 }
+
 ColorRange TimelineSettings::range() const {
     return video_.colorRange == AVCOL_RANGE_MPEG ? ColorRange::Limited : ColorRange::Full;
 }
+
 void TimelineSettings::setRange(ColorRange value) {
     video_.colorRange = value == ColorRange::Limited ? AVCOL_RANGE_MPEG : AVCOL_RANGE_JPEG;
 }
 
-double TimelineSettings::fps() const { return frameRate().toDouble(); }
-double TimelineSettings::displayAspect() const { return static_cast<double>(width()) / height() * sampleAspect().toDouble(); }
-double TimelineSettings::secondsFromFrame(int64_t frame) const { return static_cast<double>(frame) * timeBase().toDouble(); }
-int64_t TimelineSettings::frameFromSeconds(double seconds) const { return boundedRound(static_cast<long double>(seconds) * fps()); }
+double TimelineSettings::fps() const {
+    return frameRate().toDouble();
+}
+
+double TimelineSettings::displayAspect() const {
+    return static_cast<double>(width()) / height() * sampleAspect().toDouble();
+}
+
+double TimelineSettings::secondsFromFrame(int64_t frame) const {
+    return static_cast<double>(frame) * timeBase().toDouble();
+}
+
+int64_t TimelineSettings::frameFromSeconds(double seconds) const {
+    return boundedRound(static_cast<long double>(seconds) * fps());
+}
+
 int64_t TimelineSettings::audioSamplePosition(int64_t frame) const {
     return samplesToPosition(frameRate(), sampleRate(), frame);
 }
+
 int64_t TimelineSettings::audioSamplesForFrame(int64_t frame) const {
     return samplesForFrame(frameRate(), sampleRate(), frame);
 }
+
 bool TimelineSettings::valid(std::string* error) const {
     if (width() < kMinDimension || width() > kMaxDimension || height() < kMinDimension || height() > kMaxDimension ||
         frameRate().numerator() <= 0 || frameRate().denominator() <= 0 ||
@@ -176,6 +201,7 @@ bool TimelineSettings::valid(std::string* error) const {
     }
     return true;
 }
+
 bool TimelineSettings::operator==(const TimelineSettings& other) const {
     const auto& a = video_;
     const auto& b = other.video_;

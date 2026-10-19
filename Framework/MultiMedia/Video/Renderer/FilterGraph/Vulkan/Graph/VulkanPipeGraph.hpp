@@ -15,7 +15,9 @@ public:
     ~VulkanPipeGraph() override;
 
     /// 获取资源管理器（供 Node 使用）
-    ResourceManager& resourceManager() { return *resourceManager_; }
+    ResourceManager& resourceManager() {
+        return *resourceManager_;
+    }
 
 protected:
     bool onGraphRebuilt() override;

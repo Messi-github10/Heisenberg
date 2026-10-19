@@ -39,11 +39,11 @@ struct ExportResult {
     std::string stage;
     std::string error;
     std::vector<std::string> warnings;
-    bool succeeded() const { return state == ExportState::Succeeded; }
+    bool succeeded() const {
+        return state == ExportState::Succeeded;
+    }
 };
 
-// Callbacks run on the export worker. Install while idle, marshal UI work to its
-// own thread, and never destroy the engine from one of its callbacks.
 class ExportEngine {
 public:
     ExportEngine();

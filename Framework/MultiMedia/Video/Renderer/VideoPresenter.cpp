@@ -141,8 +141,12 @@ void VideoPresenter::resize(int width, int height) {
     if (impl_->swapChain) impl_->swapChain->resize(&width,&height);
     if (impl_->onResize) impl_->onResize(width,height);
 }
-void VideoPresenter::setOnResize(ResizeCallback callback) { impl_->onResize = std::move(callback); }
-void VideoPresenter::setOnPresent(PresentCallback callback) { impl_->onPresent = std::move(callback); }
+void VideoPresenter::setOnResize(ResizeCallback callback) {
+    impl_->onResize = std::move(callback);
+}
+void VideoPresenter::setOnPresent(PresentCallback callback) {
+    impl_->onPresent = std::move(callback);
+}
 bool VideoPresenter::presentFrame(const RenderedFrame& frame) {
     if (!impl_->gpu || !impl_->swapChain || !frame || !frame.encoded() || impl_->width <= 0 || impl_->height <= 0) return false;
     pl_color_space sourceColor{};

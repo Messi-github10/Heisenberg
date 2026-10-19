@@ -80,8 +80,6 @@ void GpuContext::createLog() {
 void GpuContext::importVulkan(const VulkanResources& vkRes) {
     auto enabledFeatures = vkRes.enabledFeatures;
     auto extensions = vkRes.enabledExtensions;
-    // Preserve callers using the shared device without guessing any capabilities.
-    // An independent VkDevice must supply its own explicit enabled contract.
     if (!enabledFeatures) {
         auto& shared = VulkanContext::instance();
         if (vkRes.device != shared.device())

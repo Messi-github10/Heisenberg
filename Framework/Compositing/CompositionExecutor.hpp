@@ -9,7 +9,6 @@
 
 namespace heisenberg {
 
-// Native source timestamps are never replaced with presentation timestamps.
 struct CompositionVideoSample {
     std::shared_ptr<VideoFrame> source;
     TimelineSettings settings;
@@ -21,23 +20,21 @@ struct CompositionVideoSample {
     std::string clipId;
     std::string mediaRef;
     int64_t clipLocalFrame = 0;
-    // Copy-owned immutable snapshot, safe to pass to a render thread.
     std::shared_ptr<const CompositionPlan> plan;
 };
 
-enum class CompositionStatus { Ok, Cancelled, End, Failure };
+enum class CompositionStatus { Succeeded, Cancelled, End, Failure };
 enum class CompositionErrorPolicy { Strict, Preview };
 
 template<class T> struct CompositionResult {
-    CompositionStatus status = CompositionStatus::Ok;
+    CompositionStatus status = CompositionStatus::Succeeded;
     T value{};
     std::string error;
-    explicit operator bool() const { return status == CompositionStatus::Ok; }
+    explicit operator bool() const {
+        return status == CompositionStatus::Succeeded;
+    }
 };
 
-// Synchronous, instance-local decode/mix resources only: no worker, renderer,
-// window, clock, audio device, dispatcher or asynchronously retained callback.
-// Serialize calls on each instance; independent instances may run concurrently.
 class CompositionExecutor {
 public:
     using Cancel = std::function<bool()>;
@@ -73,12 +70,8 @@ public:
     OpenResult open(const CompositionPlan& plan, Options options, Context context = {});
     OpenResult openSource(const std::string& path, Options options, Context context = {});
     VideoResult videoFrame(int64_t frame, Context context = {});
-    // Absolute output sample indices, half-open [begin, end). Result position is
-    // begin. Clamps end to audioSampleCount; End means begin is past the end.
-    // Chunk boundaries do not reset source PTS, interpolation or fade envelopes.
     AudioResult audioSamples(int64_t begin, int64_t end, Context context = {});
     void close();
-    // Clears decode history for generation-changing preview seeks, not the plan.
     void reset();
     const Info& info() const;
     const CompositionPlan& plan() const;

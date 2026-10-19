@@ -22,7 +22,9 @@
 using namespace heisenberg::renderer::color;
 using namespace heisenberg::filtergraph;
 namespace {
-void vkCheck(VkResult result) { if (result != VK_SUCCESS) throw std::runtime_error("Vulkan test operation failed " + std::to_string(int(result))); }
+void vkCheck(VkResult result) {
+    if (result != VK_SUCCESS) throw std::runtime_error("Vulkan test operation failed " + std::to_string(int(result)));
+}
 float halfToFloat(uint16_t value) {
     const uint32_t sign = uint32_t(value & 0x8000u) << 16;
     uint32_t exponent = (value >> 10) & 31u;

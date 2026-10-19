@@ -18,8 +18,12 @@ EncodedPacket::EncodedPacket(const AVPacket& source, AVRational tb)
 EncodedPacket::~EncodedPacket() = default;
 EncodedPacket::EncodedPacket(EncodedPacket&&) noexcept = default;
 EncodedPacket& EncodedPacket::operator=(EncodedPacket&&) noexcept = default;
-const AVPacket* EncodedPacket::native() const noexcept { return impl_ ? impl_->packet.get() : nullptr; }
-AVRational EncodedPacket::timeBase() const noexcept { return impl_ ? impl_->timeBase : AVRational{0, 1}; }
+const AVPacket* EncodedPacket::native() const noexcept {
+    return impl_ ? impl_->packet.get() : nullptr;
+}
+AVRational EncodedPacket::timeBase() const noexcept {
+    return impl_ ? impl_->timeBase : AVRational{0, 1};
+}
 
 struct CodecParameters::Impl {
     AVCodecParameters* parameters = avcodec_parameters_alloc();
@@ -43,6 +47,8 @@ CodecParameters& CodecParameters::operator=(const CodecParameters& other) {
 }
 CodecParameters::CodecParameters(CodecParameters&&) noexcept = default;
 CodecParameters& CodecParameters::operator=(CodecParameters&&) noexcept = default;
-const AVCodecParameters* CodecParameters::native() const noexcept { return impl_ ? impl_->parameters : nullptr; }
+const AVCodecParameters* CodecParameters::native() const noexcept {
+    return impl_ ? impl_->parameters : nullptr;
+}
 
 } // namespace heisenberg

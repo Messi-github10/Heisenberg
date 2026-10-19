@@ -14,7 +14,9 @@ public:
     ~VideoWidget() override;
 
     /// 返回内嵌 WS_CHILD 子窗口的 HWND
-    HWND nativeWindow() const { return hwnd_; }
+    HWND nativeWindow() const {
+        return hwnd_;
+    }
 
 signals:
     void windowResized(int width, int height);
@@ -31,4 +33,6 @@ private:
     HWND parentHwnd_ = nullptr;
 };
 
-inline HWND getHwnd(VideoWidget* w) { return w ? w->nativeWindow() : nullptr; }
+inline HWND getHwnd(VideoWidget* w) {
+    return w ? w->nativeWindow() : nullptr;
+}

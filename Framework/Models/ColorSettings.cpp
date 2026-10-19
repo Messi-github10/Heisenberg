@@ -3,14 +3,20 @@
 #include <stdexcept>
 
 namespace heisenberg {
+
 namespace {
-void setError(std::string* error, const std::string& value) { if (error) *error = value; }
+
+void setError(std::string* error, const std::string& value) {
+    if (error) *error = value;
+}
+
 JsonValue outputJson(JsonValue value, const OutputSelection& output) {
     if (!value.is_object()) value = JsonValue::object();
     value["display"] = output.display;
     value["view"] = output.view;
     return value;
 }
+
 }
 
 ColorSettings legacyColorSettings() {
@@ -56,8 +62,6 @@ JsonValue encodeColorSettings(const ColorSettings& value) {
 bool decodeColorSettings(const JsonValue& value, ColorSettings& result, std::string* error) {
     try {
         if (!value.is_object()) { setError(error, "color extension must be an object"); return false; }
-        // An existing extension without version/output fields is a v1 extension.
-        // Choose defaults from its semantics before filling any missing selections.
         const int policy = value.value("inputPolicyVersion", 1);
         const int semantics = value.value("semanticsVersion", 1);
         ColorSettings parsed = policy == 2 && semantics == 2 ? ColorSettings{} : legacyColorSettings();
@@ -92,4 +96,5 @@ bool decodeColorSettings(const JsonValue& value, ColorSettings& result, std::str
         setError(error, std::string("invalid color settings: ") + exception.what()); return false;
     }
 }
+
 } // namespace heisenberg

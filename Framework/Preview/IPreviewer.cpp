@@ -1,8 +1,6 @@
 #include "IPreviewer.hpp"
-
 #include "VideoEngine.hpp"
 #include <MultiMedia/Video/Renderer/CompositionRenderer.hpp>
-
 #include <atomic>
 #include <mutex>
 #include "MultiMedia/Video/Renderer/RenderThread.hpp"
@@ -13,9 +11,7 @@
 #include "MultiMedia/Video/Renderer/FilterGraph/Vulkan/Graph/VulkanFilterGraph.hpp"
 #include "MultiMedia/Video/Renderer/SwapChain.hpp"
 #include "MultiMedia/Video/Renderer/VideoPresenter.hpp"
-
 #include <Utiles/Logger.hpp>
-
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -104,9 +100,6 @@ public:
             notifyListener([error](Listener& listener) { listener.onOpenFailed(error); });
             return;
         }
-        // One render-worker transaction closes the old generation before any
-        // newly decoded source can be paired with this project's color snapshot.
-        // Async also lets the UI service Win32 messages if attach/resize is queued.
         render_.post([this, path, settings, mediaRef] {
             if (playback_) playback_->open(path);
             sourceColorSettings_ = settings;
@@ -446,7 +439,9 @@ private:
             sumMs += ms;
         }
 
-        double averageMs() const { return count ? sumMs / count : 0.0; }
+        double averageMs() const {
+            return count ? sumMs / count : 0.0;
+        }
     };
 
     struct PlaybackStats {
@@ -500,8 +495,6 @@ private:
     void renderPacket() {
         if (!lastPacket_ || !presenter_ || !compositionRenderer_
             || !playback_->isCurrentGeneration(lastPacket_->generation)) return;
-        // API wall durations include existing internal waits, not GPU execution timestamps.
-        // Total covers request preparation through output failure/present, excluding this summary.
         const auto totalStart = Clock::now();
         const auto& packet = *lastPacket_;
         const bool projectSourceColor = packet.sourceMode && sourceColorGeneration_ != 0
@@ -604,7 +597,9 @@ private:
         return true;
     }
 
-    void presentCurrentFrame() { renderPacket(); }
+    void presentCurrentFrame() {
+        renderPacket();
+    }
 
     const filtergraph::VulkanGraphNodeDesc* findDocumentNode(
         uint64_t nodeId) const {

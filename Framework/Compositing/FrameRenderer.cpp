@@ -83,7 +83,9 @@ FrameRenderer::FrameRenderer(TimelineSettings settings) : impl_(std::make_unique
 }
 FrameRenderer::~FrameRenderer() = default;
 
-const TimelineSettings& FrameRenderer::settings() const { return impl_->settings; }
+const TimelineSettings& FrameRenderer::settings() const {
+    return impl_->settings;
+}
 
 void FrameRenderer::setSettings(TimelineSettings settings) {
     impl_->checkThread();
@@ -106,7 +108,9 @@ bool FrameRenderer::initialize(std::string* error) {
     }
 }
 
-bool FrameRenderer::isReady() const { return impl_->normalizer.isReady(); }
+bool FrameRenderer::isReady() const {
+    return impl_->normalizer.isReady();
+}
 
 void FrameRenderer::shutdown() {
     impl_->checkThread();

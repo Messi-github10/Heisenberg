@@ -2,7 +2,6 @@
 
 #include <Preview/VideoEngine.hpp>
 #include <MultiMedia/Video/Renderer/FilterGraph/Vulkan/Graph/VulkanGraphDocument.hpp>
-
 #include <cstdint>
 #include <functional>
 #include <memory>

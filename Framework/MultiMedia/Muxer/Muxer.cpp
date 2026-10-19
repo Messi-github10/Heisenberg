@@ -84,7 +84,9 @@ void Muxer::open(const std::string& path) {
     } catch (...) { av_dict_free(&options); impl_->state = Impl::State::Failed; throw; }
     av_dict_free(&options);
 }
-AVRational Muxer::streamTimeBase(int index) const { return impl_->stream(index)->time_base; }
+AVRational Muxer::streamTimeBase(int index) const {
+    return impl_->stream(index)->time_base;
+}
 void Muxer::setStreamDuration(int index, int64_t duration, AVRational tb) {
     impl_->openState();
     encoding_detail::timeBase(tb);

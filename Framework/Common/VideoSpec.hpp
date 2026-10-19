@@ -18,7 +18,6 @@ const char* toString(ColorPrimaries primaries);
 const char* toString(ColorTransfer transfer);
 const char* toString(ColorRange range);
 
-// Source/backend metadata. No Qt or project/settings dependency is required.
 struct VideoSpec {
     int width = 0;
     int height = 0;
@@ -32,7 +31,9 @@ struct VideoSpec {
     AVColorRange colorRange = AVCOL_RANGE_UNSPECIFIED;
     AVChromaLocation chromaLocation = AVCHROMA_LOC_UNSPECIFIED;
 
-    bool valid() const { return width > 0 && height > 0; }
+    bool valid() const {
+        return width > 0 && height > 0;
+    }
 };
 
 } // namespace heisenberg
