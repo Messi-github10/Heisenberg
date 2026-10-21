@@ -3,13 +3,17 @@
 #include <Models/TimelineSettings.hpp>
 #include <Models/ColorSettings.hpp>
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace heisenberg {
+namespace grade { struct LutAsset; }
 
-// A value-only snapshot. No project references, decoder, GPU objects or workers.
+// Owned CPU-only snapshot. No project references, decoder, GPU objects or workers.
+// A plan may share immutable validated LUT assets; no mutable library is retained.
 struct CompositionClip {
     std::string id;
     std::string mediaRef;
@@ -49,6 +53,12 @@ struct CompositionPlan {
     std::vector<CompositionClip> clips;
     std::vector<CompositionClip> audioClips;
     std::vector<std::string> warnings;
+    // Captured once at plan build. Active renders retain immutable validated
+    // CPU data even when the library cache/root or external files change.
+    // Missing/corrupt assets stay diagnostic values, so preview may proceed
+    // and strict compilation can report the same captured failure later.
+    std::map<std::string, std::shared_ptr<const grade::LutAsset>> gradeLuts;
+    std::map<std::string, std::string> gradeLutErrors;
 
     std::optional<CompositionSample> videoSampleAt(int64_t frame) const;
     std::optional<CompositionSample> audioSampleAt(int64_t frame) const;

@@ -43,8 +43,10 @@ All first-frame, seek and scrub video callbacks originate from the render consum
 
 `VideoFrame` retains decoded-image resources and source timing separately from its
 intended output position. `TimelineSettings` carries runtime video/audio settings;
-`MediaMath` provides rational frame/sample conversion. Existing Palmier package
-JSON remains compatible: integer timeline FPS, dimensions and manifest version 2.
+`MediaMath` provides rational frame/sample conversion. Berg projects use the `.berg`
+directory suffix. Existing package JSON remains compatible: integer timeline FPS,
+dimensions and manifest version 2. Older directory packages can still be opened
+and saved in place; Save As defaults to `.berg`.
 Settings that cannot be represented by that schema are rejected by project editing.
 
 This version supports one video track plus one independent audio track, including

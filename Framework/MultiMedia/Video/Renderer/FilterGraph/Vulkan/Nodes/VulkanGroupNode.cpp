@@ -45,6 +45,8 @@ bool VulkanGroupNode::configure(
 
 bool VulkanGroupNode::prepare(const VulkanGraphContext& context) {
     for (const std::unique_ptr<VulkanNode>& pass : passes_) {
+        pass->setImageContracts(inputContract(context.imageContract),
+                                outputContract(context.imageContract));
         if (!pass->prepare(context)) return false;
     }
     return true;

@@ -3,10 +3,17 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QUuid>
+#include <QStandardPaths>
+#include <filesystem>
+#include <Compositing/Grade/LutLibrary.hpp>
 
 namespace heisenberg::ui {
 EditorSession::EditorSession(QObject* parent) : QObject(parent),
-    token_(QUuid::createUuid().toString(QUuid::WithoutBraces)) {}
+    token_(QUuid::createUuid().toString(QUuid::WithoutBraces)) {
+    const auto root = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/LUTs";
+    QDir().mkpath(root);
+    grade::LutLibrary::setDefaultRoot(std::filesystem::u8path(QDir::fromNativeSeparators(root).toUtf8().toStdString()));
+}
 
 void EditorSession::syncDirty() {
     const bool dirty = project_.isDirty();
@@ -106,6 +113,40 @@ EditResult EditorSession::setClipEffects(const QString& clipId, std::optional<Js
     auto result = project_.editor().setClipEffects(clipId.toUtf8().toStdString(), std::move(effects));
     if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
     return result;
+}
+
+EditResult EditorSession::beginClipEffectsTransaction(const QString& clipId) {
+    return project_.editor().beginClipEffectsTransaction(clipId.toStdString());
+}
+
+EditResult EditorSession::updateClipEffectsTransaction(std::optional<JsonValue> effects) {
+    auto result = project_.editor().updateClipEffectsTransaction(std::move(effects));
+    if (result.changed()) emit timelineChanged(-1);
+    return result;
+}
+
+EditResult EditorSession::commitClipEffectsTransaction() {
+    auto result = project_.editor().commitClipEffectsTransaction();
+    syncDirty();
+    if (result.changed()) emit timelineChanged(-1);
+    return result;
+}
+
+EditResult EditorSession::cancelClipEffectsTransaction() {
+    auto result = project_.editor().cancelClipEffectsTransaction();
+    syncDirty();
+    if (result.changed()) emit timelineChanged(-1);
+    return result;
+}
+
+bool EditorSession::importGradeLut(const QString& path, QString& id, QString& displayName, QString& error) {
+    grade::LutLibrary library(grade::LutLibrary::configuredRoot());
+    std::string reason;
+    const auto asset = library.importFile(std::filesystem::u8path(QDir::fromNativeSeparators(path).toUtf8().toStdString()), &reason);
+    if (!asset) { error = QString::fromStdString(reason); return false; }
+    id = QString::fromStdString(asset->id);
+    displayName = QString::fromStdString(asset->displayName);
+    return true;
 }
 
 EditResult EditorSession::setTrackMuted(const QString& trackId, bool muted) {

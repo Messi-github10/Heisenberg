@@ -62,7 +62,7 @@ protected:
         secondId = QString::fromStdString(session.editor().activeTrack()->clips.back().id);
         ASSERT_TRUE(directory.isValid());
         QString error;
-        ASSERT_TRUE(session.savePackage(directory.path() + "/edit.palmier", &error)) << error.toStdString();
+        ASSERT_TRUE(session.savePackage(directory.path() + "/edit.berg", &error)) << error.toStdString();
         timeline.setSession(&session);
         timeline.resize(1000, 210);
         timeline.show();

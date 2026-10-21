@@ -276,7 +276,7 @@ filtergraph::VulkanSyncPoint ColorGpuPass::execute(const GpuProgram& program,
             {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
         std::vector<VkDescriptorSetLayoutBinding> programBindings;
         if (!program.uniformData.empty()) programBindings.push_back({0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
-        for (const auto& lut : program.luts) {
+        for (const auto& lut : program.textures()) {
             impl_->checkCancellation();
             if (!lut.binding || std::any_of(programBindings.begin(), programBindings.end(), [&](const auto& b){return b.binding == lut.binding;}))
                 throw std::invalid_argument("Duplicate/reserved GPU LUT binding");
@@ -324,7 +324,7 @@ filtergraph::VulkanSyncPoint ColorGpuPass::execute(const GpuProgram& program,
         imageWrite(sets[0], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1);
         for (size_t i = 0; i < resources.luts.size(); ++i) {
             images[i + 2] = {resources.luts[i]->sampler, resources.luts[i]->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-            imageWrite(sets[1], program.luts[i].binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, i + 2);
+            imageWrite(sets[1], program.textures()[i].binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, i + 2);
         }
         VkDescriptorBufferInfo uboInfo{};
         if (!program.uniformData.empty()) {
@@ -384,7 +384,7 @@ filtergraph::VulkanSyncPoint ColorGpuPass::execute(const GpuProgram& program,
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(cmd, &begin), "vkBeginCommandBuffer");
     if (!resources.lutsUploaded) for (size_t i = 0; i < resources.luts.size(); ++i) {
-        const auto& lut = program.luts[i]; const auto& image = *resources.luts[i];
+        const auto& lut = program.textures()[i]; const auto& image = *resources.luts[i];
         barrier(cmd, image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
         VkBufferImageCopy copy{}; copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.imageExtent = {lut.width, lut.height, lut.depth};

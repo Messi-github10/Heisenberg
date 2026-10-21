@@ -75,7 +75,7 @@ TimelineSettings TimelineSettings::hd1080p24() { return {}; }
 TimelineSettings TimelineSettings::fromTimelineSettings(int width, int height, int fps) {
     TimelineSettings settings;
     settings.id_.clear();
-    settings.description_ = "Palmier timeline";
+    settings.description_ = "Berg timeline";
     settings.video_.width = width;
     settings.video_.height = height;
     settings.video_.frameRate = Rational(fps, 1);

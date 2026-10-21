@@ -158,6 +158,13 @@ add_executable(HeisenbergFrameworkTests
     color_pipeline_test.cpp
     grade_edit_continuity_test.cpp
     grade_renderer_test.cpp
+    color_grade_test.cpp
+    lut_library_test.cpp
+    grade_transaction_test.cpp
+    gpu_program_graph_test.cpp
+    complete_grade_dag_test.cpp
+    color_grade_export_test.cpp
+    color_grade_performance_test.cpp
     composition_renderer_interop_test.cpp
     color_settings_test.cpp
     video_presenter_test.cpp

@@ -86,7 +86,7 @@ void MainWindow::setupUi() {
 
     auto* fileMenu = menuBar()->addMenu(tr("File"));
     auto* openProjectAction = fileMenu->addAction(
-        style()->standardIcon(QStyle::SP_DirOpenIcon), tr("Open Palmier Project..."));
+        style()->standardIcon(QStyle::SP_DirOpenIcon), tr("Open Berg Project..."));
     openProjectAction->setShortcut(QKeySequence::Open);
     auto* openVideoAction = fileMenu->addAction(
         style()->standardIcon(QStyle::SP_FileIcon), tr("Open Media..."));
@@ -229,7 +229,7 @@ void MainWindow::setupUi() {
 
     connect(openProjectAction, &QAction::triggered, this, [this]() {
         const QString path = QFileDialog::getExistingDirectory(
-            this, tr("Open Palmier Project Package"), QString(),
+            this, tr("Open Berg Project Package"), QString(),
             QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
         if (!path.isEmpty()) loadProjectPackage(path);
     });
@@ -371,11 +371,16 @@ void MainWindow::updateProjectTitle() {
 bool MainWindow::saveProjectPackage(bool saveAs) {
     QString path = QString::fromUtf8(session_->editor().projectDir().c_str());
     if (saveAs || path.isEmpty()) {
-        path = QFileDialog::getSaveFileName(this, tr("Save Palmier Project"),
-            path.isEmpty() ? "Untitled.palmier" : QFileInfo(path).path() + "/Copy.palmier",
-            tr("Palmier Project (*.palmier)"));
+        QFileDialog dialog(this, tr("Save Berg Project"),
+            path.isEmpty() ? "Untitled.berg" : QFileInfo(path).path() + "/Copy.berg",
+            tr("Berg Project (*.berg)"));
+        dialog.setObjectName("saveProjectDialog");
+        dialog.setAcceptMode(QFileDialog::AcceptSave);
+        dialog.setDefaultSuffix("berg");
+        if (dialog.exec() != QDialog::Accepted) return false;
+        path = dialog.selectedFiles().value(0);
         if (path.isEmpty()) return false;
-        if (!path.endsWith(".palmier", Qt::CaseInsensitive)) path += ".palmier";
+        if (!path.endsWith(".berg", Qt::CaseInsensitive)) path += ".berg";
     }
     QString error;
     if (!session_->savePackage(path, &error)) {

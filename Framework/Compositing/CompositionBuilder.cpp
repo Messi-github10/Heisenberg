@@ -1,9 +1,39 @@
 #include "CompositionBuilder.hpp"
+#include <Compositing/Grade/LutLibrary.hpp>
 #include <Models/MediaResolver.hpp>
 #include <Project/VideoProject.hpp>
 #include <algorithm>
 
 namespace heisenberg {
+namespace {
+// Parameter/schema validation belongs to GradeCompiler. Here we only discover
+// references without throwing on malformed or future effect payloads.
+void pinGradeLuts(const Clip& clip, CompositionPlan& plan) {
+    if (!clip.effects || !clip.effects->is_array()) return;
+    for (const auto& effect : *clip.effects) {
+        if (!effect.is_object()) continue;
+        const auto type = effect.find("type");
+        if (type == effect.end() || !type->is_string() || type->get_ref<const std::string&>() != "video.colorGrade") continue;
+        const auto enabled = effect.find("enabled");
+        if (enabled != effect.end() && enabled->is_boolean() && !enabled->get<bool>()) continue;
+        const auto params = effect.find("params");
+        if (params == effect.end() || !params->is_object()) continue;
+        const auto lut = params->find("lut");
+        if (lut == params->end() || !lut->is_object()) continue;
+        const auto id = lut->find("id");
+        if (id == lut->end() || !id->is_string() || id->get_ref<const std::string&>().empty()) continue;
+        // Capture every enabled resource reference, including constant-zero
+        // intensity. Rendering may bypass that LUT, but plan identity and
+        // captured missing/corrupt diagnostics must not depend on intensity.
+        const auto& key = id->get_ref<const std::string&>();
+        if (plan.gradeLuts.contains(key) || plan.gradeLutErrors.contains(key)) continue;
+        std::string error;
+        auto asset = grade::LutLibrary::resolveConfigured(key,&error);
+        if (asset) plan.gradeLuts.emplace(key,std::move(asset));
+        else plan.gradeLutErrors.emplace(key,std::move(error));
+    }
+}
+} // namespace
 
 bool CompositionBuilder::build(const Timeline& timeline, const MediaManifest& manifest,
                                const std::string& projectDir, CompositionPlan& result,
@@ -82,6 +112,7 @@ bool CompositionBuilder::build(const Timeline& timeline, const MediaManifest& ma
             value.fadeInFrames = clip.fadeInFrames;
             value.fadeOutFrames = clip.fadeOutFrames;
             if (value.sourcePath.empty()) plan.warnings.push_back("offline media: " + clip.mediaRef);
+            if (!audio) pinGradeLuts(clip,plan);
             clips.push_back(std::move(value));
         }
 

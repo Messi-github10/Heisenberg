@@ -142,6 +142,23 @@ TEST(GradeCompilerTest, InvalidPayloadsAreErrorsEvenInPreviewAndTransactional) {
     EXPECT_FALSE(GradeCompiler::compile(clip, 0, grade, nullptr, {.strict=false}));
 }
 
+TEST(GradeCompilerTest, LutIntensityRejectsOffFrameInvalidAndUnrepresentableValues) {
+    auto clip = withEffects(R"([{"type":"video.colorGrade","schemaVersion":1,"params":{"lut":{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","domain":"rec709","intensity":{"value":0,"track":{"keyframes":[{"frame":0,"value":0},{"frame":20,"value":0}]}}}}}])");
+    const std::map<std::string, LutLibrary::Snapshot> assets;
+    for (const double invalid : {-0.1, 1.1, 1e-100, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
+        CompiledGrade output;
+        std::string error;
+        (*clip.effects)[0]["params"]["lut"]["intensity"]["track"]["keyframes"][1]["value"] = invalid;
+        EXPECT_FALSE(GradeCompiler::compile(clip, 0, output, &error, {}, nullptr, &assets));
+        EXPECT_TRUE(output.neutral());
+        EXPECT_FALSE(error.empty());
+    }
+    (*clip.effects)[0]["params"]["lut"]["intensity"]["track"]["keyframes"][1]["value"] = 0;
+    CompiledGrade output;
+    EXPECT_TRUE(GradeCompiler::compile(clip, 0, output, nullptr, {}, nullptr, &assets));
+    EXPECT_TRUE(output.neutral());
+}
+
 TEST(GradeParameterSamplerTest, DefaultEmptyTrackIntegerRoundingAndBooleanHold) {
     VulkanParameterValue sampled;
     std::vector<GradeDiagnostic> diagnostics;

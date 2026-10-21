@@ -1,5 +1,6 @@
 #include "MainWidget/TimelineWidget.hpp"
 #include "Backend/EditorSession.hpp"
+#include "MainWidget/ColorGradeDialog.hpp"
 
 #include <QDir>
 #include <QFile>
@@ -291,6 +292,35 @@ void TimelineWidget::editSelectedClipGrade() {
     if (!result.changed() && !result.message.empty()) emit editFailed(QString::fromUtf8(result.message.c_str()));
 }
 
+void TimelineWidget::editSelectedClipColorGrade() {
+    cancelInteraction();
+    const auto* clip = timeline() ? timeline()->clipById(selectedClipId_) : nullptr;
+    if (!session_ || !clip || clip->mediaType != heisenberg::ClipType::Video) return;
+    const auto original = clip->effects;
+    auto effects = original.value_or(heisenberg::JsonValue::array());
+    if (!effects.is_array()) { emit editFailed(tr("Unsupported effects payload is preserved.")); return; }
+    for (const auto& effect : effects) {
+        if (!effect.is_object() || !effect.contains("type") || effect["type"] != "video.colorGrade") continue;
+        if (!ColorGradeDialog::supportsGradeSchema(effect)) {
+            emit editFailed(tr("This color grade has an unsupported or invalid schemaVersion. Only integer schemaVersion 1 can be edited. The original effect is preserved unchanged."));
+            return;
+        }
+        break; // The dialog edits the first color-grade effect only.
+    }
+    const auto begin = session_->beginClipEffectsTransaction(QString::fromStdString(clip->id));
+    if (!begin.message.empty()) { emit editFailed(QString::fromStdString(begin.message)); return; }
+    ColorGradeDialog dialog(effects, this);
+    dialog.setLutImporter([this](const QString& path, QString& id, QString& name, QString& error) {
+        return session_->importGradeLut(path, id, name, error);
+    });
+    connect(&dialog, &ColorGradeDialog::effectsChanged, &dialog, [this, &dialog, &effects, &original] {
+        const auto result = session_->updateClipEffectsTransaction(dialog.effects() == effects ? original : std::optional<heisenberg::JsonValue>(dialog.effects()));
+        if (!result.message.empty()) emit editFailed(QString::fromStdString(result.message));
+    });
+    const auto result = dialog.exec() == QDialog::Accepted ? session_->commitClipEffectsTransaction() : session_->cancelClipEffectsTransaction();
+    if (!result.message.empty()) emit editFailed(QString::fromStdString(result.message));
+}
+
 void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     const auto hit = clipAt(event->pos());
     if (hit.empty()) { QWidget::contextMenuEvent(event); return; }
@@ -302,13 +332,17 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     menu.setObjectName("timelineClipMenu");
     auto* audio = menu.addAction(tr("Audio Settings..."));
     audio->setObjectName("clipAudioSettings");
+    auto* colorGrade = menu.addAction(tr("Color Grade..."));
+    colorGrade->setObjectName("clipColorGrade");
     auto* grade = menu.addAction(tr("Basic Grade..."));
     grade->setObjectName("clipBasicGrade");
     const auto* selected = timeline() ? timeline()->clipById(selectedClipId_) : nullptr;
     grade->setEnabled(selected && selected->mediaType == heisenberg::ClipType::Video);
+    colorGrade->setEnabled(grade->isEnabled());
     auto* remove = menu.addAction(tr("Delete Clip"));
     const auto* chosen = menu.exec(event->globalPos());
     if (chosen == audio) editSelectedClipAudio();
+    else if (chosen == colorGrade) editSelectedClipColorGrade();
     else if (chosen == grade) editSelectedClipGrade();
     else if (chosen == remove) removeSelectedClip();
     event->accept();

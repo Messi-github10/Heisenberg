@@ -7,7 +7,7 @@ namespace heisenberg::filtergraph {
 
 class VulkanInputAdapter final : public VulkanNode, public IInputNode {
 public:
-    VulkanInputAdapter();
+    explicit VulkanInputAdapter(GraphImageContract contract = kWorkingImageContract);
 
     void setImage(const ImageFormat& format) override;
     void setImage(const VideoFormat& format) override;
@@ -25,6 +25,7 @@ protected:
     bool configure(const std::vector<ImageFormat>& inputs) override;
 
 private:
+    GraphImageContract contextContract_;
     ImageFormat declaredFormat_ = {};
     VulkanImageRef externalImage_ = {};
 };

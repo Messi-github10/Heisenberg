@@ -448,7 +448,7 @@ bool VideoEngine::openPlaylist(const std::string& path) {
     std::string projectText((std::istreambuf_iterator<char>(projectStream)), {});
     std::string mediaText((std::istreambuf_iterator<char>(mediaStream)), {});
     ProjectFile project; MediaManifest manifest; std::string error;
-    if (!projectStream || !mediaStream) error = "Palmier package requires project.json and media.json";
+    if (!projectStream || !mediaStream) error = "Berg package requires project.json and media.json";
     else if (!ProjectCodec::decode(projectText, project, &error) || !manifest.loadFromJson(mediaText, &error)) {}
     else if (const auto* timeline = project.activeTimeline()) {
         const auto utf8 = directory.u8string();

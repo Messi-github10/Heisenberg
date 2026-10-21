@@ -21,7 +21,7 @@ struct VulkanNodeCreateResult {
 
 class VulkanNodeFactory final : public NodeFactory {
 public:
-    VulkanNodeFactory();
+    explicit VulkanNodeFactory(GraphImageContract imageContract = kWorkingImageContract);
     ~VulkanNodeFactory() override;
 
     IInputNode* createInput() override;
@@ -33,6 +33,7 @@ private:
     template<typename T, typename... Args>
     T* createNode(Args&&... args);
 
+    GraphImageContract imageContract_;
     std::vector<std::unique_ptr<BaseNode>> nodes_;
 };
 

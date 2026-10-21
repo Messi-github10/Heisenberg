@@ -68,7 +68,7 @@ std::optional<heisenberg::DecodedFrame> pumpUntilFrame(heisenberg::VideoEngine& 
 
 } // namespace
 
-TEST(ProjectCodecTest, FullPalmierDocumentRoundTripsByJsonDom) {
+TEST(ProjectCodecTest, FullBergDocumentRoundTripsByJsonDom) {
     const std::string fixture = R"json({
       "timelines":[{"id":"59F931DC-0A80-4B90-9A20-A1330C623504","name":"Main","fps":30,"width":1920,"height":1080,"settingsConfigured":true,"folderId":"folder-timeline","tracks":[{"id":"7BA50613-7748-49E4-A8E7-95B004747B3B","type":"video","name":"V1","muted":false,"hidden":false,"syncLocked":true,"clips":[{"id":"59F6E869-D942-4A5D-8F10-8C1B5E743BEC","mediaRef":"media-a","mediaType":"video","sourceClipType":"video","startFrame":4,"durationFrames":20,"trimStartFrame":3,"trimEndFrame":7,"speed":1.25,"volume":0.8,"fadeInFrames":2,"fadeOutFrames":3,"fadeInInterpolation":"smooth","fadeOutInterpolation":"linear","opacity":0.75,"transform":{"centerX":0.4,"centerY":0.6,"width":0.8,"height":0.7,"rotation":12.0,"rotationX":2.0,"rotationY":3.0,"flipHorizontal":true,"flipVertical":false},"crop":{"left":0.1,"top":0.2,"right":0.05,"bottom":0.0},"edgeRounding":0.2,"edgeSoftness":0.1,"linkGroupId":"link-a","captionGroupId":"caption-a","multicamGroupId":"multi-a","textContent":"hello","textStyle":{"fontScale":1.2},"textAnimation":{"type":"fade"},"wordTimings":[{"text":"hello","startFrame":1,"endFrame":4}],"textFillMode":{"solid":{}},"opacityTrack":{"keyframes":[{"frame":2,"value":0.5,"interpolationOut":"smooth"}]},"positionTrack":{"keyframes":[{"frame":3,"value":{"a":0.2,"b":0.3},"interpolationOut":"linear"}]},"scaleTrack":{"keyframes":[]},"rotationTrack":{"keyframes":[{"frame":5,"value":15.0,"interpolationOut":"hold"}]},"cropTrack":{"keyframes":[{"frame":6,"value":{"left":0.1,"top":0.0,"right":0.0,"bottom":0.0},"interpolationOut":"smooth"}]},"volumeTrack":{"keyframes":[{"frame":7,"value":-3.0,"interpolationOut":"linear"}]},"effects":[{"id":"effect-a","type":"video.blur","enabled":true,"params":{"radius":{"value":4.0,"track":{"keyframes":[{"frame":3,"value":5.0,"interpolationOut":"smooth"}]}}}}],"blendMode":"multiply"}],"displayHeight":72.0}],"markers":[{"id":"marker-a","name":"Review","startFrame":8,"durationFrames":4,"color":{"r":1.0,"g":0.5,"b":0.0,"a":1.0},"comment":"check","status":"review"}]}],
       "activeTimelineId":"59F931DC-0A80-4B90-9A20-A1330C623504",
@@ -155,7 +155,7 @@ TEST(TimelineModelTest, IndependentTrackLookupAndCompatibilityRejectOnlyUnsuppor
     EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Unsupported);
 }
 
-TEST(ProjectCodecTest, IndependentAudioUsesExistingPalmierWireAndRoundTripsAutomation) {
+TEST(ProjectCodecTest, IndependentAudioUsesExistingBergWireAndRoundTripsAutomation) {
     const std::string fixture = R"json({"timelines":[{"id":"timeline","fps":24,"width":320,"height":240,"tracks":[{"id":"video","type":"video","clips":[{"id":"picture","mediaRef":"video-media","startFrame":0,"durationFrames":24}]},{"id":"audio","type":"audio","muted":true,"clips":[{"id":"sound","mediaRef":"audio-media","mediaType":"audio","sourceClipType":"audio","startFrame":3,"durationFrames":48,"volume":1.5,"fadeInFrames":4,"fadeOutFrames":5,"fadeInInterpolation":"smooth","fadeOutInterpolation":"hold","volumeTrack":{"keyframes":[{"frame":2,"value":0.2,"interpolationOut":"smooth"}]}}]}]}],"activeTimelineId":"timeline"})json";
     heisenberg::ProjectFile project;
     std::string error;

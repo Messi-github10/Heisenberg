@@ -152,12 +152,12 @@ TimelineSettings Timeline::settings() const {
 bool Timeline::applySettings(const TimelineSettings& value, std::string* error) {
     if (!value.valid(error)) return false;
     if (value.frameRate().denominator() != 1) {
-        setError(error, "Palmier timeline frame rate must be an integer");
+        setError(error, "Berg timeline frame rate must be an integer");
         return false;
     }
     const auto representable = TimelineSettings::fromTimelineSettings(value.width(), value.height(), value.frameRate().numerator());
     if (value != representable) {
-        setError(error, "Palmier timeline cannot persist custom audio, color, format or sample aspect settings");
+        setError(error, "Berg timeline cannot persist custom audio, color, format or sample aspect settings");
         return false;
     }
     width = value.width();

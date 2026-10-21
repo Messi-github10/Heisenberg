@@ -121,7 +121,7 @@ struct CompositionRenderer::Impl {
     std::unique_ptr<color::ColorPipeline> colorPipeline; std::unique_ptr<D3D11VulkanInterop> interop;
     int interopW = 0, interopH = 0; VulkanGraphDocument graphDocument; std::unique_ptr<VulkanFilterGraph> graph;
     struct GradeCache { std::string key; std::unique_ptr<VulkanFilterGraph> graph; };
-    std::vector<GradeCache> gradeGraphs; std::thread::id owner;
+    GradeCache gradeGraph; std::thread::id owner;
     std::function<bool()> cancelled;
     bool cancellationObserved = false;
     // LRU signatures, not frame counters: metadata/source/output changes may
@@ -253,7 +253,7 @@ void CompositionRenderer::setCancellation(std::function<bool()> cancelled) {
 }
 void CompositionRenderer::shutdown() {
     if (!impl_ || !impl_->gpu) return; impl_->check(); pl_gpu_finish(impl_->gpu); synchronizedQueueWaitIdle(impl_->context.queue);
-    impl_->reportedColorPaths.clear(); impl_->gradeGraphs.clear(); impl_->graph.reset(); impl_->interop.reset(); impl_->colorPipeline.reset(); impl_->software.reset(); impl_->placement.reset(); impl_->gpu = nullptr; impl_->vulkan = nullptr; impl_->owner = {};
+    impl_->reportedColorPaths.clear(); impl_->gradeGraph = {}; impl_->graph.reset(); impl_->interop.reset(); impl_->colorPipeline.reset(); impl_->software.reset(); impl_->placement.reset(); impl_->gpu = nullptr; impl_->vulkan = nullptr; impl_->owner = {};
 }
 RenderedFrame CompositionRenderer::render(const CompositionPlan& plan, int64_t frame, const std::shared_ptr<VideoFrame>& source, std::string* error) {
     CompositionRenderRequest request; request.plan = &plan; request.source = source; request.settings = plan.settings; request.targetFrame = frame; request.strict = true; request.blank = !source || plan.hidden;
@@ -310,21 +310,23 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
         FrameContext timing; timing.pts = request.targetFrame; timing.frameIndex = request.clipLocalFrame; timing.timeBaseNum = timeBase.num; timing.timeBaseDen = timeBase.den; timing.timeSeconds = request.clipLocalFrame*av_q2d(timeBase);
         if (clip) {
             grade::CompiledGrade compiled;
-            const bool compiledOk = grade::GradeCompiler::compile(clip->visualSnapshot,request.clipLocalFrame,compiled,error,{request.strict});
+            const bool compiledOk = grade::GradeCompiler::compile(clip->visualSnapshot,request.clipLocalFrame,compiled,error,{request.strict},impl_->colorPipeline.get(), &request.plan->gradeLuts);
             require(compiledOk, error && !error->empty() ? error->c_str() : "Grade compile failed");
             if (request.diagnostics) for (const auto& diagnostic : compiled.diagnostics) request.diagnostics->push_back(diagnostic.message);
-            impl_->gradeGraphs.resize(compiled.stages.size()); std::string domain = color::kWorkingSpace;
-            for (size_t i = 0; i < compiled.stages.size(); ++i) {
+            if (!compiled.neutral()) {
                 impl_->checkCancellation();
-                const auto& stage = compiled.stages[i]; const bool log = stage.domain == grade::GradeDomain::ACEScct; const std::string nextDomain = log ? color::kGradingSpace : color::kWorkingSpace;
-                auto contract = kWorkingImageContract; if (log) contract.transfer = filtergraph::ColorTransfer::acescct;
-                if (domain != nextDomain) working = impl_->convert(working,domain,nextDomain,contract,error);
-                auto& cache = impl_->gradeGraphs[i];
-                if (!cache.graph || cache.key != stage.topologyKey) { auto ctx = impl_->context; ctx.imageContract = contract; cache.graph = std::make_unique<VulkanFilterGraph>(ctx,stage.document); cache.key = stage.topologyKey; }
-                else for (const auto& patch : stage.parameterUpdates) require(cache.graph->setParameters(patch.nodeId,patch.parameters), "Cannot update Grade parameters");
-                working = impl_->runGraph(*cache.graph,working,timing); domain = nextDomain;
+                auto& cache = impl_->gradeGraph;
+                if (!cache.graph || cache.key != compiled.topologyKey) {
+                    cache.graph = std::make_unique<VulkanFilterGraph>(impl_->context,compiled.document);
+                    cache.key = compiled.topologyKey;
+                } else {
+                    for (const auto& patch : compiled.parameterUpdates)
+                        require(cache.graph->setParameters(patch.nodeId,patch.parameters), "Cannot update Grade parameters");
+                    for (const auto& patch : compiled.programUpdates)
+                        require(cache.graph->setProgram(patch.nodeId,patch.program), "Cannot update Grade GPU program");
+                }
+                working = impl_->runGraph(*cache.graph,working,timing);
             }
-            if (domain != color::kWorkingSpace) working = impl_->convert(working,domain,color::kWorkingSpace,kWorkingImageContract,error);
         }
         if (impl_->graph) working = impl_->runGraph(*impl_->graph,working,timing);
         const auto& metadata = selection.observedMetadata;

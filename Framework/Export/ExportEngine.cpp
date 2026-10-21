@@ -79,7 +79,8 @@ private:
     bool overwrite_ = false, committed_ = false;
 };
 
-void validateAppearance(const Clip& clip) {
+void validateAppearance(const Clip& clip, const CompositionPlan& plan,
+                        renderer::color::ColorPipeline& color) {
     if (clip.opacity != 1.0 || clip.transform != Transform{} || clip.crop != Crop{} ||
         clip.edgeRounding != 0.0 || clip.edgeSoftness != 0.0 || clip.opacityTrack ||
         clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack ||
@@ -91,7 +92,7 @@ void validateAppearance(const Clip& clip) {
         throw std::runtime_error("Unsupported clip audio automation: " + clip.id);
     grade::CompiledGrade compiled;
     std::string error;
-    if (!grade::GradeCompiler::compile(clip, 0, compiled, &error))
+    if (!grade::GradeCompiler::compile(clip, 0, compiled, &error, {true}, &color, &plan.gradeLuts))
         throw std::runtime_error("Unsupported clip grade: " + error);
 }
 
@@ -140,7 +141,7 @@ struct ExportEngine::Impl {
         return progress;
     }
 
-    void run(ExportRequest request) {
+    void run(ExportRequest request, CompositionPlan plan, std::string preparationError) {
         struct WorkerScope {
             explicit WorkerScope(ExportEngine& engine) { currentExportWorker = &engine; }
             ~WorkerScope() { currentExportWorker = nullptr; }
@@ -150,9 +151,8 @@ struct ExportEngine::Impl {
         finished.stage = "prepare";
         try {
             checkCancel();
-            CompositionPlan plan;
+            if (!preparationError.empty()) throw std::runtime_error(preparationError);
             std::string error;
-            if (!CompositionBuilder::build(request.snapshot, plan, &error)) throw std::runtime_error(error);
             if (plan.frameCount <= 0) throw std::runtime_error("The active timeline is empty");
             if ((plan.settings.width() & 1) || (plan.settings.height() & 1))
                 throw std::runtime_error("YUV420 output requires even width and height");
@@ -164,8 +164,9 @@ struct ExportEngine::Impl {
                 (plan.colorSettings.exportOutput.view != renderer::color::kColorimetricView &&
                  plan.colorSettings.exportOutput.view != renderer::color::kAcesOutputView))
                 throw std::runtime_error("This encoder output requires an SDR Rec.709 colorimetric or ACES output view");
+            renderer::color::ColorPipeline color;
             for (const auto* clips : {&plan.clips, &plan.audioClips})
-                for (const auto& clip : *clips) validateAppearance(clip.visualSnapshot);
+                for (const auto& clip : *clips) validateAppearance(clip.visualSnapshot, plan, color);
             finished.warnings = plan.warnings;
             const fs::path output = normalized(fs::u8path(request.outputPath));
             checkInputPaths(request, plan, output);
@@ -193,7 +194,6 @@ struct ExportEngine::Impl {
             renderer.setCancellation([this] { return cancelled.load(std::memory_order_acquire); });
             if (request.filterGraph && !renderer.setFilterGraphSnapshot(*request.filterGraph, &error))
                 throw std::runtime_error(error);
-            renderer::color::ColorPipeline color;
 
             finished.stage = "initialize encoding";
             VideoEncoderSettings videoSettings;
@@ -292,8 +292,26 @@ bool ExportEngine::start(ExportRequest request, std::string* error) {
         impl_->progress = {};
         impl_->progress.state = ExportState::Preparing;
     }
+    // Freeze the owned plan and immutable LUT assets before returning to the
+    // caller. A later library root switch/invalidation cannot change this task.
+    // Preparation failures still belong to the worker/result, as before.
+    CompositionPlan plan;
+    std::string preparationError;
+    try {
+        if (!CompositionBuilder::build(request.snapshot, plan, &preparationError) && preparationError.empty())
+            preparationError = "Cannot prepare export composition";
+    } catch (const std::exception& failure) {
+        preparationError = failure.what();
+    } catch (...) {
+        preparationError = "Unknown export preparation failure";
+    }
     impl_->active.store(true, std::memory_order_release);
-    try { impl_->worker = std::thread([this, request = std::move(request)]() mutable { impl_->run(std::move(request)); }); }
+    try {
+        impl_->worker = std::thread([this, request = std::move(request), plan = std::move(plan),
+                                    preparationError = std::move(preparationError)]() mutable {
+            impl_->run(std::move(request), std::move(plan), std::move(preparationError));
+        });
+    }
     catch (const std::exception& failure) {
         impl_->active.store(false, std::memory_order_release);
         if (error) *error = failure.what();

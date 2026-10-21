@@ -5,8 +5,8 @@
 
 namespace heisenberg::filtergraph {
 
-VulkanInputAdapter::VulkanInputAdapter()
-    : VulkanNode("VulkanInput", 0, 1) {}
+VulkanInputAdapter::VulkanInputAdapter(GraphImageContract contract)
+    : VulkanNode("VulkanInput", 0, 1), contextContract_(contract) {}
 
 void VulkanInputAdapter::setImage(const ImageFormat& format) {
     if (declaredFormat_ == format) return;
@@ -25,10 +25,10 @@ void VulkanInputAdapter::setImage(const VideoFormat& format) {
 bool VulkanInputAdapter::setVulkanInput(
     const VulkanImageRef& image, int32_t inputIndex) {
     if (inputIndex != 0 || !image.valid()) return false;
-    if (image.vkFormat != imageFormatToVkFormat(kWorkingImageContract.format)
-        || image.contract.format != toFormatId(ImageType::rgba16f)
-        || image.contract.alpha != AlphaMode::straight) {
-        LOG_ERROR("FilterGraph: Vulkan input violates the RGBA16F straight-alpha program contract");
+    const auto contract = outputContract(contextContract_);
+    if (image.vkFormat != imageFormatToVkFormat(contract.format)
+        || image.contract != contract) {
+        LOG_ERROR("FilterGraph: Vulkan input violates its declared image contract");
         return false;
     }
     const bool formatChanged = !externalImage_.valid()
@@ -43,7 +43,8 @@ bool VulkanInputAdapter::setVulkanInput(
 
 bool VulkanInputAdapter::configure(const std::vector<ImageFormat>& inputs) {
     if (!inputs.empty() || !externalImage_.valid()
-        || externalImage_.contract.format != toFormatId(ImageType::rgba16f)) {
+        || externalImage_.contract != outputContract(contextContract_)
+        || externalImage_.vkFormat != imageFormatToVkFormat(externalImage_.contract.format)) {
         return false;
     }
     ImageFormat format;
@@ -66,7 +67,7 @@ VulkanInputAdapter::declareResourceRequests() const {
     request.extent = externalImage_.valid() ? externalImage_.extent : VkExtent2D{};
     request.usage = externalImage_.usage;
     request.contract = externalImage_.valid()
-        ? externalImage_.contract : kWorkingImageContract;
+        ? externalImage_.contract : outputContract(contextContract_);
     request.outputPin = 0;
     request.imported = externalImage_;
     return {request};
@@ -77,8 +78,9 @@ std::vector<ResourceAccess> VulkanInputAdapter::declareResourceAccess() const {
     return {};
 }
 
-bool VulkanInputAdapter::prepare(const VulkanGraphContext&) {
-    return true;
+bool VulkanInputAdapter::prepare(const VulkanGraphContext& context) {
+    contextContract_ = context.imageContract;
+    return externalImage_.valid() && externalImage_.contract == outputContract(contextContract_);
 }
 
 bool VulkanInputAdapter::beginFrame(const FrameContext& frame) {

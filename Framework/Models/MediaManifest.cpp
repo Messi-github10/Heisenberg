@@ -88,7 +88,7 @@ bool MediaManifest::loadFromJson(const std::string& text, std::string* error) {
         *this = std::move(parsed);
         return true;
     } catch (const std::exception& exception) {
-        setError(error, std::string("Invalid Palmier media JSON: ") + exception.what());
+        setError(error, std::string("Invalid Berg media JSON: ") + exception.what());
         return false;
     }
 }

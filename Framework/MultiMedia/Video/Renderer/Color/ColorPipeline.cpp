@@ -4,6 +4,7 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 }
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -176,10 +177,46 @@ ColorProcessor ColorPipeline::lutProcessor(const std::string& filename) const {
     // File contents may change under the same path; do not cache by filename.
     auto transform = OCIO::FileTransform::Create();
     transform->setSrc(filename.c_str());
-    transform->setInterpolation(OCIO::INTERP_BEST);
+    transform->setInterpolation(OCIO::INTERP_TETRAHEDRAL);
     ColorProcessor result;
     result.impl_ = std::make_shared<ColorProcessor::Impl>();
     result.impl_->processor = impl_->config->getProcessor(transform);
+    result.impl_->cpu = result.impl_->processor->getDefaultCPUProcessor();
+    return result;
+}
+ColorProcessor ColorPipeline::lutProcessor(uint32_t size,
+    const std::vector<std::array<float, 3>>& samples,
+    const std::array<float, 3>& domainMin,
+    const std::array<float, 3>& domainMax) const {
+    if (size < 2 || size > 128 || samples.size() != size_t(size) * size * size)
+        throw std::invalid_argument("Invalid 3D LUT size or sample count");
+    auto group = OCIO::GroupTransform::Create();
+    auto domain = OCIO::MatrixTransform::Create();
+    double matrix[16] = {}, offset[4] = {};
+    matrix[15] = 1.0;
+    for (size_t c = 0; c < 3; ++c) {
+        const double span = double(domainMax[c]) - domainMin[c];
+        if (!std::isfinite(span) || span <= 0.0 || !std::isfinite(domainMin[c]))
+            throw std::invalid_argument("Invalid 3D LUT input domain");
+        matrix[c * 5] = 1.0 / span;
+        offset[c] = -domainMin[c] / span;
+    }
+    domain->setMatrix(matrix); domain->setOffset(offset);
+    group->appendTransform(domain);
+    auto lut = OCIO::Lut3DTransform::Create(size);
+    lut->setInterpolation(OCIO::INTERP_TETRAHEDRAL);
+    for (uint32_t b = 0; b < size; ++b)
+        for (uint32_t g = 0; g < size; ++g)
+            for (uint32_t r = 0; r < size; ++r) {
+                const auto& value = samples[(size_t(b) * size + g) * size + r];
+                if (!std::all_of(value.begin(), value.end(), [](float v) { return std::isfinite(v); }))
+                    throw std::invalid_argument("Non-finite 3D LUT sample");
+                lut->setValue(r, g, b, value[0], value[1], value[2]);
+            }
+    group->appendTransform(lut);
+    ColorProcessor result;
+    result.impl_ = std::make_shared<ColorProcessor::Impl>();
+    result.impl_->processor = impl_->config->getProcessor(group);
     result.impl_->cpu = result.impl_->processor->getDefaultCPUProcessor();
     return result;
 }

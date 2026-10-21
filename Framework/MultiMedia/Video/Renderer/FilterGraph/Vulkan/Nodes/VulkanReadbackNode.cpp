@@ -215,7 +215,7 @@ void VulkanReadbackNode::record(VkCommandBuffer commandBuffer,
     if (!pipeline_ || !readbackBuffer_) return;
     const VulkanImageRef source = input(0);
     if (!source.valid() || !source.view
-        || source.contract != context_.imageContract) return;
+        || source.contract != inputContract(context_.imageContract)) return;
     if (descriptor_.clearReadbackBuffer) {
         vkCmdFillBuffer(commandBuffer, readbackBuffer_, 0,
                         static_cast<VkDeviceSize>(descriptor_.readbackSize), 0);

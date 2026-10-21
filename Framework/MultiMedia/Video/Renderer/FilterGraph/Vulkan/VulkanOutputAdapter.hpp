@@ -7,7 +7,7 @@ namespace heisenberg::filtergraph {
 
 class VulkanOutputAdapter final : public VulkanNode, public IOutputNode {
 public:
-    VulkanOutputAdapter();
+    explicit VulkanOutputAdapter(GraphImageContract contract = kWorkingImageContract);
 
     void setObserver(IOutputNodeObserver* observer) override;
     bool getVulkanOutput(VulkanImageRef& image,
@@ -28,6 +28,7 @@ protected:
     bool configure(const std::vector<ImageFormat>& inputs) override;
 
 private:
+    GraphImageContract contextContract_;
     IOutputNodeObserver* observer_ = nullptr;
     VulkanSyncPoint consumerDone_ = {};
 };

@@ -7,6 +7,7 @@
 #include <functional>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,12 @@ public:
     EditResult setColorSettings(const ColorSettings& settings);
     EditResult setMediaInputColorSpace(const std::string& mediaRef, const std::string& space);
     EditResult setClipEffects(const std::string& clipId, std::optional<JsonValue> effects);
+    // Preview opaque effects without history. Commit records one net edit; cancel
+    // restores the exact original payload. Other document mutations are blocked.
+    EditResult beginClipEffectsTransaction(const std::string& clipId);
+    EditResult updateClipEffectsTransaction(std::optional<JsonValue> effects);
+    EditResult commitClipEffectsTransaction();
+    EditResult cancelClipEffectsTransaction();
     EditResult moveClip(const std::string& clipId, int64_t startFrame);
     EditResult splitClip(const std::string& clipId, int64_t atFrame);
     EditResult trimClip(const std::string& clipId, TrimEdge edge, int64_t deltaFrames);
@@ -71,6 +78,10 @@ public:
 
 private:
     friend class VideoProject;
+    // Rendering revisions include previews; this checkpoint changes only for
+    // committed edits and keeps cancellation from dirtying a saved document.
+    uint64_t documentRevision() const;
+    bool hasClipEffectsTransaction() const;
     void setProjectDir(std::string root);
     struct Impl;
     std::unique_ptr<Impl> impl_;

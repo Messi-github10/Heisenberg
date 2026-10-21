@@ -122,6 +122,7 @@ EncodedPackets audioPackets(AudioEncoder& encoder, int totalSamples) {
     for (int position = 0; position < totalSamples;) {
         const int count = std::min(totalSamples - position, position % 7 == 0 ? 317 : 1301);
         AudioFrame pcm;
+        pcm.setSpec(AudioSpec{48000, 2, ChannelLayout::Stereo});
         pcm.setPosition(position); pcm.setSamples(count, true);
         for (int c = 0; c < 2; ++c) for (int s = 0; s < count; ++s)
             pcm.sampleRw(c, s) = static_cast<float>(0.2 * std::sin((position + s) * (c == 0 ? 440.0 : 880.0) *
@@ -253,9 +254,10 @@ TEST(EncodingTest, AacFifoRetainsExactDurationPrimingTailAndGaplessDecode) {
 
 TEST(EncodingTest, AacRejectsDiscontinuousOrWrongFormatInputAndHandlesEmptyDrain) {
     AudioEncoder encoder;
-    AudioFrame pcm; pcm.setPosition(1); pcm.setSamples(10, true);
+    AudioFrame pcm; pcm.setSpec(AudioSpec{48000, 2, ChannelLayout::Stereo});
+    pcm.setPosition(1); pcm.setSamples(10, true);
     EXPECT_THROW(encoder.encode(pcm), std::invalid_argument);
-    AudioSpec spec; spec.sampleRate = 44100; pcm.setSpec(spec); pcm.setPosition(0);
+    AudioSpec spec{44100, 2, ChannelLayout::Stereo}; pcm.setSpec(spec); pcm.setPosition(0);
     EXPECT_THROW(encoder.encode(pcm), std::invalid_argument);
     float invalid = std::numeric_limits<float>::infinity(), silence = 0;
     EXPECT_THROW(encoder.encode(&invalid, &silence, 1), std::invalid_argument);

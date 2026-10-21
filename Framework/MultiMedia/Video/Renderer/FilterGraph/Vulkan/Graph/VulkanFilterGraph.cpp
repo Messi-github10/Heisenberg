@@ -3,6 +3,7 @@
 #include "VulkanPipeGraph.hpp"
 #include "../Nodes/VulkanManifestComputeNode.hpp"
 #include "../Nodes/VulkanMultiPassNode.hpp"
+#include "../Nodes/VulkanProgramNode.hpp"
 #include "../Nodes/VulkanReadbackNode.hpp"
 
 #include <stdexcept>
@@ -13,7 +14,8 @@ namespace heisenberg::filtergraph {
 VulkanFilterGraph::VulkanFilterGraph(
     const VulkanGraphContext& context,
     const VulkanGraphDocument& document)
-    : graph_(std::make_unique<VulkanPipeGraph>(context)) {
+    : nodeFactory_(context.imageContract),
+      graph_(std::make_unique<VulkanPipeGraph>(context)) {
     VulkanCompiledGraph compiled;
     std::string error;
     if (!VulkanGraphCompiler::compile(
@@ -44,6 +46,12 @@ bool VulkanFilterGraph::setParameters(
         return multiPass->setParameters(parameter);
     }
     return false;
+}
+
+bool VulkanFilterGraph::setProgram(
+    VulkanGraphNodeId nodeId, std::shared_ptr<const GpuProgram> program) {
+    auto* runtime = dynamic_cast<VulkanProgramNode*>(node(nodeId));
+    return runtime && runtime->setProgram(std::move(program));
 }
 
 bool VulkanFilterGraph::setLutImage(

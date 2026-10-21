@@ -34,6 +34,8 @@ public:
     IBaseNode* node(VulkanGraphNodeId nodeId) const;
     bool setParameters(VulkanGraphNodeId nodeId,
                        const VulkanGraphParameter& parameter);
+    bool setProgram(VulkanGraphNodeId nodeId,
+                    std::shared_ptr<const GpuProgram> program);
     bool setLutImage(VulkanGraphNodeId nodeId,
                      const VulkanImageRef& image);
     bool histogramBins(VulkanGraphNodeId nodeId,

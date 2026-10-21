@@ -26,7 +26,7 @@ must be allowed to launch FFmpeg and create temporary project packages.
 6. Drop another tile over existing content. **Ctrl+Z** and **Ctrl+Shift+Z** must
    undo/redo the whole overwrite in one step. **Add Selected at Playhead** is an
    alternative to drag/drop.
-7. Use **Ctrl+S** to save a new `.palmier` directory package. Reopen that directory
+7. Use **Ctrl+S** to save a new `.berg` directory package. Reopen that directory
    with **Ctrl+O** and check both the pool and clips. Save As preserves existing
    package media and unknown files.
 

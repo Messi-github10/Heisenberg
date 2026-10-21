@@ -177,6 +177,22 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
         return false;
     }
 
+    // Recording may fail (including a program's uniform provider throwing).
+    // Restore CPU layout tracking when no commands have reached the queue.
+    struct RecordingStates {
+        ResourceManager& manager;
+        std::vector<std::pair<LogicalResourceId, LogicalResourceState>> original;
+        bool submitted = false;
+        void save(LogicalResourceId id) {
+            if (std::none_of(original.begin(), original.end(),
+                    [&](const auto& item) { return item.first == id; }))
+                original.emplace_back(id, manager.getState(id));
+        }
+        ~RecordingStates() {
+            if (!submitted) for (const auto& [id, state] : original)
+                manager.setState(id, state);
+        }
+    } recordingStates{*resourceManager_};
     std::vector<std::pair<LogicalResourceId, LogicalResourceState>> importedStates;
     for (int32_t nodeIndex : executionOrder()) {
         auto* node = static_cast<VulkanNode*>(
@@ -189,6 +205,10 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
                 nodes()[static_cast<size_t>(edge->fromNode)]);
             const LogicalResourceId id = source->logicalOutputResource(edge->fromPin);
             if (!id.valid() || !resourceManager_->getResource(id).valid()) return false;
+            if (resourceManager_->getResource(id).contract != node->inputContract(context_.imageContract)) {
+                LOG_ERROR("FilterGraph: source image contract does not match input of '{}'", node->getMark());
+                return false;
+            }
         }
         const bool active = node->beginFrame(frame);
         if (active) {
@@ -197,6 +217,7 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
                 const auto image = resourceManager_->getResource(access.resource);
                 if (!image.valid()) return false;
                 const auto state = resourceManager_->getState(access.resource);
+                recordingStates.save(access.resource);
                 const auto* desc = resourceManager_->description(access.resource);
                 if (desc && desc->kind == LogicalResourceKind::External
                     && std::none_of(importedStates.begin(), importedStates.end(),
@@ -265,6 +286,7 @@ bool VulkanPipeGraph::onRun(const FrameContext& frame) {
         return false;
     }
     submitted_ = true;
+    recordingStates.submitted = true;
 
     const VulkanSyncPoint completion{timeline_, signalValue};
     for (BaseNode* base : nodes()) {

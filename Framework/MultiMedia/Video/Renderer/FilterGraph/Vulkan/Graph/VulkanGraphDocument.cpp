@@ -30,12 +30,19 @@ const VulkanFilterDescriptor* descriptorFor(
 PinCounts pinCounts(const VulkanGraphNodeDesc& node) {
     if (node.filterId == "input") return {0, 1};
     if (node.filterId == "output") return {1, 0};
+    if (node.filterId == "program") return {1, 1};
     const auto* descriptor = descriptorFor(node);
     return descriptor ? PinCounts{descriptor->inputCount, descriptor->outputCount}
                       : PinCounts{};
 }
 
 bool parameterMatches(const VulkanGraphNodeDesc& node) {
+    if (node.filterId == "program") {
+        return node.program && !node.program->cacheId.empty()
+            && !node.program->shaderText.empty() && !node.program->functionName.empty()
+            && node.inputContract && node.outputContract && node.parameter.empty();
+    }
+    if (node.program) return false;
     if (node.filterId == "input" || node.filterId == "output") {
         return node.parameter.empty();
     }
@@ -159,15 +166,19 @@ bool parseParameter(const std::string& filterId, const json& object,
 
 } // namespace
 
-VulkanGraphDocument VulkanGraphDocument::emptyStage() {
+VulkanGraphDocument VulkanGraphDocument::emptyStage(GraphImageContract contract) {
     VulkanGraphDocument result;
-    result.nodes_.push_back({kVulkanGraphInputNodeId, "input", {}, {}});
-    result.nodes_.push_back({kVulkanGraphOutputNodeId, "output", {}, {}});
+    VulkanGraphNodeDesc input{kVulkanGraphInputNodeId, "input", {}, {}};
+    VulkanGraphNodeDesc output{kVulkanGraphOutputNodeId, "output", {}, {}};
+    input.outputContract = contract;
+    output.inputContract = contract;
+    result.nodes_.push_back(std::move(input));
+    result.nodes_.push_back(std::move(output));
     return result;
 }
 
-VulkanGraphDocument VulkanGraphDocument::passthrough() {
-    auto result = emptyStage();
+VulkanGraphDocument VulkanGraphDocument::passthrough(GraphImageContract contract) {
+    auto result = emptyStage(contract);
     result.connect({kVulkanGraphInputNodeId, 0}, {kVulkanGraphOutputNodeId, 0});
     return result;
 }
@@ -288,7 +299,9 @@ const VulkanGraphNodeDesc* VulkanGraphDocument::findNode(
 
 VulkanGraphNodeId VulkanGraphDocument::addNode(
     std::string filterId, VulkanGraphParameter parameter,
-    VulkanGraphPosition position) {
+    VulkanGraphPosition position,
+    std::optional<GraphImageContract> inputContract,
+    std::optional<GraphImageContract> outputContract) {
     if (filterId == "input" || filterId == "output") return 0;
 
     std::string error;
@@ -307,6 +320,24 @@ VulkanGraphNodeId VulkanGraphDocument::addNode(
     node.id = nextNodeId_;
     node.filterId = std::move(filterId);
     node.parameter = std::move(parameter);
+    node.position = position;
+    node.inputContract = inputContract;
+    node.outputContract = outputContract;
+    if (!parameterMatches(node)) return 0;
+    nodes_.push_back(std::move(node));
+    return nextNodeId_++;
+}
+
+VulkanGraphNodeId VulkanGraphDocument::addProgramNode(
+    std::shared_ptr<const GpuProgram> program,
+    GraphImageContract inputContract, GraphImageContract outputContract,
+    VulkanGraphPosition position) {
+    VulkanGraphNodeDesc node;
+    node.id = nextNodeId_;
+    node.filterId = "program";
+    node.program = std::move(program);
+    node.inputContract = inputContract;
+    node.outputContract = outputContract;
     node.position = position;
     if (!parameterMatches(node)) return 0;
     nodes_.push_back(std::move(node));
@@ -458,6 +489,15 @@ bool VulkanGraphDocument::validate(std::string* error) const {
             || edge.input.pinIndex >= destinationPins.inputs) {
             setError(error, "Vulkan graph edge references an invalid pin");
             return false;
+        }
+        if (source->second->outputContract || destination->second->inputContract
+            || source->second->filterId == "input" || destination->second->filterId == "output") {
+            const auto sourceContract = source->second->outputContract.value_or(kWorkingImageContract);
+            const auto destinationContract = destination->second->inputContract.value_or(kWorkingImageContract);
+            if (sourceContract != destinationContract) {
+                setError(error, "Vulkan graph edge image contracts do not match");
+                return false;
+            }
         }
         if (!occupiedInputs.insert(edge.input).second) {
             setError(error, "Vulkan graph input pin has more than one connection");

@@ -74,7 +74,9 @@ bool VulkanComputeNode::configure(
     for (int32_t index = 0; index < inputCount(); ++index) {
         const ImageFormat& format = inputs[static_cast<size_t>(index)];
         if (format.width <= 0 || format.height <= 0
-            || !supportsFormat(format.format)) {
+            || !supportsFormat(format.format)
+            || format.format != inputContract().format
+            || outputContract().format != format.format) {
             return false;
         }
         setInputFormat(index, format);
@@ -191,7 +193,7 @@ VulkanComputeNode::declareResourceRequests() const {
         request.extent = {static_cast<uint32_t>(format.width),
                           static_cast<uint32_t>(format.height)};
         request.usage = usage;
-        request.contract = context_.imageContract;
+        request.contract = outputContract(context_.imageContract);
         request.outputPin = index;
         requests.push_back(std::move(request));
     }
@@ -619,7 +621,7 @@ void VulkanComputeNode::record(
     for (int32_t index = 0; index < inputCount(); ++index) {
         const VulkanImageRef source = input(index);
         if (!source.valid() || !source.view
-            || source.contract != context_.imageContract) {
+            || source.contract != inputContract(context_.imageContract)) {
             LOG_ERROR("FilterGraph: compute input {} violates the working contract",
                       index);
             return;
@@ -630,7 +632,7 @@ void VulkanComputeNode::record(
     for (int32_t index = 0; index < extraInputCount(); ++index) {
         const VulkanImageRef source = extraInput(index);
         if (!source.valid() || !source.view
-            || source.contract != context_.imageContract) {
+            || source.contract != inputContract(context_.imageContract)) {
             LOG_ERROR("FilterGraph: extra compute input {} violates the working contract",
                       index);
             return;

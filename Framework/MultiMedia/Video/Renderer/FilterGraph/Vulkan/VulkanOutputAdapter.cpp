@@ -5,8 +5,8 @@
 
 namespace heisenberg::filtergraph {
 
-VulkanOutputAdapter::VulkanOutputAdapter()
-    : VulkanNode("VulkanOutput", 1, 1) {}
+VulkanOutputAdapter::VulkanOutputAdapter(GraphImageContract contract)
+    : VulkanNode("VulkanOutput", 1, 1), contextContract_(contract) {}
 
 void VulkanOutputAdapter::setObserver(IOutputNodeObserver* observer) {
     observer_ = observer;
@@ -21,7 +21,8 @@ bool VulkanOutputAdapter::configure(const std::vector<ImageFormat>& inputs) {
     return true;
 }
 
-bool VulkanOutputAdapter::prepare(const VulkanGraphContext&) {
+bool VulkanOutputAdapter::prepare(const VulkanGraphContext& context) {
+    contextContract_ = context.imageContract;
     return true;
 }
 
@@ -33,7 +34,8 @@ void VulkanOutputAdapter::record(VkCommandBuffer, const FrameContext&) {}
 
 bool VulkanOutputAdapter::getVulkanOutput(
     VulkanImageRef& image, int32_t outputIndex) const {
-    if (outputIndex != 0 || !input(0).valid()) return false;
+    if (outputIndex != 0 || !input(0).valid()
+        || input(0).contract != inputContract(contextContract_)) return false;
     image = input(0);
     return true;
 }

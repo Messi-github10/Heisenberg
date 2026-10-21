@@ -37,6 +37,11 @@ public:
     EditResult setColorSettings(const ColorSettings& settings);
     EditResult setMediaInputColorSpace(const QString& mediaRef, const QString& space);
     EditResult setClipEffects(const QString& clipId, std::optional<JsonValue> effects);
+    EditResult beginClipEffectsTransaction(const QString& clipId);
+    EditResult updateClipEffectsTransaction(std::optional<JsonValue> effects);
+    EditResult commitClipEffectsTransaction();
+    EditResult cancelClipEffectsTransaction();
+    bool importGradeLut(const QString& path, QString& id, QString& displayName, QString& error);
     EditResult removeClips(const QStringList& clipIds);
     EditResult moveClip(const QString& clipId, qint64 frame);
     EditResult trimClip(const QString& clipId, TrimEdge edge, qint64 deltaFrames);

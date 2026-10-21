@@ -2,6 +2,7 @@
 
 #include <MultiMedia/Video/Renderer/FilterGraph/Core/BaseNode.hpp>
 #include <MultiMedia/Video/Renderer/FilterGraph/Vulkan/Graph/LogicalResource.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,19 @@ public:
 
     VulkanImageRef input(int32_t index) const;
     VulkanImageRef output(int32_t index) const;
+
+    virtual void setImageContracts(
+        std::optional<GraphImageContract> input,
+        std::optional<GraphImageContract> output) {
+        inputContract_ = input;
+        outputContract_ = output;
+    }
+    GraphImageContract inputContract(GraphImageContract fallback = kWorkingImageContract) const {
+        return inputContract_.value_or(fallback);
+    }
+    GraphImageContract outputContract(GraphImageContract fallback = kWorkingImageContract) const {
+        return outputContract_.value_or(fallback);
+    }
 
     virtual bool prepare(const VulkanGraphContext& context) = 0;
     virtual bool beginFrame(const FrameContext& frame);
@@ -55,6 +69,8 @@ private:
         return configure(inputs);
     }
 
+    std::optional<GraphImageContract> inputContract_;
+    std::optional<GraphImageContract> outputContract_;
     std::vector<LogicalResourceId> inputResources_;
     std::vector<LogicalResourceId> outputResources_;
     ResourceManager* resourceManager_ = nullptr;

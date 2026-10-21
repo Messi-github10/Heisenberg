@@ -1,6 +1,9 @@
 #pragma once
 
 #include "FilterCommon.hpp"
+#include <MultiMedia/Video/Renderer/FilterGraph/Common/GpuProgram.hpp>
+#include <memory>
+#include <optional>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -27,6 +30,10 @@ struct VulkanGraphNodeDesc {
     std::string filterId;
     VulkanGraphParameter parameter = {};
     VulkanGraphPosition position = {};
+    // Runtime-only program nodes are never loaded from persisted JSON.
+    std::shared_ptr<const GpuProgram> program;
+    std::optional<GraphImageContract> inputContract;
+    std::optional<GraphImageContract> outputContract;
 };
 
 struct NodePin {
@@ -48,8 +55,8 @@ class VulkanGraphDocument {
 public:
     VulkanGraphDocument() = default;
     // Empty stage has fixed endpoints but no edge; passthrough is runnable.
-    static VulkanGraphDocument emptyStage();
-    static VulkanGraphDocument passthrough();
+    static VulkanGraphDocument emptyStage(GraphImageContract contract = kWorkingImageContract);
+    static VulkanGraphDocument passthrough(GraphImageContract contract = kWorkingImageContract);
 
     bool loadFromJsonFile(const std::string& path,
                           std::string* error = nullptr);
@@ -67,6 +74,13 @@ public:
     VulkanGraphNodeId addNode(
         std::string filterId,
         VulkanGraphParameter parameter = {},
+        VulkanGraphPosition position = {},
+        std::optional<GraphImageContract> inputContract = {},
+        std::optional<GraphImageContract> outputContract = {});
+    VulkanGraphNodeId addProgramNode(
+        std::shared_ptr<const GpuProgram> program,
+        GraphImageContract inputContract,
+        GraphImageContract outputContract,
         VulkanGraphPosition position = {});
     bool removeNode(VulkanGraphNodeId nodeId);
     bool connect(NodePin output, NodePin input);

@@ -3,6 +3,11 @@
 #include <Backend/PlayerController.hpp>
 #include <MainWidget/MediaPoolWidget.hpp>
 #include <MainWidget/TimelineWidget.hpp>
+#include <MainWidget/MainWindow.hpp>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QTimer>
+#include <QDir>
 
 #include <gtest/gtest.h>
 #include <QApplication>
@@ -48,6 +53,38 @@ std::unique_ptr<QMimeData> payload(EditorSession& session, const QString& ref) {
         {"session", session.token()}, {"mediaRef", ref}}).toJson());
     return mime;
 }
+}
+
+TEST(ProjectPackageUiTest, SaveDialogUsesBergDefaultsAndAvoidsDuplicateUppercaseSuffix) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    EditorSession session;
+    MainWindow window(&session);
+    const auto options = QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+    for (const QString& filename : {QString("named"), QString("uppercase.BERG")}) {
+        const bool saveAs = !session.editor().projectDir().empty();
+        QTimer::singleShot(0, &window, [&]() {
+            auto* dialog = window.findChild<QFileDialog*>("saveProjectDialog");
+            if (!dialog) { ADD_FAILURE() << "Project save dialog did not open"; return; }
+            EXPECT_EQ(dialog->defaultSuffix(), QString("berg"));
+            EXPECT_EQ(dialog->selectedNameFilter(), QString("Berg Project (*.berg)"));
+            EXPECT_EQ(QFileInfo(dialog->selectedFiles().value(0)).fileName(), saveAs ? QString("Copy.berg") : QString("Untitled.berg"));
+            dialog->setDirectory(directory.path());
+            dialog->selectFile(filename);
+            static_cast<QDialog*>(dialog)->accept();
+        });
+        EXPECT_TRUE(window.saveProjectPackage(saveAs));
+        const QString expected = directory.path() + '/' + filename + (filename.endsWith(".BERG") ? "" : ".berg");
+        EXPECT_TRUE(QFileInfo::exists(expected + "/project.json"));
+        EXPECT_TRUE(QFileInfo::exists(expected + "/media.json"));
+        EXPECT_FALSE(QFileInfo::exists(expected + ".berg"));
+        EXPECT_EQ(QDir(QString::fromStdString(session.editor().projectDir())).absolutePath(), QDir(expected).absolutePath());
+        EditorSession reopened;
+        QString error;
+        EXPECT_TRUE(reopened.loadPackage(expected, &error)) << error.toStdString();
+    }
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, options);
 }
 
 TEST(MediaPoolUiTest, ImportMetadataDuplicateDetectionSearchAndThumbnail) {
@@ -97,7 +134,7 @@ TEST(MediaPoolUiTest, ActualPoolDragExtendsEmptyTimelineAndRoundTripsPackage) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
     QString error;
-    const QString package = directory.path() + "/edit.palmier";
+    const QString package = directory.path() + "/edit.berg";
     ASSERT_TRUE(session.savePackage(package, &error)) << error.toStdString();
     EXPECT_FALSE(session.isDirty());
     EditorSession reopened;
@@ -151,7 +188,7 @@ TEST(MediaPoolUiTest, OfflineAssetsAndUnsupportedTracksCannotBeDraggedOrEdited) 
     const auto ref = QString::fromStdString(session.editor().manifest().entries().front().id);
     ASSERT_TRUE(session.placeMedia(ref, 0).changed());
     QTemporaryDir directory;
-    const QString package = directory.path() + "/unsupported.palmier";
+    const QString package = directory.path() + "/unsupported.berg";
     QString error;
     ASSERT_TRUE(session.savePackage(package, &error)) << error.toStdString();
     auto project = session.editor().project();
@@ -321,9 +358,9 @@ TEST(MediaPoolUiTest, AudioOnlyDropCreatesAudioTrackAndRejectsWrongLaneAndExplic
     EXPECT_EQ(heisenberg::ProjectCodec::encode(session.editor().project()), audioOnly);
     QTemporaryDir directory;
     QString error;
-    ASSERT_TRUE(session.savePackage(directory.path() + "/audio.palmier", &error)) << error.toStdString();
+    ASSERT_TRUE(session.savePackage(directory.path() + "/audio.berg", &error)) << error.toStdString();
     EditorSession reopened;
-    ASSERT_TRUE(reopened.loadPackage(directory.path() + "/audio.palmier", &error)) << error.toStdString();
+    ASSERT_TRUE(reopened.loadPackage(directory.path() + "/audio.berg", &error)) << error.toStdString();
     EXPECT_EQ(heisenberg::ProjectCodec::encode(reopened.editor().project()), audioOnly);
 }
 

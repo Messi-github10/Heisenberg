@@ -338,7 +338,7 @@ bool ProjectCodec::decode(const std::string& text, ProjectFile& result, std::str
         result = std::move(parsed);
         return true;
     } catch (const std::exception& exception) {
-        setError(error, std::string("Invalid Palmier project JSON: ") + exception.what());
+        setError(error, std::string("Invalid Berg project JSON: ") + exception.what());
         return false;
     }
 }

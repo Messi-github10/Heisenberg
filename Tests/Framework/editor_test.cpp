@@ -22,7 +22,7 @@ std::string utf8(const std::filesystem::path& path) {
 
 std::filesystem::path tempPackage(const std::string& suffix) {
     return std::filesystem::temp_directory_path() /
-           std::filesystem::u8path("heisenberg-" + suffix + "-" + heisenberg::makeUuid() + ".palmier");
+           std::filesystem::u8path("heisenberg-" + suffix + "-" + heisenberg::makeUuid() + ".berg");
 }
 
 void writeText(const std::filesystem::path& path, const std::string& text) {
@@ -391,6 +391,39 @@ TEST(ProjectSettingsTest, AppliesOneUndoTransactionAndRejectsUnpersistableSettin
     custom.setAudioSpec(audio);
     EXPECT_EQ(settings.applyTimelineSettings(custom).status, heisenberg::EditStatus::Invalid);
     EXPECT_EQ(project.editor().project(), after);
+}
+
+TEST(VideoProjectTest, BergPackagesAndLegacySuffixRemainReadableWithoutRenaming) {
+    const auto berg = tempPackage("berg-roundtrip");
+    auto legacy = tempPackage("legacy-roundtrip");
+    legacy.replace_extension(".palmier");
+    struct Cleanup {
+        std::filesystem::path berg, legacy;
+        ~Cleanup() {
+            std::error_code ignored;
+            std::filesystem::remove_all(berg, ignored);
+            std::filesystem::remove_all(legacy, ignored);
+        }
+    } cleanup{berg, legacy};
+    heisenberg::VideoProject project;
+    std::string error;
+    ASSERT_TRUE(project.savePackage(utf8(legacy), &error)) << error;
+    heisenberg::VideoProject reopened;
+    ASSERT_TRUE(reopened.loadPackage(utf8(legacy / "project.json"), &error)) << error;
+    ASSERT_TRUE(reopened.editor().applyTimelineSettings(
+        heisenberg::TimelineSettings::fromTimelineSettings(1280, 720, 25)).changed());
+    ASSERT_TRUE(reopened.save(&error)) << error;
+    EXPECT_TRUE(std::filesystem::is_directory(legacy));
+    EXPECT_EQ(std::filesystem::u8path(reopened.editor().projectDir()), legacy);
+    ASSERT_TRUE(reopened.saveAs(utf8(berg), &error)) << error;
+    EXPECT_TRUE(std::filesystem::exists(berg / "project.json"));
+    EXPECT_TRUE(std::filesystem::exists(berg / "media.json"));
+    EXPECT_TRUE(std::filesystem::is_directory(legacy));
+    heisenberg::VideoProject loadedBerg, loadedLegacy;
+    ASSERT_TRUE(loadedBerg.loadPackage(utf8(berg), &error)) << error;
+    ASSERT_TRUE(loadedLegacy.loadPackage(utf8(legacy), &error)) << error;
+    EXPECT_EQ(loadedBerg.editor().project(), reopened.editor().project());
+    EXPECT_EQ(loadedLegacy.editor().project(), reopened.editor().project());
 }
 
 TEST(VideoProjectTest, ImmutableSnapshotOwnsDocumentAndOlderSaveDoesNotClearNewerRevision) {

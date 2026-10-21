@@ -2,6 +2,8 @@
 
 #include <Common/VideoSpec.hpp>
 #include <MultiMedia/Video/Renderer/FilterGraph/Common/FilterCommon.hpp>
+#include <MultiMedia/Video/Renderer/FilterGraph/Common/GpuProgram.hpp>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -29,28 +31,8 @@ struct ColorInputResolve {
     std::vector<std::string> diagnostics;
 };
 
-// Backend-neutral program data. No OCIO types or policy enter FilterGraph.
-// Set 0: binding 0 sampled input, binding 1 storage output.
-// Set 1: binding 0 std140 UBO, LUT bindings as supplied (starting at 1).
-struct GpuLut {
-    uint32_t binding = 0;
-    uint32_t width = 0, height = 0, depth = 1;
-    uint32_t channels = 3;
-    bool is3D = false;
-    bool linearInterpolation = true;
-    std::vector<float> values;
-};
-struct GpuProgram {
-    // Immutable identity of shader, LUT contents/bindings and UBO layout.
-    // Changing any of those requires a new ID; UBO values may change in place.
-    std::string cacheId;
-    std::string shaderText; // OCIO function and declarations, not a complete compute shader
-    std::string functionName;
-    std::vector<std::byte> uniformData;
-    std::vector<GpuLut> luts;
-    // Optional dynamic UBO snapshot provider; shader/LUT identity stays fixed.
-    std::function<std::vector<std::byte>()> uniformUpdate;
-};
+using GpuLut = filtergraph::GpuLut;
+using GpuProgram = filtergraph::GpuProgram;
 
 inline constexpr size_t kProgramCacheCapacity = 16;
 struct ColorGpuCacheStats {
@@ -121,6 +103,10 @@ public:
     // A file LUT operates in its declared grading domain; caller brackets it
     // with ACEScg <-> ACEScct when that is the LUT's input/output encoding.
     ColorProcessor lutProcessor(const std::string& filename) const;
+    ColorProcessor lutProcessor(uint32_t size,
+        const std::vector<std::array<float, 3>>& samples,
+        const std::array<float, 3>& domainMin,
+        const std::array<float, 3>& domainMax) const;
     ColorProcessor displayProcessor(const std::string& source = kWorkingSpace,
         const std::string& display = kPreviewDisplay, const std::string& view = kOutputView) const;
     filtergraph::VulkanSyncPoint executeSpace(const filtergraph::VulkanImageRef& input,

@@ -36,6 +36,8 @@ private:
     MediaManifest manifest_;
     std::string root_;
     uint64_t revision_ = 0;
+    uint64_t documentRevision_ = 0;
+    bool transient_ = false;
     uint64_t generation_ = 0;
     std::string ownerId_;
 };
@@ -58,20 +60,23 @@ public:
         return savedRevision_;
     }
     bool isDirty() const {
-        return revision() != savedRevision_;
+        return editor_.documentRevision() != savedDocumentRevision_;
     }
     ProjectSnapshot snapshot() const;
     bool loadPackage(const std::string& path, std::string* error = nullptr);
     bool savePackage(const std::string& path, std::string* error = nullptr);
     bool save(std::string* error = nullptr);
     bool saveAs(const std::string& path, std::string* error = nullptr);
-    // Persist a previously captured revision. A newer live revision stays dirty.
+    // Persist a previously captured revision. A newer committed document stays
+    // dirty. Saves/loads are rejected during a pending effects transaction;
+    // snapshots captured during one can never be persisted.
     bool saveSnapshot(const ProjectSnapshot& snapshot, const std::string& path,
                       std::string* error = nullptr);
 private:
     EditorViewModel editor_;
     ProjectPackageCoordinator coordinator_;
     uint64_t savedRevision_ = 0;
+    uint64_t savedDocumentRevision_ = 0;
     uint64_t generation_ = 0;
     std::string ownerId_;
 };

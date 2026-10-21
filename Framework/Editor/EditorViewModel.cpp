@@ -34,6 +34,16 @@ struct EditorViewModel::Impl {
     EditorViewModelTimelines timelines;
     MediaManifest manifest;
     uint64_t revision = 0;
+    uint64_t documentRevision = 0;
+    struct ClipEffectsTransaction {
+        std::string clipId;
+        Timeline before;
+    };
+    std::optional<ClipEffectsTransaction> effectsTransaction;
+
+    void documentChanged() {
+        documentRevision = ++revision;
+    }
 
     Timeline* active() {
         return timelines.activeTimeline();
@@ -217,7 +227,17 @@ uint64_t EditorViewModel::revision() const {
     return impl_->revision;
 }
 
+uint64_t EditorViewModel::documentRevision() const {
+    return impl_->documentRevision;
+}
+
+bool EditorViewModel::hasClipEffectsTransaction() const {
+    return impl_->effectsTransaction.has_value();
+}
+
 EditResult EditorViewModel::applyTimelineSettings(const TimelineSettings& settings) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
     auto* timeline = impl_->active();
     if (!timeline) return {EditStatus::Invalid, {}, "active timeline is required"};
     Timeline candidate = *timeline;
@@ -228,11 +248,15 @@ EditResult EditorViewModel::applyTimelineSettings(const TimelineSettings& settin
     *timeline = std::move(candidate);
     impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Timeline Settings"});
     impl_->timelines.redo_.clear();
-    ++impl_->revision;
+    impl_->documentChanged();
     return {EditStatus::Changed, {timeline->id}, {}};
 }
 
 bool EditorViewModel::importMedia(const std::string& path, std::string* error) {
+    if (hasClipEffectsTransaction()) {
+        setError(error, "clip effects transaction is pending");
+        return false;
+    }
     const Timeline* timeline = impl_->active();
     if (!timeline || path.empty()) { setError(error, "media path and active timeline are required"); return false; }
     std::error_code code;
@@ -272,7 +296,7 @@ bool EditorViewModel::importMedia(const std::string& path, std::string* error) {
     }
     entry.hasAudio = hasAudio;
     if (!impl_->manifest.add(std::move(entry), error)) return false;
-    ++impl_->revision;
+    impl_->documentChanged();
     return true;
 }
 
@@ -316,6 +340,8 @@ std::vector<MediaAsset> EditorViewModel::assets() const {
 EditResult EditorViewModel::placeClip(const std::string& mediaRef, int64_t startFrame,
                                       int64_t durationFrames, int64_t trimStartFrame,
                                       const std::string& targetTrackId) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
     Timeline* timeline = impl_->active();
     const MediaManifestEntry* media = impl_->manifest.find(mediaRef);
     if (!timeline || !media) return {EditStatus::Invalid, {}, "mediaRef was not found"};
@@ -377,11 +403,13 @@ EditResult EditorViewModel::placeClip(const std::string& mediaRef, int64_t start
     affected.push_back(clip.id);
     impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Place Clip"});
     impl_->timelines.redo_.clear();
-    ++impl_->revision;
+    impl_->documentChanged();
     return {EditStatus::Changed, std::move(affected), {}};
 }
 
 EditResult EditorViewModel::moveClip(const std::string& clipId, int64_t startFrame) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
     Timeline* timeline = impl_->active();
     if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
         return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
@@ -405,11 +433,13 @@ EditResult EditorViewModel::moveClip(const std::string& clipId, int64_t startFra
     affected.push_back(clipId);
     impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Move Clip"});
     impl_->timelines.redo_.clear();
-    ++impl_->revision;
+    impl_->documentChanged();
     return {EditStatus::Changed, std::move(affected), {}};
 }
 
 EditResult EditorViewModel::splitClip(const std::string& clipId, int64_t atFrame) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
     Timeline* timeline = impl_->active();
     if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
         return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
@@ -434,11 +464,13 @@ EditResult EditorViewModel::splitClip(const std::string& clipId, int64_t atFrame
     *timeline = candidate;
     impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Split Clip"});
     impl_->timelines.redo_.clear();
-    ++impl_->revision;
+    impl_->documentChanged();
     return {EditStatus::Changed, {clipId, rightId}, {}};
 }
 
 EditResult EditorViewModel::trimClip(const std::string& clipId, TrimEdge edge, int64_t deltaFrames) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
     Timeline* timeline = impl_->active();
     if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
         return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
@@ -499,11 +531,13 @@ EditResult EditorViewModel::trimClip(const std::string& clipId, TrimEdge edge, i
     *timeline = std::move(candidate);
     impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Trim Clip"});
     impl_->timelines.redo_.clear();
-    ++impl_->revision;
+    impl_->documentChanged();
     return {EditStatus::Changed, std::move(affected), {}};
 }
 
 EditResult EditorViewModel::removeClips(const std::vector<std::string>& clipIds) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
     Timeline* timeline = impl_->active();
     if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
         return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
@@ -525,12 +559,14 @@ EditResult EditorViewModel::removeClips(const std::vector<std::string>& clipIds)
     *timeline = std::move(candidate);
     impl_->timelines.undo_.push_back({timeline->id, before, *timeline, affected.size() == 1 ? "Remove Clip" : "Remove Clips"});
     impl_->timelines.redo_.clear();
-    ++impl_->revision;
+    impl_->documentChanged();
     return {EditStatus::Changed, std::move(affected), {}};
 }
 
 EditResult EditorViewModel::setClipAudio(const std::string& clipId, double volume,
                                         int64_t fadeInFrames, int64_t fadeOutFrames) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
     Timeline* timeline = impl_->active();
     if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
         return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
@@ -558,12 +594,14 @@ EditResult EditorViewModel::setClipAudio(const std::string& clipId, double volum
     *timeline = std::move(candidate);
     impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Clip Audio"});
     impl_->timelines.redo_.clear();
-    ++impl_->revision;
+    impl_->documentChanged();
     return {EditStatus::Changed, {clipId}, preservedAutomation
         ? "audio automation is preserved; preview uses base volume and linear fades" : ""};
 }
 
 EditResult EditorViewModel::setColorSettings(const ColorSettings& settings) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
     std::string error;
     if (!validateColorSettings(settings, &error)) return {EditStatus::Invalid, {}, error};
     if (!supportedColorSettings(settings))
@@ -577,11 +615,13 @@ EditResult EditorViewModel::setColorSettings(const ColorSettings& settings) {
     current = settings;
     impl_->timelines.undo_.push_back(std::move(entry));
     impl_->timelines.redo_.clear();
-    ++impl_->revision;
+    impl_->documentChanged();
     return {EditStatus::Changed, {}, {}};
 }
 
 EditResult EditorViewModel::setMediaInputColorSpace(const std::string& mediaRef, const std::string& space) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
     if (!impl_->manifest.find(mediaRef)) return {EditStatus::Invalid, {}, "mediaRef was not found"};
     ColorSettings candidate = project().colorSettings;
     if (space.empty()) candidate.inputColorSpaces.erase(mediaRef);
@@ -592,6 +632,8 @@ EditResult EditorViewModel::setMediaInputColorSpace(const std::string& mediaRef,
 }
 
 EditResult EditorViewModel::setClipEffects(const std::string& clipId, std::optional<JsonValue> effects) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
     auto* timeline = impl_->active();
     if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
         return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
@@ -606,11 +648,82 @@ EditResult EditorViewModel::setClipEffects(const std::string& clipId, std::optio
     *timeline = std::move(candidate);
     impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Clip Effects"});
     impl_->timelines.redo_.clear();
-    ++impl_->revision;
+    impl_->documentChanged();
     return {EditStatus::Changed, {clipId}, {}};
 }
 
+EditResult EditorViewModel::beginClipEffectsTransaction(const std::string& clipId) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
+    const auto* timeline = impl_->active();
+    if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
+    const auto* clip = timeline->clipById(clipId);
+    if (!clip) return {EditStatus::Invalid, {}, "clip was not found"};
+    if (clip->mediaType != ClipType::Video)
+        return {EditStatus::Unsupported, {}, "video effects require a video clip"};
+    impl_->effectsTransaction = Impl::ClipEffectsTransaction{clipId, *timeline};
+    return {EditStatus::Changed, {clipId}, {}};
+}
+
+EditResult EditorViewModel::updateClipEffectsTransaction(std::optional<JsonValue> effects) {
+    if (!hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "no clip effects transaction is pending"};
+    if (effects && !effects->is_array())
+        return {EditStatus::Invalid, {}, "clip effects must be an array"};
+    const auto& transaction = *impl_->effectsTransaction;
+    auto* timeline = impl_->active();
+    auto* clip = timeline && timeline->id == transaction.before.id
+        ? timeline->clipById(transaction.clipId) : nullptr;
+    if (!clip) return {EditStatus::Invalid, {}, "transaction clip was not found"};
+    if (clip->effects == effects) return {EditStatus::NoOp, {transaction.clipId}, {}};
+    clip->effects = std::move(effects);
+    ++impl_->revision;
+    return {EditStatus::Changed, {transaction.clipId}, {}};
+}
+
+EditResult EditorViewModel::commitClipEffectsTransaction() {
+    if (!hasClipEffectsTransaction()) return {EditStatus::NoOp, {}, {}};
+    const auto& transaction = *impl_->effectsTransaction;
+    const auto* timeline = impl_->active();
+    const auto* clip = timeline && timeline->id == transaction.before.id
+        ? timeline->clipById(transaction.clipId) : nullptr;
+    if (!clip) return {EditStatus::Invalid, {}, "transaction clip was not found"};
+    const std::string clipId = transaction.clipId;
+    const bool changed = clip->effects != transaction.before.clipById(clipId)->effects;
+    if (changed) {
+        impl_->timelines.undo_.push_back({timeline->id, transaction.before, *timeline, "Clip Effects"});
+        impl_->timelines.redo_.clear();
+        // Give the committed state its own checkpoint, distinct from snapshots
+        // captured while the transaction was still transient.
+        impl_->documentChanged();
+    }
+    impl_->effectsTransaction.reset();
+    return {changed ? EditStatus::Changed : EditStatus::NoOp, {clipId}, {}};
+}
+
+EditResult EditorViewModel::cancelClipEffectsTransaction() {
+    if (!hasClipEffectsTransaction()) return {EditStatus::NoOp, {}, {}};
+    auto& transaction = *impl_->effectsTransaction;
+    auto* timeline = impl_->active();
+    auto* clip = timeline && timeline->id == transaction.before.id
+        ? timeline->clipById(transaction.clipId) : nullptr;
+    if (!clip) return {EditStatus::Invalid, {}, "transaction clip was not found"};
+    const std::string clipId = transaction.clipId;
+    auto& original = transaction.before.clipById(clipId)->effects;
+    const bool changed = clip->effects != original;
+    if (changed) {
+        clip->effects = std::move(original);
+        // Invalidate preview snapshots without changing the document checkpoint.
+        ++impl_->revision;
+    }
+    impl_->effectsTransaction.reset();
+    return {changed ? EditStatus::Changed : EditStatus::NoOp, {clipId}, {}};
+}
+
 EditResult EditorViewModel::setTrackMuted(const std::string& trackId, bool muted) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
     Timeline* timeline = impl_->active();
     if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
         return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
@@ -625,29 +738,35 @@ EditResult EditorViewModel::setTrackMuted(const std::string& trackId, bool muted
     *timeline = std::move(candidate);
     impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Track Mute"});
     impl_->timelines.redo_.clear();
-    ++impl_->revision;
+    impl_->documentChanged();
     return {EditStatus::Changed, {trackId}, {}};
 }
 
 bool EditorViewModel::undo() {
+    if (hasClipEffectsTransaction()) return false;
     if (!impl_->timelines.undo()) return false;
-    ++impl_->revision;
+    impl_->documentChanged();
     return true;
 }
 
 bool EditorViewModel::redo() {
+    if (hasClipEffectsTransaction()) return false;
     if (!impl_->timelines.redo()) return false;
-    ++impl_->revision;
+    impl_->documentChanged();
     return true;
 }
 
 bool EditorViewModel::replaceDocument(ProjectFile project, MediaManifest manifest,
                                       std::string packageDir, std::string* error) {
+    if (hasClipEffectsTransaction()) {
+        setError(error, "clip effects transaction is pending");
+        return false;
+    }
     if (!validateProject(project, error) || !manifest.validate(error)) return false;
     impl_->timelines.replace(std::move(project));
     impl_->manifest = std::move(manifest);
     impl_->packageDir = std::move(packageDir);
-    ++impl_->revision;
+    impl_->documentChanged();
     return true;
 }
 void EditorViewModel::setProjectDir(std::string root) {

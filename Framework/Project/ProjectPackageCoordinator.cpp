@@ -135,7 +135,7 @@ bool ProjectPackageCoordinator::loadPackage(const std::string& path, ProjectFile
                                              std::string* error) const {
     try {
         const auto root = packagePath(path);
-        if (!fs::is_directory(root)) throw std::runtime_error("Palmier package directory was not found");
+        if (!fs::is_directory(root)) throw std::runtime_error("Berg package directory was not found");
         ProjectFile project;
         MediaManifest manifest;
         if (!ProjectCodec::decode(readText(root / "project.json"), project, error) ||

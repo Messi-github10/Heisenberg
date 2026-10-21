@@ -60,7 +60,7 @@ std::string utf8(const std::filesystem::path& path) {
 
 struct PackageCleanup {
     std::filesystem::path path = std::filesystem::temp_directory_path()
-        / ("heisenberg-independent-audio-" + makeUuid() + ".palmier");
+        / ("heisenberg-independent-audio-" + makeUuid() + ".berg");
     ~PackageCleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
 };
 }
