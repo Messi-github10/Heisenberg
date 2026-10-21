@@ -47,6 +47,7 @@ public:
     void editSelectedClipAudio();
     void editSelectedClipGrade();
     void editSelectedClipColorGrade();
+    void setColorGradePanelEnabled(bool enabled);
     void setFrameCount(qint64 frameCount);
     void setCurrentFrame(qint64 frame);
     void setPlaying(bool playing);
@@ -58,6 +59,8 @@ public:
     int framesPerSecond() const;
 
 signals:
+    void selectedClipChanged(const QString& clipId);
+    void colorGradeRequested(const QString& clipId);
     void timelineActivated();
     void scrubStarted();
     void scrubFrameRequested(qint64 frameIndex);
@@ -83,6 +86,7 @@ protected:
     QSize minimumSizeHint() const override;
 
 private:
+    void setSelectedClipId(const std::string& clipId);
     const heisenberg::Timeline* timeline() const;
     qint64 contentFrameCount() const;
     qint64 frameAtX(double x) const;
@@ -133,6 +137,7 @@ private:
     };
     std::optional<ClipMove> clipMove_;
     bool snappingEnabled_ = true;
+    bool colorGradePanelEnabled_ = false;
 
     heisenberg::ui::EditorSession* session_ = nullptr;
     std::unordered_map<std::string, std::string> mediaNames_;

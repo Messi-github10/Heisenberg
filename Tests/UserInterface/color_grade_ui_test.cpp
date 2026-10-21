@@ -18,6 +18,7 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QToolButton>
 #include <filesystem>
 
 using heisenberg::JsonValue;
@@ -33,6 +34,64 @@ void selectFirstGradeClip(TimelineWidget& widget) {
     QMouseEvent release(QEvent::MouseButtonRelease, point, widget.mapToGlobal(point.toPoint()), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
     QApplication::sendEvent(&widget, &release);
 }
+}
+
+TEST(ColorGradeUiTest, WheelDragMatchesDisplayedHueClampsStrengthAndIgnoresOutsidePress) {
+    ColorWheelWidget wheel;
+    wheel.resize(240, 216);
+    wheel.show();
+    QCoreApplication::processEvents();
+    int changes = 0, finishes = 0;
+    double hue = -1, strength = -1;
+    QObject::connect(&wheel, &ColorWheelWidget::colorChanged, &wheel, [&](double h, double s) {
+        ++changes; hue = h; strength = s;
+    });
+    QObject::connect(&wheel, &ColorWheelWidget::editingFinished, &wheel, [&] { ++finishes; });
+    auto send = [&](QEvent::Type type, QPointF point) {
+        QMouseEvent event(type, point, wheel.mapToGlobal(point.toPoint()),
+            type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+            type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&wheel, &event);
+    };
+    send(QEvent::MouseButtonPress, {2, 2});
+    EXPECT_EQ(changes, 0); EXPECT_FALSE(wheel.isDragging());
+    const QPointF center(wheel.width() / 2.0, wheel.height() / 2.0);
+    const double radius = std::min(wheel.width(), wheel.height()) / 2.0 - 22;
+    send(QEvent::MouseButtonPress, center + QPointF(radius / 2, 0));
+    EXPECT_TRUE(wheel.isDragging()); EXPECT_NEAR(hue, 0, .001); EXPECT_NEAR(strength, .5, .001);
+    send(QEvent::MouseMove, center + QPointF(0, -radius * 2));
+    EXPECT_NEAR(hue, 90, .001); EXPECT_DOUBLE_EQ(strength, 1);
+    send(QEvent::MouseButtonRelease, center);
+    EXPECT_FALSE(wheel.isDragging()); EXPECT_DOUBLE_EQ(strength, 0); EXPECT_EQ(finishes, 1);
+
+    wheel.setColor(0, 0);
+    const auto image = wheel.grab().toImage();
+    const double dpr = image.devicePixelRatio();
+    const auto pixel = [&](QPointF position) { return image.pixelColor(qRound(position.x() * dpr), qRound(position.y() * dpr)); };
+    const auto red = pixel(center + QPointF(radius * .8, 0));
+    const auto green = pixel(center + QPointF(-radius * .4, -radius * .693));
+    EXPECT_GT(red.red(), red.green() + 30);
+    EXPECT_GT(red.red(), red.blue() + 30);
+    EXPECT_GT(green.green(), green.red() + 30);
+    EXPECT_GT(green.green(), green.blue() + 30);
+}
+
+TEST(ColorGradeUiTest, WheelResetKeepsSiblingEffectsAndUsesNeutralMasterValues) {
+    ColorGradeDialog dialog(importedEffects());
+    dialog.findChild<QDoubleSpinBox*>("colorGrade_liftHue")->setValue(120);
+    dialog.findChild<QDoubleSpinBox*>("colorGrade_liftStrength")->setValue(.7);
+    dialog.findChild<QDoubleSpinBox*>("colorGrade_liftMaster")->setValue(.2);
+    auto* reset = dialog.findChild<QToolButton*>("colorGrade_liftReset");
+    ASSERT_NE(reset, nullptr);
+    reset->click();
+    EXPECT_DOUBLE_EQ(dialog.findChild<QDoubleSpinBox*>("colorGrade_liftHue")->value(), 0);
+    EXPECT_DOUBLE_EQ(dialog.findChild<QDoubleSpinBox*>("colorGrade_liftStrength")->value(), 0);
+    EXPECT_DOUBLE_EQ(dialog.findChild<QDoubleSpinBox*>("colorGrade_liftMaster")->value(), 0);
+    EXPECT_EQ(dialog.effects(), importedEffects());
+    dialog.findChild<QDoubleSpinBox*>("colorGrade_gammaMaster")->setValue(1.5);
+    dialog.findChild<QToolButton*>("colorGrade_gammaReset")->click();
+    EXPECT_DOUBLE_EQ(dialog.findChild<QDoubleSpinBox*>("colorGrade_gammaMaster")->value(), 1);
+    EXPECT_EQ(dialog.effects(), importedEffects());
 }
 
 TEST(ColorGradeUiTest, SixTabsUseFrameworkRangesAndOpeningPreservesEveryField) {

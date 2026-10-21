@@ -6,6 +6,10 @@ add_executable(HeisenbergEditorUiTests
     timeline_interaction_test.cpp
     color_export_ui_test.cpp
     color_grade_ui_test.cpp
+    color_grade_panel_test.cpp
+    media_pool_test.cpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ColorGradePanel.cpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ColorGradePanel.hpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ColorGradeDialog.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ColorGradeDialog.hpp
     ${CMAKE_SOURCE_DIR}/UserInterface/Backend/EditorSession.cpp

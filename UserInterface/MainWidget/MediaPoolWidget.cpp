@@ -142,6 +142,7 @@ MediaPoolWidget::MediaPoolWidget(heisenberg::ui::EditorSession* session, QWidget
     header->addWidget(importButton);
     layout->addLayout(header);
     search_ = new QLineEdit(this);
+    search_->setObjectName("mediaSearch");
     search_->setPlaceholderText(tr("Search media"));
     search_->setClearButtonEnabled(true);
     layout->addWidget(search_);

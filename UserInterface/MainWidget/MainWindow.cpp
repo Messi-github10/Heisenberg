@@ -7,6 +7,8 @@
 #include "MainWidget/VideoWidget.hpp"
 #include "MainWidget/MediaPoolWidget.hpp"
 #include "MainWidget/MediaInfoPanel.hpp"
+#include "MainWidget/ColorGradePanel.hpp"
+#include <QTabWidget>
 #include "MainWidget/RoundedPanel.hpp"
 #include "Backend/EditorSession.hpp"
 #include "Backend/MediaInfoProbe.hpp"
@@ -113,7 +115,10 @@ void MainWindow::setupUi() {
     auto* colorAction = editMenu->addAction(tr("Color Settings..."));
     colorAction->setObjectName("colorSettings");
     connect(colorAction, &QAction::triggered, this, &MainWindow::showColorSettings);
-    connect(exportAction, &QAction::triggered, this, &MainWindow::exportTimelineRequested);
+    connect(exportAction, &QAction::triggered, this, [this] {
+        colorGrade_->finishEditing();
+        emit exportTimelineRequested();
+    });
     auto* playbackMenu = menuBar()->addMenu(tr("Playback"));
     playPauseAction_ = playbackMenu->addAction(
         style()->standardIcon(QStyle::SP_MediaPlay), tr("Play / Pause"));
@@ -209,16 +214,28 @@ void MainWindow::setupUi() {
         if (duration_ <= 0.0) return;
         emit sourceSeekRequested(duration_ * sourceSlider_->value() / 1000.0);
     });
-    mediaInfo_ = new MediaInfoPanel(workspace);
+    inspector_ = new QTabWidget(workspace);
+    inspector_->setObjectName("previewInspector");
+    inspector_->setDocumentMode(true);
+    colorGrade_ = new ColorGradePanel(session_, inspector_);
+    mediaInfo_ = new MediaInfoPanel(inspector_);
+    inspector_->addTab(colorGrade_, tr("Color Grade"));
+    inspector_->addTab(mediaInfo_, tr("Media Info"));
+    inspector_->setStyleSheet(R"(
+        QTabWidget#previewInspector::pane { border: 0; }
+        QTabBar::tab { background: #25262b; color: #b8bac4; padding: 8px 12px; }
+        QTabBar::tab:selected { background: #303137; color: #ffffff; }
+    )");
     workspace->addWidget(new RoundedPanel(mediaPool_, workspace));
     workspace->addWidget(new RoundedPanel(previewPanel, workspace));
-    workspace->addWidget(new RoundedPanel(mediaInfo_, workspace));
-    workspace->setSizes({330, 610, 280});
+    workspace->addWidget(new RoundedPanel(inspector_, workspace));
+    workspace->setSizes({260, 560, 400});
     workspace->setStretchFactor(0, 0);
     workspace->setStretchFactor(1, 1);
     workspace->setStretchFactor(2, 0);
     timelineWidget_ = new TimelineWidget(splitter);
     timelineWidget_->setSession(session_);
+    timelineWidget_->setColorGradePanelEnabled(true);
     splitter->addWidget(workspace);
     splitter->addWidget(new RoundedPanel(timelineWidget_, splitter));
     splitter->setStretchFactor(0, 1);
@@ -258,10 +275,12 @@ void MainWindow::setupUi() {
     connect(saveAction, &QAction::triggered, this, [this]() { saveProjectPackage(); });
     connect(saveAsAction, &QAction::triggered, this, [this]() { saveProjectPackage(true); });
     connect(undoAction, &QAction::triggered, this, [this]() {
+        colorGrade_->finishEditing();
         timelineWidget_->cancelInteraction();
         session_->undo();
     });
     connect(redoAction, &QAction::triggered, this, [this]() {
+        colorGrade_->finishEditing();
         timelineWidget_->cancelInteraction();
         session_->redo();
     });
@@ -288,6 +307,17 @@ void MainWindow::setupConnections() {
         if (!result.changed()) showError(QString::fromUtf8(result.message.c_str()));
     });
     connect(mediaPool_, &MediaPoolWidget::importFailed, this, &MainWindow::showError);
+    connect(timelineWidget_, &TimelineWidget::selectedClipChanged, this, [this](const QString& id) {
+        colorGrade_->setClip(id);
+        if (!id.isEmpty()) inspector_->setCurrentWidget(colorGrade_);
+    });
+    connect(timelineWidget_, &TimelineWidget::colorGradeRequested, this, [this](const QString& id) {
+        colorGrade_->setClip(id);
+        inspector_->setCurrentWidget(colorGrade_);
+        colorGrade_->setFocus(Qt::OtherFocusReason);
+    });
+    connect(colorGrade_, &ColorGradePanel::editFailed, this, &MainWindow::showError);
+    connect(inspector_, &QTabWidget::currentChanged, this, [this] { colorGrade_->finishEditing(); });
     connect(timelineWidget_, &TimelineWidget::editFailed, this, &MainWindow::showError);
     connect(session_, &heisenberg::ui::EditorSession::dirtyChanged, this, &MainWindow::updateProjectTitle);
     connect(session_, &heisenberg::ui::EditorSession::projectChanged, this, &MainWindow::updateProjectTitle);
@@ -298,6 +328,7 @@ bool MainWindow::hardwareDecodeEnabled() const {
 }
 
 bool MainWindow::loadProjectPackage(const QString& path, bool showError) {
+    colorGrade_->finishEditing();
     QString error;
     if (showError && !confirmDiscardChanges()) return false;
     if (!session_->loadPackage(path, &error)) {
@@ -369,6 +400,7 @@ void MainWindow::updateProjectTitle() {
 }
 
 bool MainWindow::saveProjectPackage(bool saveAs) {
+    colorGrade_->finishEditing();
     QString path = QString::fromUtf8(session_->editor().projectDir().c_str());
     if (saveAs || path.isEmpty()) {
         QFileDialog dialog(this, tr("Save Berg Project"),
@@ -393,6 +425,7 @@ bool MainWindow::saveProjectPackage(bool saveAs) {
 }
 
 bool MainWindow::confirmDiscardChanges() {
+    colorGrade_->finishEditing();
     if (!session_->isDirty()) return true;
     const auto answer = QMessageBox::question(this, tr("Unsaved Project"),
         tr("Save your project changes?"),
@@ -420,6 +453,7 @@ void MainWindow::showFileInfo(const QString& path) {
         return;
     }
     mediaInfo_->showLoading(path);
+    inspector_->setCurrentWidget(mediaInfo_);
     auto* watcher = new QFutureWatcher<heisenberg::ui::MediaInfoReport>(this);
     connect(watcher, &QFutureWatcher<heisenberg::ui::MediaInfoReport>::finished, this,
             [this, watcher, serial]() {
@@ -435,6 +469,7 @@ void MainWindow::showFileInfo(const QString& path) {
 }
 
 void MainWindow::showColorSettings() {
+    colorGrade_->finishEditing();
     auto settings = session_->editor().project().colorSettings;
     QDialog dialog(this);
     dialog.setObjectName("colorSettingsDialog");

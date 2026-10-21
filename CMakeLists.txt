@@ -8,7 +8,7 @@ include(CTest)
 enable_testing()
 
 option(HEISENBERG_BUILD_UI "Build the Qt desktop application and its tests" ON)
-include(cmake/DeployRuntime.cmake)
+include(CMake/DeployRuntime.cmake)
 
 add_subdirectory(Dependence)
 add_subdirectory(Utiles)

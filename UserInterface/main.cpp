@@ -1,19 +1,15 @@
 #include <QApplication>
 #include <QFileInfo>
 #include <QString>
-
 #include <Backend/MediaInfoProbe.hpp>
-
 #include <MainWidget/MainWindow.hpp>
 #include <Backend/PlayerController.hpp>
 #include <Backend/EditorSession.hpp>
 #include <Backend/QtExportController.hpp>
-
 #include <Preview/IPreviewer.hpp>
 #include <Utiles/Logger.hpp>
 
-int main(int argc, char* argv[])
-{
+int main(int argc, char* argv[]) {
     heisenberg::IPreviewer::initLoader();
 
     QApplication app(argc, argv);
@@ -34,9 +30,6 @@ int main(int argc, char* argv[])
                      &mainWindow, [&](bool, const QString& message) { mainWindow.showError(message); });
     QObject::connect(&mainWindow, &MainWindow::aboutToClose, &exportCtrl,
                      &heisenberg::ui::QtExportController::shutdown, Qt::DirectConnection);
-
-    // Stop playback and release GPU resources while the native video window
-    // is still alive (MainWindow emits this before the base close handling).
     QObject::connect(&mainWindow, &MainWindow::aboutToClose,
                      &playerCtrl, &heisenberg::ui::PlayerController::shutdown,
                      Qt::DirectConnection);

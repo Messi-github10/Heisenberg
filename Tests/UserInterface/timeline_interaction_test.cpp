@@ -546,7 +546,7 @@ TEST_F(TimelineInteractionTest, SplitToolbarActionWorksAndDoesNotStealSearchTypi
     drag(*widget, target(30), target(30));
     widget->setCurrentFrame(45);
     const auto before = json();
-    auto* search = window.findChild<QLineEdit*>();
+    auto* search = window.findChild<QLineEdit*>("mediaSearch");
     ASSERT_NE(search, nullptr);
     search->setFocus();
     QKeyEvent key(QEvent::KeyPress, Qt::Key_S, Qt::NoModifier, "s");
@@ -843,7 +843,7 @@ TEST_F(AudioTimelineInteractionTest, BackspaceDeletesTimelineSelectionButSearchK
     auto* widget = window.timelineWidget();
     drag(*widget, target(30, 92), target(30, 92));
     const auto before = json();
-    auto* search = window.findChild<QLineEdit*>();
+    auto* search = window.findChild<QLineEdit*>("mediaSearch");
     ASSERT_NE(search, nullptr);
     search->setText("audio");
     search->setFocus();

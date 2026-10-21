@@ -14,6 +14,8 @@ class QLabel;
 class QSlider;
 class QCloseEvent;
 class MediaPoolWidget;
+class ColorGradePanel;
+class QTabWidget;
 namespace heisenberg::ui { class EditorSession; }
 
 class MainWindow : public QMainWindow {
@@ -79,6 +81,8 @@ private:
     heisenberg::ui::EditorSession* session_;
     MediaPoolWidget* mediaPool_ = nullptr;
     MediaInfoPanel* mediaInfo_ = nullptr;
+    ColorGradePanel* colorGrade_ = nullptr;
+    QTabWidget* inspector_ = nullptr;
     bool sourcePreview_ = false;
     quint64 probeSerial_ = 0;
 

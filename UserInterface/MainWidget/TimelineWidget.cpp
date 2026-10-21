@@ -85,12 +85,12 @@ TimelineWidget::TimelineWidget(QWidget* parent)
 void TimelineWidget::setSession(heisenberg::ui::EditorSession* session) {
     if (session_) disconnect(session_, nullptr, this, nullptr);
     cancelInteraction();
-    selectedClipId_.clear();
+    setSelectedClipId({});
     session_ = session;
     if (!session_) { refreshProject(); return; }
     connect(session_, &heisenberg::ui::EditorSession::projectChanged, this, [this]() {
         cancelInteraction();
-        selectedClipId_.clear();
+        setSelectedClipId({});
         hoveredClipId_.clear();
         currentFrame_ = 0;
         scrollOffset_ = 0.0;
@@ -126,7 +126,7 @@ void TimelineWidget::refreshProject() {
         }
     }
     playbackFrameCount_ = timeline() ? timeline()->totalFrames() : 0;
-    if (!timeline() || !timeline()->clipById(selectedClipId_)) selectedClipId_.clear();
+    if (!timeline() || !timeline()->clipById(selectedClipId_)) setSelectedClipId({});
     currentFrame_ = std::clamp<qint64>(currentFrame_, 0, std::max<qint64>(0, contentFrameCount() - 1));
     clampView();
     updateGeometry();
@@ -292,10 +292,24 @@ void TimelineWidget::editSelectedClipGrade() {
     if (!result.changed() && !result.message.empty()) emit editFailed(QString::fromUtf8(result.message.c_str()));
 }
 
+void TimelineWidget::setSelectedClipId(const std::string& clipId) {
+    if (selectedClipId_ == clipId) return;
+    selectedClipId_ = clipId;
+    emit selectedClipChanged(selectedClipId());
+}
+
+void TimelineWidget::setColorGradePanelEnabled(bool enabled) {
+    colorGradePanelEnabled_ = enabled;
+}
+
 void TimelineWidget::editSelectedClipColorGrade() {
     cancelInteraction();
     const auto* clip = timeline() ? timeline()->clipById(selectedClipId_) : nullptr;
     if (!session_ || !clip || clip->mediaType != heisenberg::ClipType::Video) return;
+    if (colorGradePanelEnabled_) {
+        emit colorGradeRequested(selectedClipId());
+        return;
+    }
     const auto original = clip->effects;
     auto effects = original.value_or(heisenberg::JsonValue::array());
     if (!effects.is_array()) { emit editFailed(tr("Unsupported effects payload is preserved.")); return; }
@@ -325,7 +339,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     const auto hit = clipAt(event->pos());
     if (hit.empty()) { QWidget::contextMenuEvent(event); return; }
     cancelInteraction();
-    selectedClipId_ = hit;
+    setSelectedClipId(hit);
     setFocus(Qt::MouseFocusReason);
     update();
     QMenu menu(this);
@@ -801,6 +815,15 @@ std::optional<heisenberg::TrimEdge> TimelineWidget::trimEdgeAt(const heisenberg:
 }
 
 void TimelineWidget::mousePressEvent(QMouseEvent* event) {
+    if (event->button() == Qt::RightButton) {
+        const auto hit = clipAt(event->position());
+        if (!hit.empty()) {
+            cancelInteraction();
+            setSelectedClipId(hit);
+            setFocus(Qt::MouseFocusReason);
+            update();
+        }
+    }
     if (event->button() != Qt::LeftButton) {
         QWidget::mousePressEvent(event);
         return;
@@ -821,11 +844,18 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
     cancelInteraction();
     const auto hit = clipAt(event->position());
     if (!hit.empty()) {
-        selectedClipId_ = hit;
-        const auto* clip = timeline()->clipById(hit);
+        // Selection listeners may commit grading and synchronously replace the timeline.
+        setSelectedClipId(hit);
+        const auto* active = timeline();
+        const auto* clip = active ? active->clipById(hit) : nullptr;
+        const auto* track = active ? active->trackForClip(hit) : nullptr;
+        if (!clip || !track) {
+            event->accept();
+            return;
+        }
         ClipMove move;
         move.clipId = hit;
-        move.trackId = timeline()->trackForClip(hit)->id;
+        move.trackId = track->id;
         move.pressPosition = move.lastPosition = event->position();
         move.trimEdge = trimEdgeAt(*clip, event->position().x());
         move.originalStartFrame = clip->startFrame;
@@ -853,7 +883,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
-    if (event->position().y() >= kRulerHeight) selectedClipId_.clear();
+    if (event->position().y() >= kRulerHeight) setSelectedClipId({});
     scrubbing_ = true;
     emit scrubStarted();
     updateScrub(event->position().x(), false);
@@ -1101,7 +1131,7 @@ void TimelineWidget::dropEvent(QDropEvent* event) {
         const QString targetTrackId = lane->track ? QString::fromStdString(lane->track->id) : QString();
         const auto result = session_->placeMedia(ref, dropFrameAtX(event->position().x()), targetTrackId);
         if (result.changed()) {
-            if (!result.affectedIds.empty()) selectedClipId_ = result.affectedIds.back();
+            if (!result.affectedIds.empty()) setSelectedClipId(result.affectedIds.back());
             event->setDropAction(Qt::CopyAction);
             event->accept();
         } else {
