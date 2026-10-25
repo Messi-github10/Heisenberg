@@ -59,13 +59,11 @@ function(heisenberg_deploy_runtime target)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<IF:$<CONFIG:Debug>,${debug_runtime_files},${release_runtime_files}>"
             "$<TARGET_FILE_DIR:${target}>"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${target}>/resources/shaders"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_BINARY_DIR}/Framework/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Shaders"
-            "$<TARGET_FILE_DIR:${target}>/resources/shaders"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/Framework/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Shaders/shader_manifest.json"
-            "$<TARGET_FILE_DIR:${target}>/resources/shaders/shader_manifest.json"
+        COMMAND ${CMAKE_COMMAND}
+            "-DSHADER_MANIFEST=${CMAKE_SOURCE_DIR}/Framework/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Shaders/shader_manifest.json"
+            "-DSHADER_BINARY_DIR=${CMAKE_BINARY_DIR}/Framework/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Shaders"
+            "-DSHADER_DEPLOY_DIR=$<TARGET_FILE_DIR:${target}>/resources/shaders"
+            -P "${CMAKE_SOURCE_DIR}/CMake/DeployShaders.cmake"
         COMMAND_EXPAND_LISTS
         VERBATIM
     )

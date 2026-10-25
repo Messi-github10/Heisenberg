@@ -28,7 +28,7 @@ def main():
             raise RuntimeError(f"{source_name}: unexpected workgroup declaration")
         if "rgba8" in text:
             raise RuntimeError(f"{source_name}: rgba8 violates the working image contract")
-        if "rgba16f" not in text and "histogram" not in source_name:
+        if "rgba16f" not in text:
             raise RuntimeError(f"{source_name}: missing rgba16f image contract")
 
     args.stamp.parent.mkdir(parents=True, exist_ok=True)

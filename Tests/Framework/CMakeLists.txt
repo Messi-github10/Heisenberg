@@ -188,7 +188,7 @@ target_compile_definitions(HeisenbergFrameworkTests PRIVATE
     HEISENBERG_PLAYLIST_CLIP_B="${FRAMEWORK_TEST_CLIP_B}"
     HEISENBERG_TEST_SDR_GRAY="${FRAMEWORK_TEST_SDR_GRAY}"
     HEISENBERG_TEST_EXECUTOR_LOOKAHEAD="${FRAMEWORK_TEST_EXECUTOR_LOOKAHEAD}"
-    HEISENBERG_TEST_FILTER="${CMAKE_SOURCE_DIR}/Framework/MultiMedia/Video/Renderer/FilterGraph/Vulkan/Test/exposure.json"
+    HEISENBERG_TEST_FILTER="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/exposure_acescg.json"
 )
 
 if(MSVC)

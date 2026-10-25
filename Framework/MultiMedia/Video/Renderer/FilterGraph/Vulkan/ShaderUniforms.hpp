@@ -17,7 +17,7 @@ static_assert(alignof(ScalarUniform) == 16);
 static_assert(offsetof(ScalarUniform, value) == 0);
 static_assert(sizeof(ScalarUniform) == 16);
 
-// Matches the Gaussian blur UBO in gaussianBlur.comp under std140.
+// Matches the Gaussian blur UBO in gradeGaussianBlurACEScg.comp under std140.
 struct alignas(16) GaussianBlurUniform {
     int32_t directionX = 0;
     int32_t directionY = 0;
