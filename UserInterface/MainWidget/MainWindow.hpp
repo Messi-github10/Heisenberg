@@ -35,6 +35,7 @@ public:
     bool loadProjectPackage(const QString& path, bool showError = true);
     bool saveProjectPackage(bool saveAs = false);
     void setSourcePreview(bool source, const QString& name);
+    void setSourceMarking(const QString& mediaRef, bool available);
     void showFileInfo(const QString& path);
     void showError(const QString& message);
     void showColorSettings();
@@ -47,6 +48,9 @@ signals:
     void scrubFrameRequested(qint64 frameIndex);
     void scrubFinished(qint64 frameIndex);
     void sourceSeekRequested(double seconds);
+    void markSourceInRequested();
+    void markSourceOutRequested();
+    void clearSourceRangeRequested();
     void openFileRequested(const QString& path);
     void openFilterGraphRequested(const QString& path);
     void hardwareDecodeToggled(bool enabled);
@@ -69,6 +73,7 @@ private:
     void setupConnections();
     bool confirmDiscardChanges();
     void updateProjectTitle();
+    void updateSourceRange();
 
     VideoWidget* videoWidget_ = nullptr;
     TimelineWidget* timelineWidget_ = nullptr;
@@ -78,6 +83,13 @@ private:
     QLabel* durationLabel_ = nullptr;
     QWidget* sourceControls_ = nullptr;
     QSlider* sourceSlider_ = nullptr;
+    QWidget* sourceRangeControls_ = nullptr;
+    QLabel* sourceRangeLabel_ = nullptr;
+    QAction* markInAction_ = nullptr;
+    QAction* markOutAction_ = nullptr;
+    QAction* clearRangeAction_ = nullptr;
+    QString sourceMediaRef_;
+    bool sourceMarkingAvailable_ = false;
     heisenberg::ui::EditorSession* session_;
     MediaPoolWidget* mediaPool_ = nullptr;
     MediaInfoPanel* mediaInfo_ = nullptr;

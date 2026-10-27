@@ -42,8 +42,13 @@ public:
     bool snappingEnabled() const {
         return snappingEnabled_;
     }
+    void setInsertMode(bool enabled);
+    bool insertMode() const {
+        return insertMode_;
+    }
     void splitSelectedClip();
     void removeSelectedClip();
+    void rippleDeleteSelectedClip();
     void editSelectedClipAudio();
     void editSelectedClipGrade();
     void editSelectedClipColorGrade();
@@ -65,6 +70,7 @@ signals:
     void scrubStarted();
     void scrubFrameRequested(qint64 frameIndex);
     void scrubFinished(qint64 frameIndex);
+    void editRequested();
     void editFailed(const QString& reason);
 
 protected:
@@ -137,6 +143,8 @@ private:
     };
     std::optional<ClipMove> clipMove_;
     bool snappingEnabled_ = true;
+    bool insertMode_ = false;
+    bool editInProgress_ = false;
     bool colorGradePanelEnabled_ = false;
 
     heisenberg::ui::EditorSession* session_ = nullptr;

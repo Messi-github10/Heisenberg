@@ -44,6 +44,10 @@ public:
     EditResult placeClip(const std::string& mediaRef, int64_t startFrame,
                          int64_t durationFrames = -1, int64_t trimStartFrame = 0,
                          const std::string& targetTrackId = {});
+    EditResult insertClip(const std::string& mediaRef, int64_t startFrame,
+                          int64_t durationFrames = -1, int64_t trimStartFrame = 0,
+                          const std::string& targetTrackId = {});
+    EditResult rippleDeleteClip(const std::string& clipId);
     EditResult setClipAudio(const std::string& clipId, double volume,
                             int64_t fadeInFrames, int64_t fadeOutFrames);
     EditResult setTrackMuted(const std::string& trackId, bool muted);
@@ -83,6 +87,9 @@ private:
     uint64_t documentRevision() const;
     bool hasClipEffectsTransaction() const;
     void setProjectDir(std::string root);
+    EditResult placeClipInternal(const std::string& mediaRef, int64_t startFrame,
+                                 int64_t durationFrames, int64_t trimStartFrame,
+                                 const std::string& targetTrackId, bool insert);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

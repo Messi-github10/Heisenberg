@@ -340,6 +340,18 @@ std::vector<MediaAsset> EditorViewModel::assets() const {
 EditResult EditorViewModel::placeClip(const std::string& mediaRef, int64_t startFrame,
                                       int64_t durationFrames, int64_t trimStartFrame,
                                       const std::string& targetTrackId) {
+    return placeClipInternal(mediaRef, startFrame, durationFrames, trimStartFrame, targetTrackId, false);
+}
+
+EditResult EditorViewModel::insertClip(const std::string& mediaRef, int64_t startFrame,
+                                       int64_t durationFrames, int64_t trimStartFrame,
+                                       const std::string& targetTrackId) {
+    return placeClipInternal(mediaRef, startFrame, durationFrames, trimStartFrame, targetTrackId, true);
+}
+
+EditResult EditorViewModel::placeClipInternal(const std::string& mediaRef, int64_t startFrame,
+                                              int64_t durationFrames, int64_t trimStartFrame,
+                                              const std::string& targetTrackId, bool insert) {
     if (hasClipEffectsTransaction())
         return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
     Timeline* timeline = impl_->active();
@@ -369,6 +381,8 @@ EditResult EditorViewModel::placeClip(const std::string& mediaRef, int64_t start
     int64_t endFrame = 0;
     if (!addChecked(startFrame, durationFrames, endFrame))
         return {EditStatus::Invalid, {}, "clip range overflows"};
+    if (endFrame == std::numeric_limits<int64_t>::max())
+        return {EditStatus::Invalid, {}, "clip timing is invalid"};
     Timeline candidate = *timeline;
     Track* track = targetTrackId.empty() ? nullptr : candidate.trackById(targetTrackId);
     if (!track) {
@@ -384,7 +398,41 @@ EditResult EditorViewModel::placeClip(const std::string& mediaRef, int64_t start
             track = &candidate.tracks.back();
         }
     }
-    std::vector<std::string> affected = clearRegion(*track, startFrame, endFrame);
+    std::vector<std::string> affected;
+    if (insert) {
+        // Check every shifted range before splitting or shifting existing clips.
+        // INT64_MAX is reserved by Clip::endFrame() for an invalid range.
+        for (const Clip& existing : track->clips) {
+            if (existing.endFrame() <= startFrame) continue;
+            int64_t shiftedStart = 0, shiftedEnd = 0;
+            if (!addChecked(std::max(existing.startFrame, startFrame), durationFrames, shiftedStart) ||
+                !addChecked(existing.endFrame(), durationFrames, shiftedEnd) ||
+                shiftedEnd == std::numeric_limits<int64_t>::max())
+                return {EditStatus::Invalid, {}, "insert would overflow a shifted clip range"};
+        }
+        std::vector<Clip> output;
+        output.reserve(track->clips.size() + 1);
+        for (Clip existing : track->clips) {
+            if (existing.startFrame < startFrame && existing.endFrame() > startFrame) {
+                auto split = splitValue(existing, startFrame);
+                affected.push_back(existing.id);
+                affected.push_back(split->second.id);
+                split->second.startFrame = endFrame;
+                output.push_back(std::move(split->first));
+                output.push_back(std::move(split->second));
+            } else {
+                if (existing.startFrame >= startFrame) {
+                    // The preflight checked both this addition and its end.
+                    existing.startFrame += durationFrames;
+                    affected.push_back(existing.id);
+                }
+                output.push_back(std::move(existing));
+            }
+        }
+        track->clips = std::move(output);
+    } else {
+        affected = clearRegion(*track, startFrame, endFrame);
+    }
     Clip clip;
     clip.id = makeUuid();
     clip.mediaRef = mediaRef;
@@ -401,7 +449,44 @@ EditResult EditorViewModel::placeClip(const std::string& mediaRef, int64_t start
     const Timeline before = *timeline;
     *timeline = std::move(candidate);
     affected.push_back(clip.id);
-    impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Place Clip"});
+    impl_->timelines.undo_.push_back({timeline->id, before, *timeline, insert ? "Insert Clip" : "Place Clip"});
+    impl_->timelines.redo_.clear();
+    impl_->documentChanged();
+    return {EditStatus::Changed, std::move(affected), {}};
+}
+
+EditResult EditorViewModel::rippleDeleteClip(const std::string& clipId) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
+    Timeline* timeline = impl_->active();
+    if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
+    const Track* track = timeline->trackForClip(clipId);
+    if (!track) return {EditStatus::Invalid, {}, "clip was not found"};
+    const Clip& removed = *track->clipById(clipId);
+    const int64_t endFrame = removed.endFrame();
+    const int64_t duration = removed.durationFrames;
+
+    Timeline candidate = *timeline;
+    Track& candidateTrack = *candidate.trackById(track->id);
+    candidateTrack.clips.erase(std::remove_if(candidateTrack.clips.begin(), candidateTrack.clips.end(),
+                                             [&](const Clip& clip) { return clip.id == clipId; }),
+                              candidateTrack.clips.end());
+    std::vector<std::string> affected{clipId};
+    for (Clip& clip : candidateTrack.clips) {
+        if (clip.startFrame < endFrame) continue;
+        int64_t shiftedStart = 0;
+        if (!addChecked(clip.startFrame, -duration, shiftedStart) || shiftedStart < 0)
+            return {EditStatus::Invalid, {}, "ripple delete would overflow a shifted clip range"};
+        clip.startFrame = shiftedStart;
+        affected.push_back(clip.id);
+    }
+    candidateTrack.sortClips();
+    std::string error;
+    if (!validateTimeline(candidate, &error)) return {EditStatus::Invalid, {}, error};
+    const Timeline before = *timeline;
+    *timeline = std::move(candidate);
+    impl_->timelines.undo_.push_back({timeline->id, before, *timeline, "Ripple Delete Clip"});
     impl_->timelines.redo_.clear();
     impl_->documentChanged();
     return {EditStatus::Changed, std::move(affected), {}};

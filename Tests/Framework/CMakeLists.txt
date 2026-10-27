@@ -143,6 +143,7 @@ add_executable(HeisenbergFrameworkTests
     frame_renderer_test.cpp
     timeline_test.cpp
     editor_test.cpp
+    insert_ripple_test.cpp
     render_thread_test.cpp
     media_math_test.cpp
     composition_plan_test.cpp

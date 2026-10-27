@@ -55,6 +55,10 @@ public:
     bool previewingSource() const {
         return previewingSource_;
     }
+    QString currentSourceMediaRef() const {
+        return currentSourceMediaRef_;
+    }
+    bool sourceMarkingAvailable() const;
     std::optional<filtergraph::VulkanGraphDocument> filterGraphSnapshot() const;
     void showTimeline(qint64 focusFrame = -1);
     void previewAsset(const QString& mediaRef);
@@ -71,6 +75,9 @@ public slots:
     void stepBackward(int frames = 1);
     void goToStart();
     void goToEnd();
+    void markSourceIn();
+    void markSourceOut();
+    void clearSourceRange();
 
     bool openFile(const QString& path);
     bool openPlaylist(const QString& path);
@@ -97,6 +104,7 @@ signals:
     void filterGraphPathChanged();
     void filterGraphLoadFailed(const QString& message);
     void previewModeChanged(bool source, const QString& name);
+    void sourceMarkingChanged();
     void playbackFailed(const QString& message);
 
 private:
@@ -123,6 +131,8 @@ private:
     bool shutdownDone_ = false;
     EditorSession* session_;
     bool previewingSource_ = false;
+    QString currentSourceMediaRef_;
+    bool sourceReady_ = false;
     double timelineTime_ = 0.0;
     double pendingPosition_ = -1.0;
     bool scrubRequested_ = false;

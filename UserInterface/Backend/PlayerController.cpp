@@ -8,6 +8,8 @@
 #include <QMetaObject>
 
 #include <utility>
+#include <algorithm>
+#include <cmath>
 
 namespace heisenberg {
 namespace ui {
@@ -25,7 +27,15 @@ PlayerController::PlayerController(EditorSession* session, QObject* parent)
             }, Qt::QueuedConnection);
         });
     previewer_->setListener(this);
-    connect(session_, &EditorSession::projectChanged, this, [this]() { timelineTime_ = 0.0; });
+    connect(session_, &EditorSession::projectChanged, this, [this]() {
+        timelineTime_ = 0.0;
+        sourceReady_ = false;
+        currentSourceMediaRef_.clear();
+        emit sourceMarkingChanged();
+    });
+    connect(session_, &EditorSession::sourceRangeChanged, this, [this](const QString& ref) {
+        if (ref == currentSourceMediaRef_) emit sourceMarkingChanged();
+    });
     connect(session_, &EditorSession::timelineChanged, this, &PlayerController::showTimeline);
 }
 
@@ -36,6 +46,9 @@ PlayerController::~PlayerController() {
 void PlayerController::shutdown() {
     if (shutdownDone_) return;
     shutdownDone_ = true;
+    sourceReady_ = false;
+    currentSourceMediaRef_.clear();
+    emit sourceMarkingChanged();
 
     if (previewerAlive_) previewerAlive_->store(false);
     if (previewer_) {
@@ -101,33 +114,37 @@ bool PlayerController::openSource(const QString& path, const std::string& mediaR
     scrubRequested_ = false;
     pendingScrubFrame_ = -1;
     previewingSource_ = true;
-    emit previewModeChanged(true, path);
+    sourceReady_ = false;
+    currentSourceMediaRef_ = QString::fromUtf8(mediaRef.c_str());
+    currentFile_ = path;
     currentTime_ = 0.0;
     duration_ = 0.0;
     frameCount_ = 0;
     isSeekable_ = false;
     isPlaying_ = false;
+    emit previewModeChanged(true, path);
     emit currentTimeChanged();
     emit durationChanged();
     emit frameCountChanged();
     emit isSeekableChanged();
     emit isPlayingChanged();
-    previewer_->openSource(path.toUtf8().toStdString(), session_->editor().project().colorSettings, mediaRef);
-    currentFile_ = path;
+    emit sourceMarkingChanged();
     emit currentFileChanged();
+    previewer_->openSource(path.toUtf8().toStdString(), session_->editor().project().colorSettings, mediaRef);
     return true;
 }
 
 bool PlayerController::openPlaylist(const QString& path) {
     QString error;
     if (session_->loadPackage(path, &error)) return true;
+    closeFile();
     emit playbackFailed(error);
     return false;
 }
 
 void PlayerController::previewAsset(const QString& mediaRef) {
     const auto asset = session_->editor().resolver().asset(mediaRef.toStdString());
-    if (asset.missing) { emit playbackFailed(tr("This media is offline.")); return; }
+    if (asset.missing) { closeFile(); emit playbackFailed(tr("This media is offline.")); return; }
     openSource(QString::fromUtf8(asset.path.c_str()), mediaRef.toUtf8().toStdString());
 }
 
@@ -136,6 +153,9 @@ void PlayerController::showTimeline(qint64 focusFrame) {
     const auto snapshot = session_->snapshot();
     const auto* timeline = snapshot.activeTimeline();
     previewingSource_ = false;
+    sourceReady_ = false;
+    currentSourceMediaRef_.clear();
+    emit sourceMarkingChanged();
     emit previewModeChanged(false, timeline ? QString::fromUtf8(timeline->name.c_str()) : tr("Timeline"));
     scrubRequested_ = false;
     pendingScrubFrame_ = -1;
@@ -163,6 +183,13 @@ void PlayerController::showTimeline(qint64 focusFrame) {
 }
 
 void PlayerController::closeFile() {
+    const bool wasSource = previewingSource_;
+    previewingSource_ = false;
+    sourceReady_ = false;
+    currentSourceMediaRef_.clear();
+    pendingPosition_ = -1.0;
+    scrubRequested_ = false;
+    pendingScrubFrame_ = -1;
     if (previewer_) previewer_->close();
     currentFile_.clear();
     currentTime_ = 0.0;
@@ -176,6 +203,42 @@ void PlayerController::closeFile() {
     emit frameCountChanged();
     emit isSeekableChanged();
     emit isPlayingChanged();
+    if (wasSource) emit previewModeChanged(false, tr("Timeline"));
+    emit sourceMarkingChanged();
+}
+
+bool PlayerController::sourceMarkingAvailable() const {
+    if (!previewer_ || !sourceReady_ || !previewingSource_ || currentSourceMediaRef_.isEmpty()) return false;
+    const auto state = previewer_->state();
+    if (state == IPreviewer::State::Idle || state == IPreviewer::State::Loading) return false;
+    const auto* media = session_->editor().manifest().find(currentSourceMediaRef_.toUtf8().toStdString());
+    return media && std::isfinite(media->duration) && media->duration > 0.0 &&
+        std::isfinite(previewer_->fps()) && previewer_->fps() > 0.0 && previewer_->frameCount() > 0 &&
+        std::isfinite(previewer_->currentTime());
+}
+
+void PlayerController::markSourceIn() {
+    if (!sourceMarkingAvailable()) return;
+    const double fps = previewer_->fps();
+    const double frame = std::clamp(std::round(previewer_->currentTime() * fps),
+                                    0.0, static_cast<double>(previewer_->frameCount() - 1));
+    const auto* media = session_->editor().manifest().find(currentSourceMediaRef_.toUtf8().toStdString());
+    if (!session_->setSourceIn(currentSourceMediaRef_, std::min(frame / fps, media->duration)))
+        emit playbackFailed(tr("Source In must be before Out. Clear the range to start a new selection."));
+}
+
+void PlayerController::markSourceOut() {
+    if (!sourceMarkingAvailable()) return;
+    const double fps = previewer_->fps();
+    const double frame = std::clamp(std::round(previewer_->currentTime() * fps),
+                                    0.0, static_cast<double>(previewer_->frameCount() - 1));
+    const auto* media = session_->editor().manifest().find(currentSourceMediaRef_.toUtf8().toStdString());
+    if (!session_->setSourceOut(currentSourceMediaRef_, std::min((frame + 1.0) / fps, media->duration)))
+        emit playbackFailed(tr("Source Out must follow In. Clear the range to start a new selection."));
+}
+
+void PlayerController::clearSourceRange() {
+    if (sourceMarkingAvailable()) session_->clearSourceRange(currentSourceMediaRef_);
 }
 
 void PlayerController::play() {
@@ -241,6 +304,8 @@ void PlayerController::onStateChanged(heisenberg::IPreviewer::State state) {
         emit isPlayingChanged();
     }
     if (!previewer_) return;
+    sourceReady_ = previewingSource_ && state != IPreviewer::State::Idle && state != IPreviewer::State::Loading;
+    emit sourceMarkingChanged();
     const bool seekable = previewer_->isSeekable();
     if (isSeekable_ != seekable) {
         isSeekable_ = seekable;
@@ -269,6 +334,7 @@ void PlayerController::onDurationChanged(double seconds) {
     frameCount_ = previewer_ ? previewer_->frameCount() : 0;
     emit durationChanged();
     emit frameCountChanged();
+    emit sourceMarkingChanged();
 }
 
 void PlayerController::onEndOfStream() {
@@ -284,8 +350,7 @@ void PlayerController::onEndOfStream() {
 
 void PlayerController::onOpenFailed(const std::string& reason) {
     LOG_ERROR("PlayerController: open failed — {}", reason);
-    pendingPosition_ = -1.0;
-    scrubRequested_ = false;
+    closeFile();
     emit playbackFailed(QString::fromUtf8(reason.c_str()));
 }
 

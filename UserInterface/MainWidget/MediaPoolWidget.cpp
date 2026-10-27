@@ -155,10 +155,14 @@ MediaPoolWidget::MediaPoolWidget(heisenberg::ui::EditorSession* session, QWidget
     count_ = new QLabel(this);
     count_->setStyleSheet("color: #999da8; font-size: 10px;");
     layout->addWidget(count_);
-    auto* addButton = new QPushButton(tr("Add Selected at Playhead"), this);
+    auto* addButton = new QPushButton(tr("Overwrite at Playhead"), this);
     addButton->setObjectName("addSelectedMedia");
     addButton->setEnabled(false);
     layout->addWidget(addButton);
+    auto* insertButton = new QPushButton(tr("Insert at Playhead"), this);
+    insertButton->setObjectName("insertSelectedMedia");
+    insertButton->setEnabled(false);
+    layout->addWidget(insertButton);
 
     thumbnailProcess_ = new QProcess(this);
     thumbnailTimer_ = new QTimer(this);
@@ -181,8 +185,13 @@ MediaPoolWidget::MediaPoolWidget(heisenberg::ui::EditorSession* session, QWidget
     connect(addButton, &QPushButton::clicked, this, [this]() {
         if (!selectedMedia().isEmpty()) emit placeRequested(selectedMedia());
     });
-    connect(list_, &QListWidget::itemSelectionChanged, this, [this, addButton]() {
-        addButton->setEnabled(!selectedMedia().isEmpty());
+    connect(insertButton, &QPushButton::clicked, this, [this]() {
+        if (!selectedMedia().isEmpty()) emit insertRequested(selectedMedia());
+    });
+    connect(list_, &QListWidget::itemSelectionChanged, this, [this, addButton, insertButton]() {
+        const bool selected = !selectedMedia().isEmpty();
+        addButton->setEnabled(selected);
+        insertButton->setEnabled(selected);
     });
     connect(session, &heisenberg::ui::EditorSession::mediaChanged, this, &MediaPoolWidget::refreshMedia);
     connect(session, &heisenberg::ui::EditorSession::projectChanged, this, [this]() {

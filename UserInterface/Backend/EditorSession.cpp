@@ -5,6 +5,9 @@
 #include <QUuid>
 #include <QStandardPaths>
 #include <filesystem>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <Compositing/Grade/LutLibrary.hpp>
 
 namespace heisenberg::ui {
@@ -28,9 +31,12 @@ bool EditorSession::loadPackage(const QString& path, QString* error) {
         if (error) *error = QString::fromUtf8(reason.c_str());
         return false;
     }
+    const auto markedRefs = sourceRanges_.keys();
+    sourceRanges_.clear();
     token_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     syncDirty();
     emit projectChanged();
+    for (const auto& ref : markedRefs) emit sourceRangeChanged(ref);
     emit mediaChanged();
     emit timelineChanged(0);
     return true;
@@ -79,9 +85,105 @@ QStringList EditorSession::importFiles(const QStringList& paths) {
     return errors;
 }
 
+SourceRange EditorSession::sourceRange(const QString& mediaRef) const {
+    return sourceRanges_.value(mediaRef);
+}
+
+bool EditorSession::setSourceBoundary(const QString& mediaRef, double seconds, bool in) {
+    const auto* media = project_.editor().manifest().find(mediaRef.toUtf8().toStdString());
+    if (!media || !std::isfinite(media->duration) || media->duration <= 0.0 ||
+        !std::isfinite(seconds) || seconds < 0.0 || seconds > media->duration) return false;
+    auto range = sourceRange(mediaRef);
+    if (in) range.inSeconds = seconds;
+    else range.outSeconds = seconds;
+    if (range.inSeconds.value_or(0.0) >= range.outSeconds.value_or(media->duration)) return false;
+    if (range == sourceRange(mediaRef)) return true;
+    sourceRanges_.insert(mediaRef, range);
+    emit sourceRangeChanged(mediaRef);
+    return true;
+}
+
+bool EditorSession::setSourceIn(const QString& mediaRef, double seconds) {
+    return setSourceBoundary(mediaRef, seconds, true);
+}
+
+bool EditorSession::setSourceOut(const QString& mediaRef, double seconds) {
+    return setSourceBoundary(mediaRef, seconds, false);
+}
+
+bool EditorSession::clearSourceRange(const QString& mediaRef) {
+    if (!project_.editor().manifest().find(mediaRef.toUtf8().toStdString())) return false;
+    if (sourceRanges_.remove(mediaRef)) emit sourceRangeChanged(mediaRef);
+    return true;
+}
+
+bool EditorSession::sourcePlacementRange(const QString& mediaRef, qint64& trimStart,
+                                          qint64& duration, QString* error) const {
+    const auto fail = [error](const QString& reason) {
+        if (error) *error = reason;
+        return false;
+    };
+    const auto* media = project_.editor().manifest().find(mediaRef.toUtf8().toStdString());
+    const auto* timeline = project_.editor().activeTimeline();
+    if (!media || !timeline) return fail(tr("Media or active timeline was not found."));
+    if (!std::isfinite(media->duration) || media->duration <= 0.0 ||
+        !std::isfinite(timeline->fps) || timeline->fps <= 0.0)
+        return fail(tr("Source duration and timeline frame rate must be positive."));
+    const double sourceFrames = media->duration * timeline->fps;
+    if (!std::isfinite(sourceFrames) ||
+        sourceFrames >= static_cast<double>(std::numeric_limits<qint64>::max()))
+        return fail(tr("Source duration cannot be represented in timeline frames."));
+    const qint64 sourceDuration = std::llround(sourceFrames);
+    const auto range = sourceRange(mediaRef);
+    const double in = range.inSeconds.value_or(0.0);
+    const double out = range.outSeconds.value_or(media->duration);
+    if (!std::isfinite(in) || !std::isfinite(out) || in < 0.0 || out > media->duration || in >= out)
+        return fail(tr("Source In must precede Out within the media duration."));
+    SourcePlacementRange placement;
+    placement.trimStartFrame = std::clamp<qint64>(std::llround(in * timeline->fps), 0, sourceDuration);
+    const qint64 end = std::clamp<qint64>(std::llround(out * timeline->fps), 0, sourceDuration);
+    if (end <= placement.trimStartFrame)
+        return fail(tr("Source range contains no frames at the timeline frame rate."));
+    placement.durationFrames = end - placement.trimStartFrame;
+    trimStart = placement.trimStartFrame;
+    duration = placement.durationFrames;
+    if (error) error->clear();
+    return true;
+}
+
 EditResult EditorSession::placeMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId) {
-    auto result = project_.editor().placeClip(mediaRef.toUtf8().toStdString(), frame, -1, 0,
+    qint64 trimStart = 0, duration = -1;
+    QString error;
+    if (!sourcePlacementRange(mediaRef, trimStart, duration, &error))
+        return {EditStatus::Invalid, {}, error.toUtf8().toStdString()};
+    auto result = project_.editor().placeClip(mediaRef.toUtf8().toStdString(), frame, duration, trimStart,
                                             targetTrackId.toUtf8().toStdString());
+    if (result.changed()) {
+        syncDirty();
+        emit timelineChanged(frame);
+    }
+    return result;
+}
+
+EditResult EditorSession::insertMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId) {
+    qint64 trimStart = 0, duration = -1;
+    QString error;
+    if (!sourcePlacementRange(mediaRef, trimStart, duration, &error))
+        return {EditStatus::Invalid, {}, error.toUtf8().toStdString()};
+    auto result = project_.editor().insertClip(mediaRef.toUtf8().toStdString(), frame, duration, trimStart,
+                                             targetTrackId.toUtf8().toStdString());
+    if (result.changed()) {
+        syncDirty();
+        emit timelineChanged(frame);
+    }
+    return result;
+}
+
+EditResult EditorSession::rippleDeleteClip(const QString& clipId) {
+    const auto* timeline = project_.editor().activeTimeline();
+    const auto* clip = timeline ? timeline->clipById(clipId.toUtf8().toStdString()) : nullptr;
+    const qint64 frame = clip ? clip->startFrame : -1;
+    auto result = project_.editor().rippleDeleteClip(clipId.toUtf8().toStdString());
     if (result.changed()) {
         syncDirty();
         emit timelineChanged(frame);

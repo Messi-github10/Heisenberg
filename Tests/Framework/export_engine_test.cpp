@@ -1,3 +1,4 @@
+#include <Compositing/CompositionBuilder.hpp>
 #include <Export/ExportEngine.hpp>
 #include <Project/VideoProject.hpp>
 #include <gtest/gtest.h>
@@ -193,6 +194,154 @@ TEST(ExportEngineTest, H264AndH265ExportAndFullyDecode) {
         EXPECT_GT(tone(decoded.audio, 880, .15, .65), .03);
         EXPECT_TRUE(folder.noStaging());
     }
+}
+
+TEST(ExportEngineTest, InsertThenRippleSaveReopenPreservesSourceMappingAndExportDuration) {
+    OutputFolder folder;
+    const auto initial = snapshot(24, true, false);
+    auto document = initial.project();
+    auto manifest = initial.manifest();
+    auto& video = document.timelines.front().tracks.front();
+    video.clips.front().durationFrames = 12;
+    video.clips.front().trimStartFrame = 2;
+    video.clips.front().trimEndFrame = 10;
+    Clip removed;
+    removed.id = "ripple-target"; removed.mediaRef = "v";
+    removed.startFrame = 16; removed.durationFrames = 4;
+    removed.trimStartFrame = 14; removed.trimEndFrame = 6;
+    video.clips.push_back(removed);
+    Clip tail;
+    tail.id = "tail"; tail.mediaRef = "v";
+    tail.startFrame = 24; tail.durationFrames = 8;
+    tail.trimStartFrame = 16;
+    video.clips.push_back(tail);
+    MediaManifestEntry alternate;
+    alternate.id = "alternate"; alternate.type = ClipType::Video;
+    alternate.source.path = HEISENBERG_PLAYLIST_CLIP_B;
+    alternate.duration = 1.0; alternate.hasAudio = true;
+    ASSERT_TRUE(manifest.add(alternate));
+    document.colorSettings.inputColorSpaces["alternate"] = "Rec.1886 Rec.709 - Display";
+
+    VideoProject project;
+    std::string error;
+    ASSERT_TRUE(project.editor().replaceDocument(document, manifest, "", &error)) << error;
+    const auto insert = project.editor().insertClip("alternate", 5, 6, 9, "video");
+    ASSERT_TRUE(insert.changed()) << insert.message;
+    ASSERT_FALSE(insert.affectedIds.empty());
+    const std::string insertedId = insert.affectedIds.back();
+    const auto* right = project.editor().activeTimeline()->trackById("video")->clipAt(11);
+    ASSERT_NE(right, nullptr);
+    const std::string rightId = right->id;
+    ASSERT_NE(rightId, "picture");
+    const auto ripple = project.editor().rippleDeleteClip("ripple-target");
+    ASSERT_TRUE(ripple.changed()) << ripple.message;
+    const auto edited = project.snapshot();
+
+    // Independent expected half-open timeline -> source ranges, not computed
+    // from the edited clips. Insertion splits picture; deletion preserves gaps.
+    // [0,5)->v[2,7), [5,11)->alternate[9,15), [11,18)->v[7,14),
+    // [18,26) is a gap, and [26,34)->v[16,24). Net length: 32 + 6 - 4.
+    struct ExpectedRange {
+        const char* mediaRef;
+        int64_t start, duration, sourceStart, sourceEnd;
+        std::string id, sourcePath;
+    };
+    const std::vector<ExpectedRange> expected{
+        {"v", 0, 5, 2, 7, "picture", HEISENBERG_PLAYLIST_CLIP_A},
+        {"alternate", 5, 6, 9, 15, insertedId, HEISENBERG_PLAYLIST_CLIP_B},
+        {"v", 11, 7, 7, 14, rightId, HEISENBERG_PLAYLIST_CLIP_A},
+        {"v", 26, 8, 16, 24, "tail", HEISENBERG_PLAYLIST_CLIP_A},
+    };
+    constexpr int expectedFrames = 34;
+    constexpr double expectedSeconds = 34.0 / 24.0;
+    const auto checkMapping = [&](const ProjectSnapshot& capture) {
+        ASSERT_NE(capture.activeTimeline(), nullptr);
+        EXPECT_EQ(capture.activeTimeline()->totalFrames(), expectedFrames);
+        EXPECT_EQ(capture.activeTimeline()->clipById("ripple-target"), nullptr);
+        CompositionPlan preview;
+        ASSERT_TRUE(CompositionBuilder::build(capture, preview, &error)) << error;
+        EXPECT_EQ(preview.frameCount, expectedFrames);
+        EXPECT_NEAR(preview.settings.secondsFromFrame(preview.frameCount), expectedSeconds, 1e-9);
+        ASSERT_EQ(preview.clips.size(), expected.size());
+        EXPECT_TRUE(preview.audioClips.empty()); // Export still carries embedded video audio.
+        for (size_t index = 0; index < expected.size(); ++index) {
+            const auto& range = expected[index];
+            SCOPED_TRACE(range.id);
+            const auto* clip = capture.activeTimeline()->clipById(range.id);
+            ASSERT_NE(clip, nullptr);
+            EXPECT_EQ(clip->mediaRef, range.mediaRef);
+            EXPECT_EQ(clip->startFrame, range.start);
+            EXPECT_EQ(clip->durationFrames, range.duration);
+            EXPECT_EQ(clip->trimStartFrame, range.sourceStart);
+            EXPECT_EQ(clip->trimEndFrame, 24 - range.sourceEnd);
+            EXPECT_DOUBLE_EQ(clip->speed, 1.0);
+            const auto& planned = preview.clips[index];
+            EXPECT_EQ(planned.id, range.id);
+            EXPECT_EQ(planned.mediaRef, range.mediaRef);
+            EXPECT_EQ(fs::u8path(planned.sourcePath).lexically_normal(),
+                      fs::u8path(range.sourcePath).lexically_normal());
+            EXPECT_EQ(planned.startFrame, range.start);
+            EXPECT_EQ(planned.durationFrames, range.duration);
+            EXPECT_EQ(planned.trimStartFrame, range.sourceStart);
+            EXPECT_EQ(planned.trimEndFrame, 24 - range.sourceEnd);
+            EXPECT_EQ(planned.visualSnapshot, *clip);
+        }
+        for (int64_t frame = 0; frame < expectedFrames; ++frame) {
+            SCOPED_TRACE(frame);
+            const auto range = std::find_if(expected.begin(), expected.end(), [&](const ExpectedRange& value) {
+                return frame >= value.start && frame < value.start + value.duration;
+            });
+            const auto sample = preview.videoSampleAt(frame);
+            if (range == expected.end()) {
+                EXPECT_FALSE(sample); // The retained gap must not be packed away.
+                continue;
+            }
+            ASSERT_TRUE(sample);
+            const auto index = static_cast<size_t>(std::distance(expected.begin(), range));
+            EXPECT_EQ(sample->clipIndex, index);
+            EXPECT_EQ(sample->clipLocalFrame, frame - range->start);
+            EXPECT_NEAR(sample->sourceSeconds, (range->sourceStart + frame - range->start) / 24.0, 1e-9);
+        }
+        EXPECT_FALSE(preview.videoSampleAt(expectedFrames));
+    };
+    ASSERT_NO_FATAL_FAILURE(checkMapping(edited));
+    const auto package = folder.root / "edited.berg";
+    ASSERT_TRUE(project.savePackage(utf8(package), &error)) << error;
+    VideoProject reopened;
+    ASSERT_TRUE(reopened.loadPackage(utf8(package), &error)) << error;
+    const auto reopenedSnapshot = reopened.snapshot();
+    EXPECT_EQ(reopenedSnapshot.project(), edited.project());
+    EXPECT_EQ(reopenedSnapshot.manifest(), edited.manifest());
+    ASSERT_NO_FATAL_FAILURE(checkMapping(reopenedSnapshot));
+
+    ExportEngine engine;
+    ExportRequest request;
+    request.snapshot = reopenedSnapshot;
+    request.outputPath = utf8(folder.output());
+    request.videoCodec = ExportVideoCodec::H264;
+    ASSERT_TRUE(engine.start(request));
+    engine.wait();
+    ASSERT_TRUE(engine.result().succeeded()) << engine.result().stage << ": " << engine.result().error;
+    const auto decoded = readback(folder.output(), AV_CODEC_ID_H264, expectedFrames);
+    ASSERT_EQ(decoded.pictures, expectedFrames);
+    EXPECT_GE(decoded.samples, 68000); // 34 / 24 seconds at 48 kHz, with AAC padding only.
+    EXPECT_LE(decoded.samples, 68000 + 1023);
+    EXPECT_NEAR(decoded.audioEnd, expectedSeconds, 1024.0 / 48000.0);
+    ASSERT_EQ(decoded.brightness.size(), static_cast<size_t>(expectedFrames));
+    for (size_t frame = 18; frame < 26; ++frame) EXPECT_NEAR(decoded.brightness[frame], 16, 2.0);
+    EXPECT_GT(decoded.brightness[26], 30.0); // Shifted tail returns after the preserved gap.
+
+    AVFormatContext* input = nullptr;
+    ASSERT_GE(avformat_open_input(&input, utf8(folder.output()).c_str(), nullptr, nullptr), 0);
+    std::unique_ptr<AVFormatContext, void(*)(AVFormatContext*)> format(input,
+        [](AVFormatContext* context) { avformat_close_input(&context); });
+    ASSERT_GE(avformat_find_stream_info(input, nullptr), 0);
+    const int videoIndex = av_find_best_stream(input, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    ASSERT_GE(videoIndex, 0);
+    const auto* stream = input->streams[videoIndex];
+    ASSERT_NE(stream->duration, AV_NOPTS_VALUE);
+    EXPECT_NEAR(stream->duration * av_q2d(stream->time_base), expectedSeconds, 1e-6);
+    EXPECT_TRUE(folder.noStaging());
 }
 
 TEST(ExportEngineTest, FinishedSdrGrayLevelsSurviveBothSoftwareEncodersWithoutGrade) {

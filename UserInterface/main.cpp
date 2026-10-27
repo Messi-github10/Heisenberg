@@ -46,6 +46,17 @@ int main(int argc, char* argv[]) {
                      &playerCtrl, &heisenberg::ui::PlayerController::endScrub);
     QObject::connect(&mainWindow, &MainWindow::sourceSeekRequested,
                      &playerCtrl, &heisenberg::ui::PlayerController::seek);
+    QObject::connect(&mainWindow, &MainWindow::markSourceInRequested,
+                     &playerCtrl, &heisenberg::ui::PlayerController::markSourceIn);
+    QObject::connect(&mainWindow, &MainWindow::markSourceOutRequested,
+                     &playerCtrl, &heisenberg::ui::PlayerController::markSourceOut);
+    QObject::connect(&mainWindow, &MainWindow::clearSourceRangeRequested,
+                     &playerCtrl, &heisenberg::ui::PlayerController::clearSourceRange);
+    QObject::connect(&playerCtrl, &heisenberg::ui::PlayerController::sourceMarkingChanged,
+                     &mainWindow, [&]() {
+                         mainWindow.setSourceMarking(playerCtrl.currentSourceMediaRef(),
+                                                     playerCtrl.sourceMarkingAvailable());
+                     });
     QObject::connect(&mainWindow, &MainWindow::openFileRequested,
                      &playerCtrl, &heisenberg::ui::PlayerController::openFile);
     QObject::connect(&mainWindow, &MainWindow::previewMediaRequested,

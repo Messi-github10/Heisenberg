@@ -28,6 +28,8 @@
 #include <QLabel>
 #include <QMenu>
 #include <QPushButton>
+#include <QPointer>
+#include <QScopedValueRollback>
 
 #include <algorithm>
 #include <array>
@@ -106,6 +108,7 @@ void TimelineWidget::setSession(heisenberg::ui::EditorSession* session) {
         refreshProject();
     });
     connect(session_, &heisenberg::ui::EditorSession::mediaChanged, this, &TimelineWidget::refreshProject);
+    connect(session_, &heisenberg::ui::EditorSession::sourceRangeChanged, this, [this](const QString&) { update(); });
     connect(session_, &heisenberg::ui::EditorSession::timelineChanged, this, [this](qint64 frame) {
         cancelInteraction();
         refreshProject();
@@ -160,20 +163,50 @@ void TimelineWidget::setSnappingEnabled(bool enabled) {
         updateClipMove(clipMove_->lastPosition, clipMove_->modifiers);
 }
 
+void TimelineWidget::setInsertMode(bool enabled) {
+    if (insertMode_ == enabled) return;
+    insertMode_ = enabled;
+    update();
+}
+
 void TimelineWidget::splitSelectedClip() {
     cancelInteraction();
+    if (editInProgress_) return;
     if (!session_ || selectedClipId_.empty()) {
         emit editFailed(tr("Select a clip and place the playhead inside it before splitting."));
         return;
     }
-    const auto result = session_->splitClip(QString::fromStdString(selectedClipId_), currentFrame_);
+    const QString id = selectedClipId();
+    const qint64 frame = currentFrame_;
+    const QPointer<heisenberg::ui::EditorSession> session = session_;
+    QScopedValueRollback<bool> editing(editInProgress_, true);
+    emit editRequested();
+    if (!session || session_ != session.data()) return;
+    const auto result = session->splitClip(id, frame);
     if (!result.changed() && !result.message.empty()) emit editFailed(QString::fromUtf8(result.message.c_str()));
 }
 
 void TimelineWidget::removeSelectedClip() {
     cancelInteraction();
-    if (!session_ || selectedClipId_.empty()) return;
-    const auto result = session_->removeClips({QString::fromStdString(selectedClipId_)});
+    if (editInProgress_ || !session_ || selectedClipId_.empty()) return;
+    const QString id = selectedClipId();
+    const QPointer<heisenberg::ui::EditorSession> session = session_;
+    QScopedValueRollback<bool> editing(editInProgress_, true);
+    emit editRequested();
+    if (!session || session_ != session.data()) return;
+    const auto result = session->removeClips({id});
+    if (!result.changed() && !result.message.empty()) emit editFailed(QString::fromUtf8(result.message.c_str()));
+}
+
+void TimelineWidget::rippleDeleteSelectedClip() {
+    cancelInteraction();
+    if (editInProgress_ || !session_ || selectedClipId_.empty()) return;
+    const QString id = selectedClipId();
+    const QPointer<heisenberg::ui::EditorSession> session = session_;
+    QScopedValueRollback<bool> editing(editInProgress_, true);
+    emit editRequested();
+    if (!session || session_ != session.data()) return;
+    const auto result = session->rippleDeleteClip(id);
     if (!result.changed() && !result.message.empty()) emit editFailed(QString::fromUtf8(result.message.c_str()));
 }
 
@@ -350,15 +383,21 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     colorGrade->setObjectName("clipColorGrade");
     auto* grade = menu.addAction(tr("Basic Grade..."));
     grade->setObjectName("clipBasicGrade");
-    const auto* selected = timeline() ? timeline()->clipById(selectedClipId_) : nullptr;
-    grade->setEnabled(selected && selected->mediaType == heisenberg::ClipType::Video);
-    colorGrade->setEnabled(grade->isEnabled());
+    const bool videoSelected = [this] {
+        const auto* selected = timeline() ? timeline()->clipById(selectedClipId_) : nullptr;
+        return selected && selected->mediaType == heisenberg::ClipType::Video;
+    }();
+    grade->setEnabled(videoSelected);
+    colorGrade->setEnabled(videoSelected);
     auto* remove = menu.addAction(tr("Delete Clip"));
+    auto* rippleDelete = menu.addAction(tr("Ripple Delete"));
+    rippleDelete->setObjectName("clipRippleDelete");
     const auto* chosen = menu.exec(event->globalPos());
     if (chosen == audio) editSelectedClipAudio();
     else if (chosen == colorGrade) editSelectedClipColorGrade();
     else if (chosen == grade) editSelectedClipGrade();
     else if (chosen == remove) removeSelectedClip();
+    else if (chosen == rippleDelete) rippleDeleteSelectedClip();
     event->accept();
 }
 
@@ -676,8 +715,9 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
 
     if (!draggedMedia_.isEmpty() && dropLane_ && session_ && active) {
         const auto* entry = session_->editor().manifest().find(draggedMedia_.toStdString());
-        if (entry) {
-            const double ghostWidth = std::max(2.0, entry->duration * active->fps * pixelsPerFrame_);
+        qint64 trim = 0, duration = 0;
+        if (entry && session_->sourcePlacementRange(draggedMedia_, trim, duration)) {
+            const double ghostWidth = std::max(2.0, duration * pixelsPerFrame_);
             painter.save();
             painter.setClipRect(QRectF(kHeaderWidth, 0, width() - kHeaderWidth, height()));
             painter.setPen(QPen(QColor(255, 255, 255, 220), 1, Qt::DashLine));
@@ -688,7 +728,7 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
                                            ghostWidth, dropLane_->height - 6), 4, 4);
             painter.setPen(kPrimaryText);
             painter.drawText(QPointF(xForFrame(dropFrame_) + 6, dropLane_->top + dropLane_->height + 18),
-                             tr("Overwrite at %1").arg(formatTimecode(dropFrame_)));
+                             (insertMode_ ? tr("Insert at %1") : tr("Overwrite at %1")).arg(formatTimecode(dropFrame_)));
             painter.restore();
         }
     }
@@ -970,6 +1010,11 @@ void TimelineWidget::leaveEvent(QEvent* event) {
 }
 
 void TimelineWidget::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Delete && event->modifiers() == Qt::ShiftModifier) {
+        if (!event->isAutoRepeat()) rippleDeleteSelectedClip();
+        event->accept();
+        return;
+    }
     if ((event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) &&
         !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
         if (!event->isAutoRepeat()) removeSelectedClip();
@@ -1082,7 +1127,8 @@ bool TimelineWidget::canDropAt(const QPointF& point, const QString& mediaRef) co
     if (!lane) return false;
     if (mediaRef.isEmpty()) return lane->track != nullptr;
     const auto* entry = session_->editor().manifest().find(mediaRef.toStdString());
-    return entry && entry->type == lane->type;
+    qint64 trim = 0, duration = 0;
+    return entry && entry->type == lane->type && session_->sourcePlacementRange(mediaRef, trim, duration);
 }
 
 void TimelineWidget::dragEnterEvent(QDragEnterEvent* event) {
@@ -1125,19 +1171,45 @@ void TimelineWidget::dragLeaveEvent(QDragLeaveEvent* event) {
 
 void TimelineWidget::dropEvent(QDropEvent* event) {
     draggedMedia_.clear();
+    dropLane_.reset();
     const QString ref = mediaFromMime(event->mimeData());
-    if (!ref.isEmpty() && canDropAt(event->position(), ref)) {
+    if (editInProgress_ || ref.isEmpty() || !canDropAt(event->position(), ref)) {
+        event->ignore();
+        update();
+        return;
+    }
+    const QString targetTrackId = [this, event] {
         const auto lane = laneAt(event->position());
-        const QString targetTrackId = lane->track ? QString::fromStdString(lane->track->id) : QString();
-        const auto result = session_->placeMedia(ref, dropFrameAtX(event->position().x()), targetTrackId);
-        if (result.changed()) {
-            if (!result.affectedIds.empty()) setSelectedClipId(result.affectedIds.back());
-            event->setDropAction(Qt::CopyAction);
-            event->accept();
-        } else {
-            emit editFailed(QString::fromUtf8(result.message.c_str()));
-            event->ignore();
-        }
-    } else event->ignore();
+        return lane->track ? QString::fromStdString(lane->track->id) : QString();
+    }();
+    const qint64 frame = dropFrameAtX(event->position().x());
+    const bool insert = insertMode_;
+    const QPointer<heisenberg::ui::EditorSession> session = session_;
+    cancelInteraction();
+    QScopedValueRollback<bool> editing(editInProgress_, true);
+    emit editRequested();
+    if (!session || session_ != session.data()) {
+        event->ignore();
+        return;
+    }
+    qint64 trim = 0, duration = 0;
+    QString error;
+    if (!session->sourcePlacementRange(ref, trim, duration, &error)) {
+        if (!error.isEmpty()) emit editFailed(error);
+        event->ignore();
+        update();
+        return;
+    }
+    const auto result = insert ? session->insertMedia(ref, frame, targetTrackId)
+                               : session->placeMedia(ref, frame, targetTrackId);
+    if (result.changed()) {
+        if (session && session_ == session.data() && !result.affectedIds.empty())
+            setSelectedClipId(result.affectedIds.back());
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    } else {
+        emit editFailed(QString::fromUtf8(result.message.c_str()));
+        event->ignore();
+    }
     update();
 }

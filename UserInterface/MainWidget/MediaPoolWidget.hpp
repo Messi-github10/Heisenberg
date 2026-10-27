@@ -40,6 +40,7 @@ public:
 signals:
     void previewRequested(const QString& mediaRef);
     void placeRequested(const QString& mediaRef);
+    void insertRequested(const QString& mediaRef);
     void importFailed(const QString& message);
 private:
     void refreshMedia();

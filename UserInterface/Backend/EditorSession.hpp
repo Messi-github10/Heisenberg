@@ -3,9 +3,23 @@
 #include <Project/VideoProject.hpp>
 #include <Editor/ProjectSettings.hpp>
 #include <QObject>
+#include <QHash>
 #include <QStringList>
+#include <optional>
 
 namespace heisenberg::ui {
+
+// Source marks are exclusive-boundary seconds, local to this editing session.
+struct SourceRange {
+    std::optional<double> inSeconds;
+    std::optional<double> outSeconds;
+    bool operator==(const SourceRange&) const = default;
+};
+
+struct SourcePlacementRange {
+    qint64 trimStartFrame = 0;
+    qint64 durationFrames = 0;
+};
 
 // The UI owns one editor; widgets read it and submit intents through this session.
 class EditorSession final : public QObject {
@@ -31,7 +45,15 @@ public:
     bool loadPackage(const QString& path, QString* error = nullptr);
     bool savePackage(const QString& path, QString* error = nullptr);
     QStringList importFiles(const QStringList& paths);
+    SourceRange sourceRange(const QString& mediaRef) const;
+    bool setSourceIn(const QString& mediaRef, double seconds);
+    bool setSourceOut(const QString& mediaRef, double seconds);
+    bool clearSourceRange(const QString& mediaRef);
+    bool sourcePlacementRange(const QString& mediaRef, qint64& trimStart, qint64& duration,
+                              QString* error = nullptr) const;
     EditResult placeMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId = {});
+    EditResult insertMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId = {});
+    EditResult rippleDeleteClip(const QString& clipId);
     EditResult setClipAudio(const QString& clipId, double volume, qint64 fadeInFrames, qint64 fadeOutFrames);
     EditResult setTrackMuted(const QString& trackId, bool muted);
     EditResult setColorSettings(const ColorSettings& settings);
@@ -54,9 +76,12 @@ signals:
     void mediaChanged();
     void timelineChanged(qint64 focusFrame);
     void dirtyChanged(bool dirty);
+    void sourceRangeChanged(const QString& mediaRef);
 
 private:
+    bool setSourceBoundary(const QString& mediaRef, double seconds, bool in);
     void syncDirty();
+    QHash<QString, SourceRange> sourceRanges_;
     VideoProject project_;
     QString token_;
     bool dirty_ = false;

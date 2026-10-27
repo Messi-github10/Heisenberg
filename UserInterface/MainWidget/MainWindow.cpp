@@ -20,6 +20,8 @@
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QAction>
+#include <QActionGroup>
+#include <QShortcut>
 #include <QCloseEvent>
 #include <QFutureWatcher>
 #include <QtConcurrent>
@@ -109,6 +111,9 @@ void MainWindow::setupUi() {
     auto* splitAction = editMenu->addAction(tr("Split at Playhead"));
     splitAction->setObjectName("splitAtPlayhead");
     splitAction->setToolTip(tr("Select a clip, place the playhead inside it, then split (S when the timeline has focus)."));
+    auto* rippleAction = editMenu->addAction(tr("Ripple Delete Selected Clip"));
+    rippleAction->setObjectName("rippleDeleteClip");
+    rippleAction->setToolTip(tr("Delete the selected clip and close its duration on this track (Shift+Delete in the timeline)."));
 
     auto* exportAction = fileMenu->addAction(tr("Export Timeline..."));
     exportAction->setObjectName("exportTimeline");
@@ -140,6 +145,17 @@ void MainWindow::setupUi() {
     snapAction->setCheckable(true);
     snapAction->setChecked(true);
     snapAction->setToolTip(tr("Snap clip edges to clips, playhead and timeline start. Hold Shift to bypass."));
+    auto* placementGroup = new QActionGroup(this);
+    auto* overwriteMode = timelineMenu->addAction(tr("Overwrite Media Drops"));
+    overwriteMode->setObjectName("overwritePlacementMode");
+    auto* insertMode = timelineMenu->addAction(tr("Insert Media Drops"));
+    insertMode->setObjectName("insertPlacementMode");
+    for (auto* action : {overwriteMode, insertMode}) {
+        action->setCheckable(true);
+        placementGroup->addAction(action);
+    }
+    overwriteMode->setChecked(true);
+    insertMode->setToolTip(tr("New media shifts subsequent clips on its track. Existing clip dragging is unchanged."));
 
     auto* toolbar = addToolBar(tr("Editor"));
     toolbar->setMovable(false);
@@ -149,6 +165,17 @@ void MainWindow::setupUi() {
     toolbar->addAction(openVideoAction);
     toolbar->addAction(saveAction);
     toolbar->addAction(splitAction);
+    auto* placementMode = new QComboBox(toolbar);
+    placementMode->setObjectName("mediaPlacementMode");
+    placementMode->addItems({tr("Overwrite"), tr("Insert")});
+    placementMode->setToolTip(tr("Placement mode for media dragged from the pool"));
+    toolbar->addWidget(placementMode);
+    connect(placementMode, &QComboBox::currentIndexChanged, this, [overwriteMode, insertMode](int index) {
+        (index == 1 ? insertMode : overwriteMode)->setChecked(true);
+    });
+    connect(placementGroup, &QActionGroup::triggered, this, [placementMode, insertMode](QAction* action) {
+        placementMode->setCurrentIndex(action == insertMode ? 1 : 0);
+    });
     auto* toolSpacer = new QWidget(toolbar);
     toolSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     toolbar->addWidget(toolSpacer);
@@ -171,10 +198,12 @@ void MainWindow::setupUi() {
     mediaPool_ = new MediaPoolWidget(session_, workspace);
     auto* previewPanel = new QWidget(workspace);
     previewPanel->setObjectName("previewPanel");
+    previewPanel->setFocusPolicy(Qt::StrongFocus);
     auto* previewLayout = new QVBoxLayout(previewPanel);
     previewLayout->setContentsMargins(0, 0, 0, 0);
     previewLayout->setSpacing(0);
     videoWidget_ = new VideoWidget(previewPanel);
+    videoWidget_->setFocusPolicy(Qt::StrongFocus);
     videoWidget_->setMinimumSize(320, 180);
     previewLayout->addWidget(videoWidget_, 1);
 
@@ -187,6 +216,41 @@ void MainWindow::setupUi() {
     sourceSlider_->setEnabled(false);
     sourceSlider_->hide();
     sourceLayout->addWidget(sourceSlider_);
+    sourceRangeControls_ = new QWidget(sourceControls_);
+    sourceRangeControls_->setObjectName("sourceRangeControls");
+    auto* rangeLayout = new QVBoxLayout(sourceRangeControls_);
+    rangeLayout->setContentsMargins(0, 0, 0, 0);
+    rangeLayout->setSpacing(3);
+    auto* markButtons = new QHBoxLayout;
+    markInAction_ = new QAction(tr("Mark In (I)"), this);
+    markInAction_->setObjectName("markSourceIn");
+    markOutAction_ = new QAction(tr("Mark Out (O)"), this);
+    markOutAction_->setObjectName("markSourceOut");
+    clearRangeAction_ = new QAction(tr("Clear Range"), this);
+    clearRangeAction_->setObjectName("clearSourceRange");
+    for (auto* action : {markInAction_, markOutAction_, clearRangeAction_}) {
+        action->setEnabled(false);
+        auto* button = new QToolButton(sourceRangeControls_);
+        button->setDefaultAction(action);
+        markButtons->addWidget(button);
+    }
+    markButtons->addStretch();
+    rangeLayout->addLayout(markButtons);
+    sourceRangeLabel_ = new QLabel(sourceRangeControls_);
+    sourceRangeLabel_->setObjectName("sourceRangeLabel");
+    sourceRangeLabel_->setWordWrap(true);
+    rangeLayout->addWidget(sourceRangeLabel_);
+    sourceRangeControls_->hide();
+    sourceLayout->addWidget(sourceRangeControls_);
+    connect(markInAction_, &QAction::triggered, this, &MainWindow::markSourceInRequested);
+    connect(markOutAction_, &QAction::triggered, this, &MainWindow::markSourceOutRequested);
+    connect(clearRangeAction_, &QAction::triggered, this, &MainWindow::clearSourceRangeRequested);
+    for (const auto& binding : {std::pair{Qt::Key_I, markInAction_}, std::pair{Qt::Key_O, markOutAction_}}) {
+        auto* shortcut = new QShortcut(QKeySequence(binding.first), previewPanel);
+        shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+        shortcut->setAutoRepeat(false);
+        connect(shortcut, &QShortcut::activated, binding.second, &QAction::trigger);
+    }
 
     auto* transport = new QHBoxLayout;
     transport->setContentsMargins(0, 0, 0, 0);
@@ -286,6 +350,8 @@ void MainWindow::setupUi() {
     });
     connect(snapAction, &QAction::toggled, timelineWidget_, &TimelineWidget::setSnappingEnabled);
     connect(splitAction, &QAction::triggered, timelineWidget_, &TimelineWidget::splitSelectedClip);
+    connect(rippleAction, &QAction::triggered, timelineWidget_, &TimelineWidget::rippleDeleteSelectedClip);
+    connect(insertMode, &QAction::toggled, timelineWidget_, &TimelineWidget::setInsertMode);
     connect(timelinePreviewAction, &QAction::triggered, this, [this]() {
         if (!timelineWidget_->cancelInteraction()) emit timelinePreviewRequested();
     });
@@ -303,8 +369,20 @@ void MainWindow::setupConnections() {
     });
     connect(mediaPool_, &MediaPoolWidget::previewRequested, this, &MainWindow::previewMediaRequested);
     connect(mediaPool_, &MediaPoolWidget::placeRequested, this, [this](const QString& ref) {
+        colorGrade_->finishEditing();
+        timelineWidget_->cancelInteraction();
         const auto result = session_->placeMedia(ref, timelineWidget_->currentFrame());
         if (!result.changed()) showError(QString::fromUtf8(result.message.c_str()));
+    });
+    connect(mediaPool_, &MediaPoolWidget::insertRequested, this, [this](const QString& ref) {
+        colorGrade_->finishEditing();
+        timelineWidget_->cancelInteraction();
+        const auto result = session_->insertMedia(ref, timelineWidget_->currentFrame());
+        if (!result.changed()) showError(QString::fromUtf8(result.message.c_str()));
+    });
+    connect(timelineWidget_, &TimelineWidget::editRequested, colorGrade_, &ColorGradePanel::finishEditing);
+    connect(session_, &heisenberg::ui::EditorSession::sourceRangeChanged, this, [this](const QString& ref) {
+        if (ref == sourceMediaRef_) updateSourceRange();
     });
     connect(mediaPool_, &MediaPoolWidget::importFailed, this, &MainWindow::showError);
     connect(timelineWidget_, &TimelineWidget::selectedClipChanged, this, [this](const QString& id) {
@@ -438,12 +516,42 @@ bool MainWindow::confirmDiscardChanges() {
 void MainWindow::setSourcePreview(bool source, const QString& name) {
     Q_UNUSED(name);
     sourcePreview_ = source;
+    sourceRangeControls_->setVisible(source);
+    if (!source) {
+        sourceMediaRef_.clear();
+        sourceMarkingAvailable_ = false;
+    }
+    updateSourceRange();
     if (sourceSlider_) {
         sourceSlider_->setVisible(source);
         sourceSlider_->setEnabled(source && duration_ > 0.0);
         if (!source) sourceSlider_->setValue(0);
     }
     if (!source) showFileInfo(QString());
+}
+
+void MainWindow::setSourceMarking(const QString& mediaRef, bool available) {
+    sourceMediaRef_ = mediaRef;
+    sourceMarkingAvailable_ = available;
+    updateSourceRange();
+}
+
+void MainWindow::updateSourceRange() {
+    const bool enabled = sourcePreview_ && sourceMarkingAvailable_ && !sourceMediaRef_.isEmpty();
+    markInAction_->setEnabled(enabled);
+    markOutAction_->setEnabled(enabled);
+    const auto range = session_->sourceRange(sourceMediaRef_);
+    clearRangeAction_->setEnabled(enabled && (range.inSeconds || range.outSeconds));
+    const auto* media = session_->editor().manifest().find(sourceMediaRef_.toStdString());
+    if (!sourcePreview_ || !media) {
+        sourceRangeLabel_->setText(tr("Preview a media-pool item to mark a source range."));
+        return;
+    }
+    const double in = range.inSeconds.value_or(0.0);
+    const double out = range.outSeconds.value_or(media->duration);
+    sourceRangeLabel_->setText(tr("In: %1 s   Out: %2 s   Range: %3 s")
+        .arg(in, 0, 'f', 3).arg(out, 0, 'f', 3).arg(std::max(0.0, out - in), 0, 'f', 3));
+    sourceRangeLabel_->setToolTip(tr("Out includes the marked frame; the displayed Out is its ending time. Marks apply to overwrite, insert and media drops."));
 }
 
 void MainWindow::showFileInfo(const QString& path) {

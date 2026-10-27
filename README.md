@@ -56,6 +56,14 @@ track headers toggle mute. All edits use the existing undo history and package
 fields. Video-original audio and the independent audio track are mixed together;
 audio can continue after video ends while the preview presents a black canvas.
 
+Source preview supports session-local In/Out marks (I/O while the preview has focus).
+Media-pool placement uses the marked range, with separate overwrite and insert actions.
+The timeline's Overwrite/Insert selector controls new media drops; existing clip moves
+retain overwrite behavior. Insert shifts only the destination track, splitting a clip
+at the insertion point when necessary. Shift+Delete ripple-deletes the selected clip
+and closes its duration on that track; ordinary Delete/Backspace leaves a gap.
+These edits are atomic undo steps. Marks themselves are not saved or added to history.
+
 Shared windowless composition uses OCIO's fixed ACES 2.0 Studio configuration:
 ACEScg working images, ACEScct grading stages, and separate preview/export output
 transforms. Offline MP4 export uses software H.264/H.265 and AAC, independent of the

@@ -24,8 +24,8 @@ must be allowed to launch FFmpeg and create temporary project packages.
    edits are valid. Wrong-type drops are rejected. The edit can extend beyond the
    previous duration and previews immediately without saving.
 6. Drop another tile over existing content. **Ctrl+Z** and **Ctrl+Shift+Z** must
-   undo/redo the whole overwrite in one step. **Add Selected at Playhead** is an
-   alternative to drag/drop.
+   undo/redo the whole edit in one step. **Overwrite at Playhead** and **Insert at
+   Playhead** are explicit alternatives to drag/drop.
 7. Use **Ctrl+S** to save a new `.berg` directory package. Reopen that directory
    with **Ctrl+O** and check both the pool and clips. Save As preserves existing
    package media and unknown files.
@@ -92,4 +92,26 @@ itself is not part of timeline undo history.
   timeline focus. Those keys do not delete clips while typing in media search.
   Removal is one undo step and never changes the source file.
 
-Multi-selection, ripple editing, and a separate razor-tool mode are not included.
+## Source range, insert and ripple delete
+
+- Preview a registered media-pool item, seek or step to a frame, then use **Mark In
+  (I)** / **Mark Out (O)**. The preview panel must have focus for the letter keys;
+  media search and grading fields retain ordinary text input. Out includes the
+  currently displayed frame; the label shows its exclusive ending time.
+- **Clear Range** restores full-source placement. One-sided marks default to the
+  source beginning/end. Marks follow each media ID across source switches, remain
+  session-local, do not dirty the project, and reset after a successful project load.
+- Verify a 24 fps source range [6,18) placed in the default 30 fps timeline starts
+  at source trim 8 and lasts 15 timeline frames. Drag ghosts and both placement
+  buttons use this same rounded range. Empty or inverted ranges must not create edits.
+- Select **Insert** in the toolbar or **Insert Media Drops** in the Timeline menu.
+  A new media drop pushes later content on its target track by the selected duration;
+  an insertion inside a clip splits it. The other track stays in place. Existing
+  clip moves still overwrite. Switch back to **Overwrite** to retain prior drop behavior.
+- **Shift+Delete**, **Ripple Delete** in the clip context menu, or **Ripple Delete
+  Selected Clip** in Edit removes the selected duration and shifts later clips on
+  that track forward. Other gaps keep their lengths. Delete/Backspace still leaves
+  a gap. Check undo/redo, grade/audio payloads, and save/reopen for each operation.
+
+Multi-selection, synchronized cross-track ripple, and a separate razor-tool mode
+are not included.
