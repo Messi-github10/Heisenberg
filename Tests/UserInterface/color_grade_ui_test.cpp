@@ -11,7 +11,11 @@
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QFile>
+#include <QKeyEvent>
+#include <QLineEdit>
 #include <QMouseEvent>
+#include <QScrollArea>
+#include <QWheelEvent>
 #include <QPushButton>
 #include <QPixmap>
 #include <QTableWidget>
@@ -74,6 +78,96 @@ TEST(ColorGradeUiTest, WheelDragMatchesDisplayedHueClampsStrengthAndIgnoresOutsi
     EXPECT_GT(red.red(), red.blue() + 30);
     EXPECT_GT(green.green(), green.red() + 30);
     EXPECT_GT(green.green(), green.blue() + 30);
+}
+
+TEST(ColorGradeUiTest, WheelNumericFieldsIgnoreScrollingAndStillAcceptTypedValues) {
+    ColorGradeDialog dialog(importedEffects());
+    auto* tabs = dialog.findChild<QTabWidget*>("colorGradeTabs");
+    ASSERT_NE(tabs, nullptr);
+    tabs->setCurrentIndex(2);
+    dialog.show();
+    QCoreApplication::processEvents();
+    auto* scroll = qobject_cast<QScrollArea*>(tabs->currentWidget());
+    ASSERT_NE(scroll, nullptr);
+    for (const auto* prefix : {"lift", "gamma", "gain"}) {
+        for (const auto* component : {"Hue", "Strength", "Master"}) {
+            const QString key = QString::fromLatin1(prefix) + component;
+            SCOPED_TRACE(key.toStdString());
+            auto* field = dialog.findChild<QDoubleSpinBox*>("colorGrade_" + key);
+            ASSERT_NE(field, nullptr);
+            auto* editor = field->findChild<QLineEdit*>();
+            ASSERT_NE(editor, nullptr);
+            scroll->ensureWidgetVisible(field);
+            field->clearFocus();
+            const double initial = field->value();
+            const auto effects = dialog.effects();
+            for (bool focused : {false, true}) {
+                if (focused) field->setFocus();
+                for (auto* target : {static_cast<QWidget*>(field), static_cast<QWidget*>(editor)}) {
+                    for (int delta : {120, -120}) {
+                        const QPointF position(target->rect().center());
+                        QWheelEvent event(position, target->mapToGlobal(position.toPoint()),
+                            QPoint(), QPoint(0, delta), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                        QApplication::sendEvent(target, &event);
+                        EXPECT_DOUBLE_EQ(field->value(), initial);
+                        EXPECT_EQ(dialog.effects(), effects);
+                    }
+                }
+            }
+            const double value = QString::fromLatin1(component) == "Hue" ? 120
+                : QString::fromLatin1(component) == "Master" && QString::fromLatin1(prefix) != "lift" ? 1.25 : .25;
+            field->setFocus();
+            editor->selectAll();
+            const QString text = field->locale().toString(value, 'f', 4);
+            for (const auto character : text) {
+                QKeyEvent keyPress(QEvent::KeyPress, 0, Qt::NoModifier, QString(character));
+                QApplication::sendEvent(editor, &keyPress);
+            }
+            QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+            QApplication::sendEvent(field, &enter);
+            EXPECT_DOUBLE_EQ(field->value(), value);
+            EXPECT_DOUBLE_EQ(dialog.effects()[1]["params"][key.toStdString()]["value"].get<double>(), value);
+        }
+    }
+}
+
+TEST(ColorGradeUiTest, AllNumericFieldsIgnoreScrollingIncludingNewTableRows) {
+    ColorGradeDialog dialog(importedEffects());
+    auto* tabs = dialog.findChild<QTabWidget*>("colorGradeTabs");
+    ASSERT_NE(tabs, nullptr);
+    dialog.show();
+    QCoreApplication::processEvents();
+    for (int page = 0; page < tabs->count(); ++page) {
+        tabs->setCurrentIndex(page);
+        if (page == 3) dialog.findChild<QPushButton*>("colorGradeCurveAdd")->click();
+        if (page == 4) dialog.findChild<QPushButton*>("colorGradeHueAdd")->click();
+        auto* scroll = qobject_cast<QScrollArea*>(tabs->currentWidget());
+        ASSERT_NE(scroll, nullptr);
+        const auto fields = scroll->findChildren<QDoubleSpinBox*>();
+        ASSERT_FALSE(fields.isEmpty());
+        for (auto* field : fields) {
+            SCOPED_TRACE(field->objectName().toStdString());
+            scroll->ensureWidgetVisible(field);
+            auto* editor = field->findChild<QLineEdit*>();
+            ASSERT_NE(editor, nullptr);
+            const double initial = field->value();
+            const auto effects = dialog.effects();
+            field->clearFocus();
+            for (bool focused : {false, true}) {
+                if (focused) field->setFocus();
+                for (auto* target : {static_cast<QWidget*>(field), static_cast<QWidget*>(editor)}) {
+                    for (int delta : {120, -120}) {
+                        const QPointF position(target->rect().center());
+                        QWheelEvent event(position, target->mapToGlobal(position.toPoint()),
+                            QPoint(), QPoint(0, delta), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                        QApplication::sendEvent(target, &event);
+                        EXPECT_DOUBLE_EQ(field->value(), initial);
+                        EXPECT_EQ(dialog.effects(), effects);
+                    }
+                }
+            }
+        }
+    }
 }
 
 TEST(ColorGradeUiTest, WheelResetKeepsSiblingEffectsAndUsesNeutralMasterValues) {

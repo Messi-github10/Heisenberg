@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QEvent>
 #include <QFileDialog>
 #include <QEnterEvent>
 #include <QGridLayout>
@@ -38,8 +39,21 @@ using heisenberg::JsonValue;
 namespace {
 constexpr double pi = 3.14159265358979323846;
 const char* channels[] = {"master", "red", "green", "blue"};
+class IgnoreWheelInput final : public QObject {
+public:
+    using QObject::QObject;
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::Wheel) {
+            event->ignore();
+            return true;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
 QDoubleSpinBox* number(QWidget* parent, const QString& name, double low, double high, double value) {
     auto* field = new QDoubleSpinBox(parent);
+    field->installEventFilter(new IgnoreWheelInput(field));
     field->setObjectName(name);
     field->setDecimals(4);
     field->setRange(low, high);
