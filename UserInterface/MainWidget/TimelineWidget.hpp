@@ -4,6 +4,7 @@
 #include <Models/Timeline.hpp>
 
 #include <QWidget>
+#include <QStringList>
 
 #include <cstdint>
 #include <functional>
@@ -40,6 +41,7 @@ public:
     QString selectedClipId() const {
         return QString::fromStdString(selectedClipId_);
     }
+    QStringList selectedClipIds() const;
     bool cancelInteraction();
     void setSnappingEnabled(bool enabled);
     bool snappingEnabled() const {
@@ -74,6 +76,7 @@ public slots:
 
 signals:
     void selectedClipChanged(const QString& clipId);
+    void selectedClipsChanged(const QStringList& clipIds);
     void colorGradeRequested(const QString& clipId);
     void timelineActivated();
     void scrubStarted();
@@ -102,7 +105,11 @@ protected:
     QSize minimumSizeHint() const override;
 
 private:
+    struct Lane;
     void setSelectedClipId(const std::string& clipId);
+    void setSelection(std::unordered_set<std::string> ids, const std::string& primary);
+    void updateMarquee(const QPointF& point);
+    QRectF clipRectangle(const heisenberg::Clip& clip, const Lane& lane) const;
     void selectTrack(const std::string& trackId);
     void addTrack(heisenberg::ClipType type);
     void toggleTrack(const std::string& trackId, bool hidden);
@@ -144,7 +151,18 @@ private:
     void updateClipMove(const QPointF& point, Qt::KeyboardModifiers modifiers);
     std::optional<heisenberg::TrimEdge> trimEdgeAt(const heisenberg::Clip& clip, double x) const;
 
+    struct MoveMember {
+        std::string clipId;
+        std::string trackId;
+        std::string targetTrackId;
+        heisenberg::ClipType type = heisenberg::ClipType::Video;
+        qint64 startFrame = 0;
+        qint64 durationFrames = 0;
+        qint64 targetFrame = 0;
+    };
     struct ClipMove {
+        std::vector<MoveMember> members;
+        std::string timelineId;
         std::string clipId;
         std::string trackId;
         std::string targetTrackId;
@@ -169,6 +187,18 @@ private:
         bool createNewTrack = false;
     };
     std::optional<ClipMove> clipMove_;
+    struct Marquee {
+        QPointF pressPosition;
+        QPointF anchor;
+        QPointF lastPosition;
+        QRectF rectangle;
+        std::unordered_set<std::string> baseline;
+        std::unordered_set<std::string> hits;
+        bool additive = false;
+        bool dragging = false;
+    };
+    std::optional<Marquee> marquee_;
+    std::unordered_set<std::string> selectedClipIds_;
     bool snappingEnabled_ = true;
     bool insertMode_ = false;
     bool editInProgress_ = false;

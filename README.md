@@ -65,6 +65,15 @@ mixed, with per-clip 0–200% gain and linear fades applied before final clampin
 Audio can continue after video ends while the preview presents a black canvas.
 Track edits use the existing undo history and serialized package fields.
 
+Timeline clips support Ctrl/Shift-click selection, drag-to-select marquees from empty
+lane space, and Ctrl+A with timeline focus. Dragging a selected clip moves the whole
+selection with one time offset and one undo step. Same-type tracks retain their row
+spacing during vertical moves; other selected media types keep their tracks while
+following the time offset. Delete removes the selection in one step. The primary
+selected clip remains the target for grading and clip settings; splitting, ripple
+removal and edge trimming require a single selected clip. Empty clicks seek on
+release, while ruler drags scrub immediately. Selection is transient UI state.
+
 Source preview supports session-local In/Out marks (I/O while the preview has focus).
 Media-pool placement uses the marked range, with separate overwrite and insert actions.
 The timeline's Overwrite/Insert selector controls new media drops; existing clip moves

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Project/VideoProject.hpp>
+#include <Editor/EditorViewModel.hpp>
 #include <Editor/ProjectSettings.hpp>
 #include <QObject>
 #include <QHash>
@@ -76,6 +77,7 @@ public:
     EditResult removeClips(const QStringList& clipIds);
     EditResult moveClip(const QString& clipId, qint64 frame, const QString& targetTrackId = {},
                         bool createNewTrack = false);
+    EditResult moveClips(const std::vector<heisenberg::ClipMoveRequest>& moves, bool createNewTrack = false);
     EditResult trimClip(const QString& clipId, TrimEdge edge, qint64 deltaFrames);
     EditResult splitClip(const QString& clipId, qint64 frame);
     void undo();

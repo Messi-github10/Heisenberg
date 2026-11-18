@@ -358,6 +358,13 @@ void MainWindow::setupUi() {
     connect(snapAction, &QAction::toggled, timelineWidget_, &TimelineWidget::setSnappingEnabled);
     connect(splitAction, &QAction::triggered, timelineWidget_, &TimelineWidget::splitSelectedClip);
     connect(rippleAction, &QAction::triggered, timelineWidget_, &TimelineWidget::rippleDeleteSelectedClip);
+    const auto updateSelectionActions = [this, splitAction, rippleAction] {
+        const bool single = timelineWidget_->selectedClipIds().size() == 1;
+        splitAction->setEnabled(single);
+        rippleAction->setEnabled(single);
+    };
+    connect(timelineWidget_, &TimelineWidget::selectedClipsChanged, this, updateSelectionActions);
+    updateSelectionActions();
     connect(insertMode, &QAction::toggled, timelineWidget_, &TimelineWidget::setInsertMode);
     connect(timelinePreviewAction, &QAction::triggered, this, [this]() {
         if (!timelineWidget_->cancelInteraction()) emit timelinePreviewRequested();

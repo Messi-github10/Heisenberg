@@ -52,7 +52,8 @@ Media import itself is not part of timeline undo history.
 - **Esc**, releasing outside the lane, or deactivating the window cancels the draft.
   A click, cancelled move, or move back to the original start does not dirty the
   project or consume redo history. Undo/redo cancels a pending draft first.
-- The ruler/empty space still moves the playhead. Zoom and horizontal scrolling
+- Empty-space clicks move the playhead on release; dragging empty lane space selects
+  intersecting clips. The ruler still scrubs immediately. Zoom and horizontal scrolling
   preserve timeline frame mapping. Both supported lanes use track-aware selection,
   move/trim ghosts and hit testing; unsupported layouts remain viewable but their
   editing is rejected.
@@ -144,5 +145,31 @@ Media import itself is not part of timeline undo history.
   that track forward. Other gaps keep their lengths. Delete/Backspace still leaves
   a gap. Check undo/redo, grade/audio payloads, and save/reopen for each operation.
 
-Multi-selection, synchronized cross-track ripple, and a separate razor-tool mode
-are not included.
+## Multi-selection and group moves
+
+- Ctrl-click or Shift-click toggles a clip; Ctrl+A selects every timeline clip when
+  the timeline has focus. Selected clips have blue outlines; the primary clip has a
+  white outline and remains the target of grading, appearance and audio settings.
+- Drag empty lane space to select every intersecting painted clip. Ctrl/Shift-drag
+  adds hits to the previous selection. The rectangle previews without changing the
+  committed selection until release. Escape cancels it; idle Escape clears selection.
+- Pressing a selected clip preserves the group for dragging. A plain click without
+  a drag reduces the selection to that clip. Modifier-click never starts a drag.
+- Group drags retain time offsets and gaps, including at frame zero. Vertical moves
+  preserve row spacing among the lead clip's media type; other selected types follow
+  in time on their existing tracks. An out-of-range destination rejects the whole move.
+- Snap considers all member boundaries and excludes every selected clip's old edges.
+  Shift temporarily disables snapping. All ghosts must match the resulting placement.
+- Overwrite affects only occupied destination intervals, preserving stationary content
+  between disjoint selected intervals. One undo/redo restores/reapplies the entire move.
+- A selection from one video track can create one top video track via the existing
+  strip. Mixed media or selections spanning several source tracks cannot use this
+  strip; they can move to compatible existing rows.
+- Delete/Backspace removes all selected clips in one undo step. Split, Ripple Delete
+  and edge trimming require one selected clip. Right-clicking a selected member keeps
+  the group. Check focus isolation in media search and numeric inputs.
+- Verify selection pruning after deletion, undo, track removal and project switching;
+  verify pending grading commits separately before a group edit. Save/reopen must
+  preserve all moved IDs, tracks, trims and effects. Selection itself is not saved.
+
+Synchronized cross-track ripple and a separate razor-tool mode are not included.

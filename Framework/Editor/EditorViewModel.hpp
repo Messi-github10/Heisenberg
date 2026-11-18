@@ -27,6 +27,12 @@ struct EditResult {
 
 enum class TrimEdge { Left, Right };
 
+struct ClipMoveRequest {
+    std::string clipId;
+    std::string targetTrackId;
+    int64_t startFrame = 0;
+};
+
 class EditorViewModel {
 public:
     EditorViewModel();
@@ -70,6 +76,9 @@ public:
     EditResult cancelClipEffectsTransaction();
     EditResult moveClip(const std::string& clipId, int64_t startFrame,
                         const std::string& targetTrackId = {}, bool createNewTrack = false);
+    // Atomically overwrite destination intervals; empty targets retain source tracks.
+    // A new track requires video clips from one source and all empty targets.
+    EditResult moveClips(const std::vector<ClipMoveRequest>& moves, bool createNewTrack = false);
     EditResult splitClip(const std::string& clipId, int64_t atFrame);
     EditResult trimClip(const std::string& clipId, TrimEdge edge, int64_t deltaFrames);
     EditResult removeClips(const std::vector<std::string>& clipIds);

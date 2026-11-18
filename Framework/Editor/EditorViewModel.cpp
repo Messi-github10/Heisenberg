@@ -561,6 +561,115 @@ EditResult EditorViewModel::moveClip(const std::string& clipId, int64_t startFra
     return commitTimelineEdit(std::move(candidate), std::move(affected), "Move Clip");
 }
 
+EditResult EditorViewModel::moveClips(const std::vector<ClipMoveRequest>& moves, bool createNewTrack) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
+    const Timeline* timeline = impl_->active();
+    if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
+    if (moves.empty()) return {EditStatus::NoOp, {}, {}};
+
+    struct PlannedMove {
+        Clip clip;
+        std::string targetId;
+        int64_t start;
+        int64_t end;
+    };
+    std::vector<PlannedMove> planned;
+    planned.reserve(moves.size());
+    std::unordered_set<std::string> selected;
+    std::string newTrackSource;
+    bool changed = createNewTrack;
+    for (const auto& move : moves) {
+        if (!selected.insert(move.clipId).second)
+            return {EditStatus::Invalid, {}, "duplicate clip move"};
+        if (createNewTrack && !move.targetTrackId.empty())
+            return {EditStatus::Invalid, {}, "target track and new track cannot both be requested"};
+        const Track* source = timeline->trackForClip(move.clipId);
+        if (!source) return {EditStatus::Invalid, {}, "clip was not found"};
+        const Clip* clip = source->clipById(move.clipId);
+        if (createNewTrack) {
+            if (source->type != ClipType::Video || clip->mediaType != ClipType::Video)
+                return {EditStatus::Unsupported, {}, "new-track moves require video clips"};
+            if (!newTrackSource.empty() && newTrackSource != source->id)
+                return {EditStatus::Invalid, {}, "new-track moves require one source track"};
+            newTrackSource = source->id;
+        }
+        const Track* target = move.targetTrackId.empty() ? source : timeline->trackById(move.targetTrackId);
+        if (!target) return {EditStatus::Invalid, {}, "target track was not found"};
+        if (target->type != clip->mediaType)
+            return {EditStatus::Invalid, {}, "clip type does not match target track"};
+        if (move.startFrame < 0)
+            return {EditStatus::Invalid, {}, "target frame must be non-negative"};
+        int64_t end = 0;
+        if (!addChecked(move.startFrame, clip->durationFrames, end) ||
+            end == std::numeric_limits<int64_t>::max())
+            return {EditStatus::Invalid, {}, "clip range overflows"};
+        changed = changed || move.startFrame != clip->startFrame || target->id != source->id;
+        planned.push_back({*clip, createNewTrack ? std::string{} : target->id, move.startFrame, end});
+    }
+
+    // Sort intervals separately so results keep request order. Adjacent ranges may
+    // touch, but two selected clips must never overwrite each other.
+    std::vector<size_t> intervalOrder;
+    intervalOrder.reserve(planned.size());
+    for (size_t i = 0; i < planned.size(); ++i) intervalOrder.push_back(i);
+    std::sort(intervalOrder.begin(), intervalOrder.end(), [&](size_t left, size_t right) {
+        const auto& a = planned[left];
+        const auto& b = planned[right];
+        return a.targetId == b.targetId ? a.start < b.start : a.targetId < b.targetId;
+    });
+    for (size_t i = 1; i < intervalOrder.size(); ++i) {
+        const auto& previous = planned[intervalOrder[i - 1]];
+        const auto& current = planned[intervalOrder[i]];
+        if (previous.targetId == current.targetId && current.start < previous.end)
+            return {EditStatus::Invalid, {}, "moved clip ranges overlap"};
+    }
+    std::vector<std::string> affected;
+    if (!changed) {
+        for (const auto& move : moves) affected.push_back(move.clipId);
+        return {EditStatus::NoOp, std::move(affected), {}};
+    }
+
+    Timeline candidate = *timeline;
+    if (createNewTrack) {
+        const std::string id = addTrackToCandidate(candidate, ClipType::Video);
+        affected.push_back(id);
+        for (auto& move : planned) move.targetId = id;
+    }
+    // Remove the whole selection first: swaps and overlapping source/destination
+    // ranges must not trim payloads belonging to another selected clip.
+    for (auto& track : candidate.tracks) {
+        track.clips.erase(std::remove_if(track.clips.begin(), track.clips.end(),
+            [&](const Clip& clip) { return selected.count(clip.id) != 0; }), track.clips.end());
+    }
+    for (size_t i = 0; i < intervalOrder.size();) {
+        const auto& first = planned[intervalOrder[i++]];
+        int64_t end = first.end;
+        while (i < intervalOrder.size()) {
+            const auto& next = planned[intervalOrder[i]];
+            if (next.targetId != first.targetId || next.start != end) break;
+            end = next.end;
+            ++i;
+        }
+        const auto cleared = clearRegion(*candidate.trackById(first.targetId), first.start, end);
+        affected.insert(affected.end(), cleared.begin(), cleared.end());
+    }
+    std::unordered_set<std::string> destinations;
+    for (auto& move : planned) {
+        move.clip.startFrame = move.start;
+        affected.push_back(move.clip.id);
+        destinations.insert(move.targetId);
+        candidate.trackById(move.targetId)->clips.push_back(std::move(move.clip));
+    }
+    for (const auto& id : destinations) candidate.trackById(id)->sortClips();
+    // A destination clip can span several disjoint intervals; report its ID once.
+    std::unordered_set<std::string> reported;
+    affected.erase(std::remove_if(affected.begin(), affected.end(),
+        [&](const std::string& id) { return !reported.insert(id).second; }), affected.end());
+    return commitTimelineEdit(std::move(candidate), std::move(affected), "Move Clips");
+}
+
 EditResult EditorViewModel::splitClip(const std::string& clipId, int64_t atFrame) {
     if (hasClipEffectsTransaction())
         return {EditStatus::Invalid, {}, "clip effects transaction is pending"};

@@ -317,6 +317,13 @@ EditResult EditorSession::moveClip(const QString& clipId, qint64 frame, const QS
     return result;
 }
 
+EditResult EditorSession::moveClips(const std::vector<heisenberg::ClipMoveRequest>& moves,
+                                   bool createNewTrack) {
+    auto result = project_.editor().moveClips(moves, createNewTrack);
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
 EditResult EditorSession::trimClip(const QString& clipId, TrimEdge edge, qint64 deltaFrames) {
     if (project_.editor().compatibility().level == CompatibilityLevel::Unsupported)
         return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};

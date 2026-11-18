@@ -11,6 +11,7 @@ add_executable(HeisenbergEditorUiTests
     insert_ripple_ui_test.cpp
     source_edit_workflow_test.cpp
     multitrack_ui_test.cpp
+    multi_selection_ui_test.cpp
     auto_track_drop_test.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ColorGradePanel.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ColorGradePanel.hpp

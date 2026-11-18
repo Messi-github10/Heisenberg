@@ -36,7 +36,7 @@ void mouse(TimelineWidget& widget, QEvent::Type type, QPointF position,
 
 void drag(TimelineWidget& widget, QPointF from, QPointF to,
           Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
-    mouse(widget, QEvent::MouseButtonPress, from, modifiers);
+    mouse(widget, QEvent::MouseButtonPress, from, modifiers & ~Qt::ShiftModifier);
     mouse(widget, QEvent::MouseMove, to, modifiers);
     mouse(widget, QEvent::MouseButtonRelease, to, modifiers);
 }
@@ -592,6 +592,28 @@ TEST_F(TimelineInteractionTest, MoveReopensUnsavedPlaybackSnapshotAndUpdatesDura
     QFile saved(QString::fromStdString(session.editor().projectDir()) + "/project.json");
     ASSERT_TRUE(saved.open(QIODevice::ReadOnly));
     EXPECT_NE(saved.readAll().toStdString(), json()); // No save was required for playback.
+}
+
+TEST_F(TimelineInteractionTest, GroupMoveReopensUnsavedPlaybackSnapshotAndUpdatesDuration) {
+    heisenberg::ui::PlayerController player(&session);
+    player.setHardwareDecode(false);
+    player.showTimeline(0);
+    ASSERT_TRUE(waitFor([&]() { return player.isSeekable(); }));
+    drag(timeline, target(30), target(30));
+    mouse(timeline, QEvent::MouseButtonPress, target(90), Qt::ControlModifier);
+    mouse(timeline, QEvent::MouseButtonRelease, target(90), Qt::ControlModifier);
+    ASSERT_EQ(timeline.selectedClipIds().size(), 2);
+    timeline.setSnappingEnabled(false);
+    drag(timeline, target(30), target(150));
+    ASSERT_TRUE(waitFor([&]() { return player.frameCount() == 240; }));
+    EXPECT_NEAR(player.duration(), 8.0, 0.01);
+    EXPECT_EQ(first()->startFrame, 150);
+    EXPECT_EQ(second()->startFrame, 210);
+    EXPECT_TRUE(session.isDirty());
+    session.undo();
+    ASSERT_TRUE(waitFor([&]() { return player.frameCount() == 120; }));
+    EXPECT_EQ(first()->startFrame, 30);
+    EXPECT_EQ(second()->startFrame, 90);
 }
 
 TEST_F(TimelineInteractionTest, WindowActionsCancelDraftAndUndoRedoCommittedMove) {
