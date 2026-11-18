@@ -6,6 +6,7 @@
 #include <QWidget>
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -13,7 +14,7 @@
 #include <vector>
 
 namespace heisenberg::ui { class EditorSession; }
-namespace heisenberg { enum class TrimEdge; }
+namespace heisenberg { enum class TrimEdge; struct EditResult; }
 
 class QMouseEvent;
 class QPaintEvent;
@@ -22,6 +23,8 @@ class QColor;
 class QMimeData;
 class QKeyEvent;
 class QContextMenuEvent;
+class QResizeEvent;
+class QScrollBar;
 
 class TimelineWidget final : public QWidget {
     Q_OBJECT
@@ -62,6 +65,12 @@ public:
 
     QString timelineName() const;
     int framesPerSecond() const;
+    QString targetTrackForMedia(const QString& mediaRef) const;
+    void editSelectedClipAppearance();
+
+public slots:
+    void addVideoTrack();
+    void addAudioTrack();
 
 signals:
     void selectedClipChanged(const QString& clipId);
@@ -76,6 +85,7 @@ signals:
 protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
@@ -93,6 +103,13 @@ protected:
 
 private:
     void setSelectedClipId(const std::string& clipId);
+    void selectTrack(const std::string& trackId);
+    void addTrack(heisenberg::ClipType type);
+    void toggleTrack(const std::string& trackId, bool hidden);
+    void mutate(const std::function<heisenberg::EditResult(heisenberg::ui::EditorSession&)>& command);
+    void trackContextMenu(const QPoint& position, const QPoint& globalPosition);
+    int contentRight() const;
+    void updateVerticalScrollBar();
     const heisenberg::Timeline* timeline() const;
     qint64 contentFrameCount() const;
     qint64 frameAtX(double x) const;
@@ -116,13 +133,22 @@ private:
     std::vector<Lane> lanes() const;
     std::optional<Lane> laneAt(const QPointF& point) const;
     std::optional<Lane> laneForTrack(const std::string& trackId) const;
-    bool canDropAt(const QPointF& point, const QString& mediaRef = {}) const;
+    struct DropDestination {
+        std::string trackId;
+        bool createNewTrack = false;
+        double top = 0.0;
+        double height = 44.0;
+    };
+    std::optional<DropDestination> dropDestination(const QPointF& point, heisenberg::ClipType type,
+                                                   bool allowPlaceholder, bool allowNewTrack) const;
     void updateClipMove(const QPointF& point, Qt::KeyboardModifiers modifiers);
     std::optional<heisenberg::TrimEdge> trimEdgeAt(const heisenberg::Clip& clip, double x) const;
 
     struct ClipMove {
         std::string clipId;
         std::string trackId;
+        std::string targetTrackId;
+        heisenberg::ClipType type = heisenberg::ClipType::Video;
         QPointF pressPosition;
         QPointF lastPosition;
         double grabOffsetFrames = 0.0;
@@ -140,6 +166,7 @@ private:
         Qt::KeyboardModifiers modifiers = Qt::NoModifier;
         bool dragging = false;
         bool validDrop = false;
+        bool createNewTrack = false;
     };
     std::optional<ClipMove> clipMove_;
     bool snappingEnabled_ = true;
@@ -152,13 +179,17 @@ private:
     std::unordered_set<std::string> missingMedia_;
     QString draggedMedia_;
     qint64 dropFrame_ = 0;
-    std::optional<Lane> dropLane_;
+    std::optional<DropDestination> dropDestination_;
     qint64 playbackFrameCount_ = 0;
     qint64 currentFrame_ = 0;
     double pixelsPerFrame_ = 4.0;
     double scrollOffset_ = 0.0;
     bool playing_ = false;
     bool scrubbing_ = false;
+    QScrollBar* verticalScrollBar_ = nullptr;
+    std::string selectedTrackId_;
+    std::string videoTargetTrackId_;
+    std::string audioTargetTrackId_;
     std::string selectedClipId_;
     std::string hoveredClipId_;
 };

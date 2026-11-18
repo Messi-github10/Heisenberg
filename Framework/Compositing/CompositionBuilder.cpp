@@ -80,9 +80,12 @@ bool CompositionBuilder::build(const Timeline& timeline, const MediaManifest& ma
     MediaResolver resolver(manifest, projectDir);
     for (const auto& track : timeline.tracks) {
         const bool audio = track.type == ClipType::Audio;
-        auto& clips = audio ? plan.audioClips : plan.clips;
-        if (audio) { plan.audioTrackId = track.id; plan.audioMuted = track.muted; }
-        else { plan.videoTrackId = track.id; plan.hidden = track.hidden; plan.muted = track.muted; }
+        CompositionTrack ownedTrack;
+        ownedTrack.id = track.id;
+        ownedTrack.type = track.type;
+        ownedTrack.hidden = track.hidden;
+        ownedTrack.muted = track.muted;
+        auto& clips = ownedTrack.clips;
 
         for (const auto& clip : track.clips) {
             // compatibilityFor is the single track/source-type gate. Known
@@ -118,6 +121,7 @@ bool CompositionBuilder::build(const Timeline& timeline, const MediaManifest& ma
 
         std::sort(clips.begin(), clips.end(),
             [](const auto& left, const auto& right) { return left.startFrame < right.startFrame; });
+        plan.tracks.push_back(std::move(ownedTrack));
     }
 
     result = std::move(plan);

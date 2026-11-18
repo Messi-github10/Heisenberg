@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QElapsedTimer>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -153,6 +154,60 @@ TEST(SourceEditWorkflowTest, PoolInsertAndOverwriteUseMarkedRangeAndToolbarSelec
     EXPECT_EQ(session.editor().activeTrack()->endFrame(), 30);
     ASSERT_EQ(session.editor().activeTrack()->clips.size(), 3u);
     EXPECT_EQ(session.editor().activeTrack()->clips[1].durationFrames, 15);
+}
+
+TEST(SourceEditWorkflowTest, PoolPlacementUsesSelectedVideoAndAudioTrackIndependently) {
+    EditorSession session;
+    MainWindow window(&session);
+    window.resize(1200, 900);
+    window.show();
+    ASSERT_TRUE(session.importFiles({HEISENBERG_TEST_MEDIA, HEISENBERG_TEST_LONG_AUDIO}).isEmpty());
+    const auto videoRef = QString::fromStdString(session.editor().manifest().entries()[0].id);
+    const auto audioRef = QString::fromStdString(session.editor().manifest().entries()[1].id);
+    auto* addVideo = window.findChild<QAction*>("addVideoTrack");
+    auto* addAudio = window.findChild<QAction*>("addAudioTrack");
+    ASSERT_NE(addVideo, nullptr); ASSERT_NE(addAudio, nullptr);
+    addVideo->trigger(); addVideo->trigger(); addAudio->trigger(); addAudio->trigger();
+    const auto* timeline = session.editor().activeTimeline();
+    ASSERT_NE(timeline, nullptr); ASSERT_EQ(timeline->tracks.size(), 4u);
+    const auto videoTarget = timeline->tracks[1].id;
+    const auto audioTarget = timeline->tracks[3].id;
+    auto* widget = window.timelineWidget();
+    auto* list = window.findChild<MediaListWidget*>();
+    ASSERT_NE(list, nullptr);
+    QCoreApplication::processEvents();
+    auto selectHeader = [&](int lane) {
+        const QPointF point(30, 30 + 20 + lane * 44 + 22);
+        QMouseEvent press(QEvent::MouseButtonPress, point, widget->mapToGlobal(point.toPoint()),
+            Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(widget, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, point, widget->mapToGlobal(point.toPoint()),
+            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(widget, &release);
+    };
+    selectHeader(1);
+    EXPECT_EQ(widget->targetTrackForMedia(videoRef).toStdString(), videoTarget);
+    selectHeader(3);
+    EXPECT_EQ(widget->targetTrackForMedia(audioRef).toStdString(), audioTarget);
+    EXPECT_EQ(widget->targetTrackForMedia(videoRef).toStdString(), videoTarget);
+    ASSERT_TRUE(session.setSourceIn(videoRef, .25));
+    ASSERT_TRUE(session.setSourceOut(videoRef, .75));
+    list->setCurrentRow(0);
+    widget->setCurrentFrame(0);
+    window.findChild<QPushButton*>("insertSelectedMedia")->click();
+    const auto* actualVideo = session.editor().activeTimeline()->trackById(videoTarget);
+    ASSERT_NE(actualVideo, nullptr); ASSERT_EQ(actualVideo->clips.size(), 1u);
+    EXPECT_EQ(actualVideo->clips.front().startFrame, 0);
+    EXPECT_EQ(actualVideo->clips.front().trimStartFrame, 8);
+    EXPECT_EQ(actualVideo->clips.front().durationFrames, 15);
+    list->setCurrentRow(1);
+    widget->setCurrentFrame(5);
+    window.findChild<QPushButton*>("addSelectedMedia")->click();
+    const auto* actualAudio = session.editor().activeTimeline()->trackById(audioTarget);
+    ASSERT_NE(actualAudio, nullptr); ASSERT_EQ(actualAudio->clips.size(), 1u);
+    EXPECT_EQ(actualAudio->clips.front().startFrame, 5);
+    EXPECT_TRUE(session.editor().activeTimeline()->tracks[0].clips.empty());
+    EXPECT_TRUE(session.editor().activeTimeline()->tracks[2].clips.empty());
 }
 
 TEST(SourceEditWorkflowTest, MarkShortcutsStayInsidePreviewAndDoNotConsumeSearchTyping) {

@@ -130,6 +130,7 @@ std::shared_ptr<spdlog::logger> CreateModuleLogger(const std::string& module) {
 } // anonymous namespace
 
 void Logger::Init(const std::string& pattern) {
+    std::lock_guard lock(g_ModuleMutex);
     if (g_RunId.empty()) {
         g_RunId = GenerateRunId();
     }
@@ -154,22 +155,18 @@ void Logger::Shutdown() {
 spdlog::logger* Logger::ModuleLogger(const char* file) {
     std::string module = ExtractModule(file);
 
-    {
-        std::lock_guard lock(g_ModuleMutex);
-        auto it = g_ModuleLoggers.find(module);
-        if (it != g_ModuleLoggers.end()) {
-            return it->second.get();
-        }
+    // Callers borrow a raw pointer for the entire log operation. Publish one
+    // logger per module and keep it alive; racing first calls must never
+    // replace an entry and destroy a logger another thread is still using.
+    std::lock_guard lock(g_ModuleMutex);
+    auto it = g_ModuleLoggers.find(module);
+    if (it != g_ModuleLoggers.end()) {
+        return it->second.get();
     }
-
     auto logger = CreateModuleLogger(module);
-
-    {
-        std::lock_guard lock(g_ModuleMutex);
-        g_ModuleLoggers[module] = logger;
-    }
-
-    return logger.get();
+    auto* result = logger.get();
+    g_ModuleLoggers.emplace(std::move(module), std::move(logger));
+    return result;
 }
 
 std::shared_ptr<spdlog::logger> Logger::GetLogger(const std::string& name) {

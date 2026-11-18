@@ -51,10 +51,19 @@ public:
     bool clearSourceRange(const QString& mediaRef);
     bool sourcePlacementRange(const QString& mediaRef, qint64& trimStart, qint64& duration,
                               QString* error = nullptr) const;
-    EditResult placeMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId = {});
-    EditResult insertMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId = {});
+    EditResult placeMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId = {},
+                          bool createNewTrack = false);
+    EditResult insertMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId = {},
+                           bool createNewTrack = false);
     EditResult rippleDeleteClip(const QString& clipId);
     EditResult setClipAudio(const QString& clipId, double volume, qint64 fadeInFrames, qint64 fadeOutFrames);
+    EditResult addTrack(ClipType type);
+    EditResult removeTrack(const QString& trackId);
+    EditResult renameTrack(const QString& trackId, const QString& name);
+    // Global same-type Timeline::tracks index; other-type slots stay fixed.
+    EditResult reorderTrack(const QString& trackId, int finalIndex);
+    EditResult setTrackHidden(const QString& trackId, bool hidden);
+    EditResult setClipOpacity(const QString& clipId, double opacity);
     EditResult setTrackMuted(const QString& trackId, bool muted);
     EditResult setColorSettings(const ColorSettings& settings);
     EditResult setMediaInputColorSpace(const QString& mediaRef, const QString& space);
@@ -65,7 +74,8 @@ public:
     EditResult cancelClipEffectsTransaction();
     bool importGradeLut(const QString& path, QString& id, QString& displayName, QString& error);
     EditResult removeClips(const QStringList& clipIds);
-    EditResult moveClip(const QString& clipId, qint64 frame);
+    EditResult moveClip(const QString& clipId, qint64 frame, const QString& targetTrackId = {},
+                        bool createNewTrack = false);
     EditResult trimClip(const QString& clipId, TrimEdge edge, qint64 deltaFrames);
     EditResult splitClip(const QString& clipId, qint64 frame);
     void undo();

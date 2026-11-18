@@ -60,12 +60,26 @@ struct Wave {
         return path.string();
     }
 };
+CompositionTrack& track(CompositionPlan& plan, ClipType type) {
+    for (auto& value : plan.tracks) if (value.type == type) return value;
+    if (plan.tracks.empty()) plan.tracks.reserve(2);
+    plan.tracks.push_back({type == ClipType::Video ? "video-track" : "audio-track", type});
+    return plan.tracks.back();
+}
+const CompositionTrack& track(const CompositionPlan& plan, ClipType type) {
+    for (const auto& value : plan.tracks) if (value.type == type) return value;
+    static const CompositionTrack empty;
+    return empty;
+}
+std::shared_ptr<VideoFrame> decodedPicture(const CompositionVideoSample& sample) {
+    return sample.sourceMode ? sample.source : sample.layers.empty() ? nullptr : sample.layers.front().frame;
+}
 CompositionPlan audioPlan(const std::string& path, int64_t frames = 48) {
     CompositionPlan plan;
     plan.frameCount = frames;
     CompositionClip clip;
     clip.id = "audio"; clip.mediaRef = "asset"; clip.sourcePath = path; clip.durationFrames = frames;
-    plan.audioClips = {clip};
+    track(plan, ClipType::Audio).clips = {clip};
     return plan;
 }
 void equalRange(const AudioFrame& expected, const AudioFrame& actual) {
@@ -96,10 +110,10 @@ TEST(CompositionExecutorTest, IndependentInstancesAreSynchronousWithoutDeviceOrW
     CompositionExecutor left, right;
     ASSERT_TRUE(left.open(plan, {})); ASSERT_TRUE(right.open(plan, {}));
     auto leftVideo = left.videoFrame(0, {4});
-    ASSERT_TRUE(leftVideo); EXPECT_TRUE(leftVideo.value.blank); EXPECT_FALSE(leftVideo.value.source);
+    ASSERT_TRUE(leftVideo); EXPECT_TRUE(leftVideo.value.blank); EXPECT_FALSE(decodedPicture(leftVideo.value));
     ASSERT_TRUE(leftVideo.value.plan);
-    plan.audioClips.clear();
-    EXPECT_EQ(leftVideo.value.plan->audioClips.size(), 1u);
+    track(plan, ClipType::Audio).clips.clear();
+    EXPECT_EQ(track(*leftVideo.value.plan, ClipType::Audio).clips.size(), 1u);
     // Independent instances may execute concurrently, but neither creates a
     // callback/worker/device. Results are available before each call returns.
     CompositionExecutor::AudioResult other;
@@ -111,13 +125,13 @@ TEST(CompositionExecutorTest, IndependentInstancesAreSynchronousWithoutDeviceOrW
     left.close();
     EXPECT_EQ(left.videoFrame(0).status, CompositionStatus::Failure);
     EXPECT_TRUE(right.videoFrame(1));
-    EXPECT_EQ(leftVideo.value.plan->audioClips.front().id, "audio");
+    EXPECT_EQ(track(*leftVideo.value.plan, ClipType::Audio).clips.front().id, "audio");
 }
 
 TEST(CompositionExecutorTest, RealResampledPcmIsBitIdenticalAcrossChunksBackwardSeekAndGeneration) {
     Wave wave;
     auto plan = audioPlan(wave.name(), 36);
-    auto& clip = plan.audioClips.front();
+    auto& clip = track(plan, ClipType::Audio).clips.front();
     clip.trimStartFrame = 3; clip.speed = 0.75; clip.volume = 0.8;
     clip.fadeInFrames = 4; clip.fadeOutFrames = 7;
     CompositionExecutor whole, sliced;
@@ -144,19 +158,19 @@ TEST(CompositionExecutorTest, RealResampledPcmIsBitIdenticalAcrossChunksBackward
 TEST(CompositionExecutorTest, CutsGapsAndSamePathContributionIdentitiesDoNotLeak) {
     Wave wave;
     auto plan = audioPlan(wave.name(), 24);
-    plan.audioClips.front().startFrame = 5;
-    plan.audioClips.front().durationFrames = 19;
-    plan.audioClips.front().trimStartFrame = 2;
-    plan.audioClips.front().volume = 0.2;
-    CompositionClip original = plan.audioClips.front();
+    track(plan, ClipType::Audio).clips.front().startFrame = 5;
+    track(plan, ClipType::Audio).clips.front().durationFrames = 19;
+    track(plan, ClipType::Audio).clips.front().trimStartFrame = 2;
+    track(plan, ClipType::Audio).clips.front().volume = 0.2;
+    CompositionClip original = track(plan, ClipType::Audio).clips.front();
     original.id = "original"; original.mediaRef = "original-asset";
     original.startFrame = 0; original.durationFrames = 12; original.trimStartFrame = 0;
     original.speed = 1.3; original.volume = 0.3;
-    plan.clips = {original};
+    track(plan, ClipType::Video).clips = {original};
     CompositionExecutor mixed, videoOnly, audioOnly;
     ASSERT_TRUE(mixed.open(plan, {}));
-    auto onlyVideo = plan; onlyVideo.audioClips.clear();
-    auto onlyAudio = plan; onlyAudio.clips.clear();
+    auto onlyVideo = plan; track(onlyVideo, ClipType::Audio).clips.clear();
+    auto onlyAudio = plan; track(onlyAudio, ClipType::Video).clips.clear();
     ASSERT_TRUE(videoOnly.open(onlyVideo, {})); ASSERT_TRUE(audioOnly.open(onlyAudio, {}));
     auto all = mixed.audioSamples(0, 48000);
     auto video = videoOnly.audioSamples(0, 48000);
@@ -169,8 +183,10 @@ TEST(CompositionExecutorTest, CutsGapsAndSamePathContributionIdentitiesDoNotLeak
         if (sample >= 24000) EXPECT_EQ(video.value->sampleRo(0, sample), 0.0f);
     }
     auto image = mixed.videoFrame(7, {8});
-    ASSERT_TRUE(image); EXPECT_EQ(image.value.clipId, "original");
-    EXPECT_EQ(image.value.mediaRef, "original-asset"); EXPECT_EQ(image.value.clipLocalFrame, 7);
+    ASSERT_TRUE(image); EXPECT_TRUE(image.value.layers.empty());
+    const auto sample = image.value.plan->videoSampleAt(7);
+    ASSERT_TRUE(sample); EXPECT_EQ(track(*image.value.plan, ClipType::Video).clips[sample->clipIndex].id, "original");
+    EXPECT_EQ(sample->clipLocalFrame, 7);
     EXPECT_TRUE(image.value.blank); // An audio-only source is valid in this lane.
 }
 
@@ -189,8 +205,8 @@ TEST(CompositionExecutorTest, AudioTailAndFinalResamplerDrainAreRetained) {
     EXPECT_EQ(source.videoFrame(opened.value.frameCount).status, CompositionStatus::End);
 
     auto plan = audioPlan(wave.name(), 24);
-    plan.clips = plan.audioClips;
-    plan.clips.front().id = "short-video"; plan.clips.front().durationFrames = 8;
+    track(plan, ClipType::Video).clips = track(plan, ClipType::Audio).clips;
+    track(plan, ClipType::Video).clips.front().id = "short-video"; track(plan, ClipType::Video).clips.front().durationFrames = 8;
     CompositionExecutor executor; ASSERT_TRUE(executor.open(plan, {}));
     auto tailVideo = executor.videoFrame(20); ASSERT_TRUE(tailVideo); EXPECT_TRUE(tailVideo.value.blank);
     auto tail = executor.audioSamples(40000, 48000); ASSERT_TRUE(tail); EXPECT_GT(energy(*tail.value), 0.05);
@@ -296,7 +312,7 @@ TEST(CompositionExecutorTest, DemuxedDamagedPacketFailsStrictAndWarnsInPreview) 
     EXPECT_GE(av_write_frame(format, raw), 0); av_packet_free(&raw);
     ASSERT_GE(av_write_trailer(format), 0); ASSERT_GE(avio_closep(&format->pb), 0);
     CompositionPlan plan; plan.frameCount = 1;
-    CompositionClip clip; clip.sourcePath = path; clip.durationFrames = 1; plan.clips = {clip};
+    CompositionClip clip; clip.id = "damaged"; clip.sourcePath = path; clip.durationFrames = 1; track(plan, ClipType::Video).clips = {clip};
     CompositionExecutor strict, preview;
     ASSERT_TRUE(strict.open(plan, {}));
     auto failed = strict.videoFrame(0);
@@ -332,14 +348,13 @@ CompositionPlan sharedMediaPlan() {
     CompositionClip clip;
     clip.id = "original"; clip.mediaRef = "shared-asset"; clip.sourcePath = HEISENBERG_TEST_MEDIA;
     clip.durationFrames = plan.frameCount;
-    plan.clips = {clip};
+    track(plan, ClipType::Video).clips = {clip};
     return plan;
 }
 CompositionPlan originalSoundReference(const CompositionPlan& plan) {
     auto reference = plan;
-    reference.audioClips = reference.clips;
-    reference.clips.clear();
-    reference.audioMuted = reference.muted;
+    const auto original = track(reference, ClipType::Video);
+    reference.tracks = {{"reference-audio", ClipType::Audio, false, original.muted, original.clips}};
     return reference;
 }
 std::filesystem::path unsupportedDecoderFixture(bool unsupportedVideo = false) {
@@ -472,7 +487,7 @@ TEST(CompositionExecutorTest, SequentialSharedVideoAndOriginalSoundMatchAudioOnl
         for (int64_t frame = 0; frame < 24; ++frame) {
             SCOPED_TRACE(frame);
             auto video = shared.videoFrame(frame);
-            ASSERT_TRUE(video) << video.error; ASSERT_TRUE(video.value.source);
+            ASSERT_TRUE(video) << video.error; ASSERT_TRUE(decodedPicture(video.value));
             EXPECT_FALSE(video.value.blank);
             const auto begin = plan.settings.audioSamplePosition(frame);
             const auto end = plan.settings.audioSamplePosition(frame + 1);
@@ -486,7 +501,7 @@ TEST(CompositionExecutorTest, SequentialSharedVideoAndOriginalSoundMatchAudioOnl
 
 TEST(CompositionExecutorTest, SharedOriginalSoundIsBitIdenticalAcrossAudioFirstAndInterleavedFrameJumps) {
     auto plan = sharedMediaPlan();
-    auto& clip = plan.clips.front();
+    auto& clip = track(plan, ClipType::Video).clips.front();
     clip.startFrame = 2; clip.durationFrames = 22; clip.trimStartFrame = 1;
     clip.speed = 0.85; clip.volume = 0.6; clip.fadeInFrames = 2; clip.fadeOutFrames = 4;
     CompositionExecutor reference;
@@ -515,9 +530,9 @@ TEST(CompositionExecutorTest, SharedOriginalSoundIsBitIdenticalAcrossAudioFirstA
             }
             auto expectedVideo = pictures.videoFrame(frames[index], context);
             auto actualVideo = shared.videoFrame(frames[index], context);
-            ASSERT_TRUE(expectedVideo) << expectedVideo.error; ASSERT_TRUE(expectedVideo.value.source);
-            ASSERT_TRUE(actualVideo) << actualVideo.error; ASSERT_TRUE(actualVideo.value.source);
-            EXPECT_EQ(actualVideo.value.source->pts(), expectedVideo.value.source->pts());
+            ASSERT_TRUE(expectedVideo) << expectedVideo.error; ASSERT_TRUE(decodedPicture(expectedVideo.value));
+            ASSERT_TRUE(actualVideo) << actualVideo.error; ASSERT_TRUE(decodedPicture(actualVideo.value));
+            EXPECT_EQ(decodedPicture(actualVideo.value)->pts(), decodedPicture(expectedVideo.value)->pts());
             if (!audioFirst) {
                 auto actual = shared.audioSamples(range.first, range.second, context);
                 ASSERT_TRUE(actual) << actual.error; ASSERT_TRUE(actual.value);
@@ -530,14 +545,14 @@ TEST(CompositionExecutorTest, SharedOriginalSoundIsBitIdenticalAcrossAudioFirstA
 }
 
 TEST(CompositionExecutorTest, HiddenSharedVideoKeepsBitIdenticalOriginalSound) {
-    auto plan = sharedMediaPlan(); plan.hidden = true;
+    auto plan = sharedMediaPlan(); track(plan, ClipType::Video).hidden = true;
     CompositionExecutor reference, hidden;
     ASSERT_TRUE(reference.open(originalSoundReference(plan), {})); ASSERT_TRUE(hidden.open(plan, {}));
     auto baseline = reference.audioSamples(0, reference.info().audioSampleCount);
     ASSERT_TRUE(baseline); ASSERT_TRUE(baseline.value); ASSERT_GT(energy(*baseline.value), 0.01);
     for (const int64_t frame : {int64_t{0}, int64_t{16}, int64_t{3}}) {
         auto video = hidden.videoFrame(frame);
-        ASSERT_TRUE(video) << video.error; EXPECT_TRUE(video.value.blank); EXPECT_FALSE(video.value.source);
+        ASSERT_TRUE(video) << video.error; EXPECT_TRUE(video.value.blank); EXPECT_FALSE(decodedPicture(video.value));
         const auto begin = plan.settings.audioSamplePosition(frame);
         auto actual = hidden.audioSamples(begin, begin + 4000);
         ASSERT_TRUE(actual) << actual.error; ASSERT_TRUE(actual.value);
@@ -548,16 +563,16 @@ TEST(CompositionExecutorTest, HiddenSharedVideoKeepsBitIdenticalOriginalSound) {
 
 TEST(CompositionExecutorTest, SamePathIndependentAudioKeepsItsOwnTrimSpeedAndContributionOffset) {
     auto plan = sharedMediaPlan();
-    auto& original = plan.clips.front();
+    auto& original = track(plan, ClipType::Video).clips.front();
     original.speed = 0.75; original.volume = 0.35; original.fadeInFrames = 2; original.fadeOutFrames = 3;
     auto independent = original;
     independent.id = "independent"; independent.startFrame = 5; independent.durationFrames = 17;
     independent.trimStartFrame = 4; independent.speed = 0.6; independent.volume = 0.4;
     independent.fadeInFrames = 3; independent.fadeOutFrames = 2;
-    plan.audioClips = {independent};
-    // Separate, nonoverlapping-lane references: both use only audioClips, so no
-    // original-video decoder/session is involved in computing the expected mix.
-    auto independentPlan = plan; independentPlan.clips.clear();
+    track(plan, ClipType::Audio).clips = {independent};
+    // Isolated audio-track references avoid using shared video decoder state
+    // when computing the expected contributions.
+    auto independentPlan = plan; track(independentPlan, ClipType::Video).clips.clear();
     CompositionExecutor originalReference, independentReference, shared;
     ASSERT_TRUE(originalReference.open(originalSoundReference(plan), {}));
     ASSERT_TRUE(independentReference.open(independentPlan, {})); ASSERT_TRUE(shared.open(plan, {}));
@@ -572,7 +587,7 @@ TEST(CompositionExecutorTest, SamePathIndependentAudioKeepsItsOwnTrimSpeedAndCon
                 + extra.value->sampleRo(channel, sample), -1.0f, 1.0f);
     const std::array<int64_t, 5> frames{3, 18, 7, 23, 0};
     for (const auto frame : frames) {
-        auto video = shared.videoFrame(frame); ASSERT_TRUE(video) << video.error; ASSERT_TRUE(video.value.source);
+        auto video = shared.videoFrame(frame); ASSERT_TRUE(video) << video.error; ASSERT_TRUE(decodedPicture(video.value));
         const auto begin = plan.settings.audioSamplePosition(frame);
         auto actual = shared.audioSamples(begin, std::min(total, begin + 5001));
         ASSERT_TRUE(actual) << actual.error; ASSERT_TRUE(actual.value);
@@ -586,36 +601,36 @@ TEST(CompositionExecutorTest, AudioOnlyAdvanceReleasesSharedVideoImageAndCanReco
     CompositionExecutor executor; ASSERT_TRUE(executor.open(plan, {}));
     std::weak_ptr<VideoFrame> image;
     {
-        auto video = executor.videoFrame(0); ASSERT_TRUE(video); ASSERT_TRUE(video.value.source);
-        image = video.value.source;
+        auto video = executor.videoFrame(0); ASSERT_TRUE(video); ASSERT_TRUE(decodedPicture(video.value));
+        image = decodedPicture(video.value);
     }
     ASSERT_FALSE(image.expired()); // The selected image, not a returned result, owns this reference.
     auto audio = executor.audioSamples(24000, 30000); ASSERT_TRUE(audio) << audio.error;
     EXPECT_TRUE(image.expired());
     auto recovered = executor.videoFrame(2); ASSERT_TRUE(recovered) << recovered.error;
-    ASSERT_TRUE(recovered.value.source);
+    ASSERT_TRUE(decodedPicture(recovered.value));
     CompositionExecutor reference; ASSERT_TRUE(reference.open(plan, {}));
-    auto expected = reference.videoFrame(2); ASSERT_TRUE(expected); ASSERT_TRUE(expected.value.source);
-    EXPECT_EQ(recovered.value.source->pts(), expected.value.source->pts());
+    auto expected = reference.videoFrame(2); ASSERT_TRUE(expected); ASSERT_TRUE(decodedPicture(expected.value));
+    EXPECT_EQ(decodedPicture(recovered.value)->pts(), decodedPicture(expected.value)->pts());
 }
 
 TEST(CompositionExecutorTest, SharedVideoRetainsOnlyChosenImageAndReleasesItInVideoGap) {
     auto plan = sharedMediaPlan();
-    plan.clips.front().durationFrames = 20;
+    track(plan, ClipType::Video).clips.front().durationFrames = 20;
     CompositionExecutor executor; ASSERT_TRUE(executor.open(plan, {}));
     std::weak_ptr<VideoFrame> previous;
     for (const int64_t frame : {int64_t{0}, int64_t{1}, int64_t{7}, int64_t{12}, int64_t{18}}) {
         std::weak_ptr<VideoFrame> chosen;
         {
             auto video = executor.videoFrame(frame); ASSERT_TRUE(video) << video.error;
-            ASSERT_TRUE(video.value.source); chosen = video.value.source;
+            ASSERT_TRUE(decodedPicture(video.value)); chosen = decodedPicture(video.value);
         }
         EXPECT_TRUE(previous.expired()) << "old image retained at frame " << frame;
         EXPECT_FALSE(chosen.expired()) << "chosen image was not retained at frame " << frame;
         previous = chosen;
     }
     auto gap = executor.videoFrame(22); ASSERT_TRUE(gap); EXPECT_TRUE(gap.value.blank);
-    EXPECT_FALSE(gap.value.source); EXPECT_TRUE(previous.expired());
+    EXPECT_FALSE(decodedPicture(gap.value)); EXPECT_TRUE(previous.expired());
 }
 
 TEST(CompositionExecutorTest, UnsupportedOptionalAudioDoesNotKillUsableVideo) {
@@ -639,23 +654,23 @@ TEST(CompositionExecutorTest, UnsupportedOptionalAudioDoesNotKillUsableVideo) {
 
     CompositionPlan plan; plan.frameCount = 24;
     CompositionClip clip; clip.id = "usable-video"; clip.sourcePath = path.string(); clip.durationFrames = 24;
-    plan.clips = {clip};
+    track(plan, ClipType::Video).clips = {clip};
     CompositionExecutor executor; ASSERT_TRUE(executor.open(plan, {}));
     auto picture = executor.videoFrame(0);
-    ASSERT_TRUE(picture) << picture.error; ASSERT_TRUE(picture.value.source);
-    EXPECT_EQ(picture.value.clipId, "usable-video");
+    ASSERT_TRUE(picture) << picture.error; ASSERT_TRUE(decodedPicture(picture.value));
+    EXPECT_EQ(picture.value.layers.front().clipId, "usable-video");
     auto silence = executor.audioSamples(0, 2000);
     ASSERT_TRUE(silence) << silence.error; ASSERT_TRUE(silence.value);
     EXPECT_EQ(silence.value->samples(), 2000); EXPECT_EQ(energy(*silence.value), 0.0);
     auto stillUsable = executor.videoFrame(0);
-    ASSERT_TRUE(stillUsable) << stillUsable.error; ASSERT_TRUE(stillUsable.value.source);
+    ASSERT_TRUE(stillUsable) << stillUsable.error; ASSERT_TRUE(decodedPicture(stillUsable.value));
 
     CompositionExecutor source;
     auto opened = source.openSource(path.string(), {});
     ASSERT_TRUE(opened) << opened.error; EXPECT_TRUE(opened.value.hasVideo);
     EXPECT_FALSE(opened.value.hasAudio);
     auto sourcePicture = source.videoFrame(0);
-    ASSERT_TRUE(sourcePicture) << sourcePicture.error; ASSERT_TRUE(sourcePicture.value.source);
+    ASSERT_TRUE(sourcePicture) << sourcePicture.error; ASSERT_TRUE(decodedPicture(sourcePicture.value));
     auto sourceSilence = source.audioSamples(0, 1000);
     ASSERT_TRUE(sourceSilence) << sourceSilence.error; ASSERT_TRUE(sourceSilence.value);
     EXPECT_EQ(energy(*sourceSilence.value), 0.0);
@@ -667,15 +682,15 @@ TEST(CompositionExecutorTest, UnsupportedOptionalAudioDoesNotKillUsableVideo) {
     EXPECT_EQ(failed.status, CompositionStatus::Failure);
     EXPECT_FALSE(failed.value); EXPECT_FALSE(failed.error.empty());
 
-    plan.audioClips = plan.clips;
-    plan.audioClips.front().id = "unsupported-independent-audio";
+    track(plan, ClipType::Audio).clips = track(plan, ClipType::Video).clips;
+    track(plan, ClipType::Audio).clips.front().id = "unsupported-independent-audio";
     CompositionExecutor mixed;
     ASSERT_TRUE(mixed.open(plan, {}));
     auto beforeFailure = mixed.videoFrame(0);
-    ASSERT_TRUE(beforeFailure) << beforeFailure.error; ASSERT_TRUE(beforeFailure.value.source);
+    ASSERT_TRUE(beforeFailure) << beforeFailure.error; ASSERT_TRUE(decodedPicture(beforeFailure.value));
     EXPECT_EQ(mixed.audioSamples(0, 2000).status, CompositionStatus::Failure);
     auto afterFailure = mixed.videoFrame(1);
-    ASSERT_TRUE(afterFailure) << afterFailure.error; ASSERT_TRUE(afterFailure.value.source);
+    ASSERT_TRUE(afterFailure) << afterFailure.error; ASSERT_TRUE(decodedPicture(afterFailure.value));
 }
 
 TEST(CompositionExecutorTest, UnsupportedVideoDecoderStillAllowsOriginalAndIndependentAudio) {
@@ -693,7 +708,7 @@ TEST(CompositionExecutorTest, UnsupportedVideoDecoderStillAllowsOriginalAndIndep
     ASSERT_NE(video, demux.streams().end()); ASSERT_NE(audio, demux.streams().end());
     decoder::DecoderContext rejectedVideo, usableAudio;
     ASSERT_LT(rejectedVideo.open(*video), 0); ASSERT_GE(usableAudio.open(*audio), 0);
-    auto plan = sharedMediaPlan(); plan.clips.front().sourcePath = path.string();
+    auto plan = sharedMediaPlan(); track(plan, ClipType::Video).clips.front().sourcePath = path.string();
     CompositionExecutor reference; ASSERT_TRUE(reference.open(originalSoundReference(plan), {}));
     auto baseline = reference.audioSamples(0, 4000);
     ASSERT_TRUE(baseline) << baseline.error; ASSERT_TRUE(baseline.value);
@@ -704,7 +719,7 @@ TEST(CompositionExecutorTest, UnsupportedVideoDecoderStillAllowsOriginalAndIndep
         const auto opened = sourceMode ? executor.openSource(path.string(), {}) : executor.open(plan, {});
         ASSERT_TRUE(opened) << opened.error;
         auto blank = executor.videoFrame(0);
-        ASSERT_TRUE(blank) << blank.error; EXPECT_TRUE(blank.value.blank); EXPECT_FALSE(blank.value.source);
+        ASSERT_TRUE(blank) << blank.error; EXPECT_TRUE(blank.value.blank); EXPECT_FALSE(decodedPicture(blank.value));
         auto actual = executor.audioSamples(0, 4000);
         ASSERT_TRUE(actual) << actual.error; ASSERT_TRUE(actual.value);
         ASSERT_EQ(actual.value->samples(), 4000);
@@ -717,17 +732,19 @@ TEST(CompositionExecutorTest, VideoNativePtsAndOwnedClipPlanSurviveIndependentRe
     CompositionPlan plan; plan.frameCount = 24;
     CompositionClip clip; clip.id = "picture"; clip.mediaRef = "media";
     clip.sourcePath = HEISENBERG_TEST_MEDIA; clip.startFrame = 3; clip.durationFrames = 15; clip.trimStartFrame = 2;
-    plan.clips = {clip};
+    track(plan, ClipType::Video).clips = {clip};
     ASSERT_TRUE(executor.open(plan, {}));
-    auto result = executor.videoFrame(7, {3}); ASSERT_TRUE(result); ASSERT_TRUE(result.value.source);
-    EXPECT_EQ(result.value.clipId, "picture"); EXPECT_EQ(result.value.clipLocalFrame, 4);
-    const auto pts = result.value.source->pts();
+    auto result = executor.videoFrame(7, {3}); ASSERT_TRUE(result); ASSERT_TRUE(decodedPicture(result.value));
+    ASSERT_EQ(result.value.layers.size(), 1u);
+    EXPECT_EQ(result.value.layers.front().clipId, "picture"); EXPECT_EQ(result.value.layers.front().clipLocalFrame, 4);
+    EXPECT_FALSE(result.value.source);
+    const auto pts = decodedPicture(result.value)->pts();
     auto savedPlan = result.value.plan;
     executor.close();
-    EXPECT_EQ(result.value.source->pts(), pts); ASSERT_TRUE(savedPlan); EXPECT_EQ(savedPlan->clips.front().id, "picture");
+    EXPECT_EQ(decodedPicture(result.value)->pts(), pts); ASSERT_TRUE(savedPlan); EXPECT_EQ(track(*savedPlan, ClipType::Video).clips.front().id, "picture");
     ASSERT_TRUE(executor.openSource(HEISENBERG_TEST_MEDIA, {}));
-    auto source = executor.videoFrame(6, {7}); ASSERT_TRUE(source); ASSERT_TRUE(source.value.source);
-    EXPECT_EQ(result.value.source->pts(), source.value.source->pts());
+    auto source = executor.videoFrame(6, {7}); ASSERT_TRUE(source); ASSERT_TRUE(decodedPicture(source.value));
+    EXPECT_EQ(decodedPicture(result.value)->pts(), decodedPicture(source.value)->pts());
     EXPECT_TRUE(source.value.sourceMode);
 }
 
@@ -742,15 +759,14 @@ CompositionPlan executorLookaheadPlan() {
     clip.mediaRef = "executor-lookahead";
     clip.sourcePath = HEISENBERG_TEST_EXECUTOR_LOOKAHEAD;
     clip.durationFrames = plan.frameCount;
-    plan.clips = {clip};
+    track(plan, ClipType::Video).clips = {clip};
     return plan;
 }
 
 CompositionPlan executorLookaheadAudioPlan(const CompositionPlan& source) {
     auto plan = source;
-    plan.audioClips = plan.clips;
-    plan.clips.clear();
-    plan.audioMuted = plan.muted;
+    const auto original = track(plan, ClipType::Video);
+    plan.tracks = {{"reference-audio", ClipType::Audio, false, original.muted, original.clips}};
     return plan;
 }
 
@@ -836,9 +852,9 @@ TEST(CompositionExecutorTest, MappedThirtyFpsSequentialPlaybackDoesNotReplayOrig
         SCOPED_TRACE(frame);
         auto picture = executor.videoFrame(frame);
         ASSERT_TRUE(picture) << picture.error;
-        ASSERT_TRUE(picture.value.source);
+        ASSERT_TRUE(decodedPicture(picture.value));
         const auto expectedSourceFrame = (24 * frame) / 30;
-        EXPECT_EQ(frameIndexFromTimestamp(*picture.value.source->native(), AVRational{24, 1}),
+        EXPECT_EQ(frameIndexFromTimestamp(*decodedPicture(picture.value)->native(), AVRational{24, 1}),
                   expectedSourceFrame);
 
         const auto begin = plan.settings.audioSamplePosition(frame);
@@ -874,14 +890,14 @@ TEST(CompositionExecutorTest, MappedPlaybackBackwardRequestReopensAndPreservesPt
     ASSERT_TRUE(executor.open(plan, {}));
     auto forward = executor.videoFrame(240);
     ASSERT_TRUE(forward) << forward.error;
-    ASSERT_TRUE(forward.value.source);
-    EXPECT_EQ(frameIndexFromTimestamp(*forward.value.source->native(), AVRational{24, 1}), 192);
+    ASSERT_TRUE(decodedPicture(forward.value));
+    EXPECT_EQ(frameIndexFromTimestamp(*decodedPicture(forward.value)->native(), AVRational{24, 1}), 192);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
     auto backward = executor.videoFrame(30);
     ASSERT_TRUE(backward) << backward.error;
-    ASSERT_TRUE(backward.value.source);
-    EXPECT_EQ(frameIndexFromTimestamp(*backward.value.source->native(), AVRational{24, 1}), 24);
+    ASSERT_TRUE(decodedPicture(backward.value));
+    EXPECT_EQ(frameIndexFromTimestamp(*decodedPicture(backward.value)->native(), AVRational{24, 1}), 24);
 
     const auto begin = plan.settings.audioSamplePosition(30);
     const auto end = plan.settings.audioSamplePosition(31);

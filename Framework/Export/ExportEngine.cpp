@@ -81,7 +81,8 @@ private:
 
 void validateAppearance(const Clip& clip, const CompositionPlan& plan,
                         renderer::color::ColorPipeline& color) {
-    if (clip.opacity != 1.0 || clip.transform != Transform{} || clip.crop != Crop{} ||
+    if (!std::isfinite(clip.opacity) || clip.opacity < 0.0 || clip.opacity > 1.0 ||
+        clip.transform != Transform{} || clip.crop != Crop{} ||
         clip.edgeRounding != 0.0 || clip.edgeSoftness != 0.0 || clip.opacityTrack ||
         clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack ||
         (clip.blendMode && *clip.blendMode != "normal"))
@@ -97,8 +98,8 @@ void validateAppearance(const Clip& clip, const CompositionPlan& plan,
 }
 
 void checkInputPaths(const ExportRequest& request, const CompositionPlan& plan, const fs::path& output) {
-    for (const auto* clips : {&plan.clips, &plan.audioClips})
-        for (const auto& clip : *clips)
+    for (const auto& track : plan.tracks)
+        for (const auto& clip : track.clips)
             if (!clip.sourcePath.empty() && sameFile(output, fs::u8path(clip.sourcePath)))
                 throw std::runtime_error("Export output cannot replace an input media file");
     if (!request.snapshot.projectDir().empty()) {
@@ -165,8 +166,8 @@ struct ExportEngine::Impl {
                  plan.colorSettings.exportOutput.view != renderer::color::kAcesOutputView))
                 throw std::runtime_error("This encoder output requires an SDR Rec.709 colorimetric or ACES output view");
             renderer::color::ColorPipeline color;
-            for (const auto* clips : {&plan.clips, &plan.audioClips})
-                for (const auto& clip : *clips) validateAppearance(clip.visualSnapshot, plan, color);
+            for (const auto& track : plan.tracks)
+                for (const auto& clip : track.clips) validateAppearance(clip.visualSnapshot, plan, color);
             finished.warnings = plan.warnings;
             const fs::path output = normalized(fs::u8path(request.outputPath));
             checkInputPaths(request, plan, output);
@@ -217,15 +218,22 @@ struct ExportEngine::Impl {
                 const auto decoded = executor.videoFrame(frame, context);
                 if (!decoded) { checkCancel(); throw std::runtime_error(decoded.error); }
                 const auto& sample = decoded.value;
-                if (sample.source && !sample.blank) {
-                    const auto assignment = plan.colorSettings.inputColorSpaces.find(sample.mediaRef);
-                    const auto resolved = color.resolveInput(sample.source->spec(),
+                for (const auto& layer : sample.layers) {
+                    if (!layer.frame) continue;
+                    const auto track = std::find_if(plan.tracks.begin(), plan.tracks.end(),
+                        [&](const auto& value) { return value.id == layer.trackId; });
+                    if (track == plan.tracks.end()) throw std::runtime_error("Video layer track was not found");
+                    const auto clip = std::find_if(track->clips.begin(), track->clips.end(),
+                        [&](const auto& value) { return value.id == layer.clipId; });
+                    if (clip == track->clips.end()) throw std::runtime_error("Video layer clip was not found");
+                    const auto assignment = plan.colorSettings.inputColorSpaces.find(clip->mediaRef);
+                    const auto resolved = color.resolveInput(layer.frame->spec(),
                         assignment == plan.colorSettings.inputColorSpaces.end() ? "" : assignment->second,
                         plan.colorSettings.inputPolicyVersion);
                     if (resolved.source == renderer::color::InputSelectionSource::Fallback)
-                        throw std::runtime_error("Resolve input color space before export: " + sample.mediaRef);
+                        throw std::runtime_error("Resolve input color space before export: " + clip->mediaRef);
                 }
-                auto image = renderer.render(plan, frame, sample.source, &error);
+                auto image = renderer.render(plan, frame, sample.layers, &error);
                 if (!image) throw std::runtime_error(error);
                 renderer::ColorOutputRequest target;
                 target.display = plan.colorSettings.exportOutput.display;

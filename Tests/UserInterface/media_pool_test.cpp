@@ -124,7 +124,7 @@ TEST(MediaPoolUiTest, ActualPoolDragExtendsEmptyTimelineAndRoundTripsPackage) {
     std::unique_ptr<QMimeData> mime(list->model()->mimeData({list->model()->index(0, 0)}));
     ASSERT_TRUE(mime->hasFormat(heisenberg::ui::kMediaMimeType));
     // 160px header + 300 frames * 4px/frame. Placement must not clamp to old duration.
-    ASSERT_TRUE(drop(timeline, mime.get(), QPoint(1360, 48)));
+    ASSERT_TRUE(drop(timeline, mime.get(), QPoint(1360, 68)));
     const auto* track = session.editor().activeTrack();
     ASSERT_NE(track, nullptr);
     ASSERT_EQ(track->clips.size(), 1u);
@@ -154,7 +154,7 @@ TEST(MediaPoolUiTest, OverwriteDropIsOneUndoAndRedoStep) {
     timeline.resize(800, 200);
     timeline.show();
     auto mime = payload(session, ref);
-    ASSERT_TRUE(drop(timeline, mime.get(), QPoint(220, 48))); // frame 15
+    ASSERT_TRUE(drop(timeline, mime.get(), QPoint(220, 68))); // frame 15
     const auto after = heisenberg::ProjectCodec::encode(session.editor().project());
     EXPECT_NE(after, before);
     ASSERT_EQ(session.editor().activeTrack()->clips.size(), 2u);
@@ -176,8 +176,8 @@ TEST(MediaPoolUiTest, RejectsForeignAndUnknownDragWithoutMutatingTimeline) {
     auto foreign = payload(other, ref);
     auto unknown = payload(session, "not-in-manifest");
     const auto before = heisenberg::ProjectCodec::encode(session.editor().project());
-    EXPECT_FALSE(drop(timeline, foreign.get(), QPoint(200, 48)));
-    EXPECT_FALSE(drop(timeline, unknown.get(), QPoint(200, 48)));
+    EXPECT_FALSE(drop(timeline, foreign.get(), QPoint(200, 68)));
+    EXPECT_FALSE(drop(timeline, unknown.get(), QPoint(200, 68)));
     EXPECT_EQ(heisenberg::ProjectCodec::encode(session.editor().project()), before);
     EXPECT_EQ(session.editor().activeTrack(), nullptr);
 }
@@ -194,6 +194,7 @@ TEST(MediaPoolUiTest, OfflineAssetsAndUnsupportedTracksCannotBeDraggedOrEdited) 
     auto project = session.editor().project();
     heisenberg::Track extraTrack;
     extraTrack.id = heisenberg::makeUuid();
+    extraTrack.type = heisenberg::ClipType::Text;
     project.timelines.front().tracks.push_back(extraTrack);
     auto manifest = session.editor().manifest();
     auto offline = manifest.entries().front();
@@ -222,7 +223,7 @@ TEST(MediaPoolUiTest, OfflineAssetsAndUnsupportedTracksCannotBeDraggedOrEdited) 
     timeline.resize(800, 200);
     timeline.show();
     auto mime = payload(session, ref);
-    EXPECT_FALSE(drop(timeline, mime.get(), QPoint(200, 48)));
+    EXPECT_FALSE(drop(timeline, mime.get(), QPoint(200, 68)));
     EXPECT_EQ(session.placeMedia(ref, 10).status, heisenberg::EditStatus::Unsupported);
     EXPECT_EQ(session.editor().project(), project);
     EXPECT_FALSE(session.isDirty());
@@ -330,9 +331,9 @@ TEST(MediaPoolUiTest, AudioOnlyDropCreatesAudioTrackAndRejectsWrongLaneAndExplic
     auto* list = pool.findChild<MediaListWidget*>();
     std::unique_ptr<QMimeData> audioMime(list->model()->mimeData({list->model()->index(0, 0)}));
     const auto before = heisenberg::ProjectCodec::encode(session.editor().project());
-    EXPECT_FALSE(drop(timeline, audioMime.get(), QPoint(280, 48)));
+    EXPECT_FALSE(drop(timeline, audioMime.get(), QPoint(280, 68)));
     EXPECT_EQ(heisenberg::ProjectCodec::encode(session.editor().project()), before);
-    ASSERT_TRUE(drop(timeline, audioMime.get(), QPoint(280, 92)));
+    ASSERT_TRUE(drop(timeline, audioMime.get(), QPoint(280, 112)));
     ASSERT_EQ(session.editor().activeTimeline()->tracks.size(), 1u);
     EXPECT_EQ(session.editor().activeTimeline()->tracks[0].type, heisenberg::ClipType::Audio);
     EXPECT_EQ(session.editor().activeTimeline()->tracks[0].clips[0].startFrame, 30);
@@ -342,13 +343,13 @@ TEST(MediaPoolUiTest, AudioOnlyDropCreatesAudioTrackAndRejectsWrongLaneAndExplic
     EXPECT_EQ(session.placeMedia(audioRef, 0, "unknown-track").status, heisenberg::EditStatus::Invalid);
     EXPECT_EQ(heisenberg::ProjectCodec::encode(session.editor().project()), audioOnly);
     auto videoMime = payload(session, videoRef);
-    EXPECT_FALSE(drop(timeline, videoMime.get(), QPoint(200, 92)));
-    ASSERT_TRUE(drop(timeline, videoMime.get(), QPoint(200, 48)));
+    EXPECT_FALSE(drop(timeline, videoMime.get(), QPoint(200, 112)));
+    ASSERT_TRUE(drop(timeline, videoMime.get(), QPoint(200, 68)));
     ASSERT_EQ(session.editor().activeTimeline()->tracks.size(), 2u);
     EXPECT_EQ(session.editor().activeTimeline()->tracks[0].type, heisenberg::ClipType::Video);
     EXPECT_EQ(session.editor().activeTimeline()->tracks[1].id, audioTrackId.toStdString());
     const auto mixed = heisenberg::ProjectCodec::encode(session.editor().project());
-    ASSERT_TRUE(drop(timeline, audioMime.get(), QPoint(440, 92))); // Existing audio track, frame 70.
+    ASSERT_TRUE(drop(timeline, audioMime.get(), QPoint(440, 112))); // Existing audio track, frame 70.
     ASSERT_EQ(session.editor().activeTimeline()->tracks.size(), 2u);
     EXPECT_EQ(session.editor().activeTimeline()->tracks[1].id, audioTrackId.toStdString());
     EXPECT_EQ(session.editor().activeTimeline()->tracks[1].clips.back().startFrame, 70);

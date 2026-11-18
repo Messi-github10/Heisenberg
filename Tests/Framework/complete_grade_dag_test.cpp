@@ -110,7 +110,7 @@ CompositionPlan makePlan(const JsonValue& effect, const LutLibrary::Snapshot& as
     clip.visualSnapshot.mediaRef = clip.mediaRef;
     clip.visualSnapshot.durationFrames = 24;
     clip.visualSnapshot.effects = effect.is_null() ? JsonValue::array() : JsonValue::array({effect});
-    plan.clips.push_back(std::move(clip));
+    plan.tracks.push_back({"video",ClipType::Video,false,false,{std::move(clip)}});
     plan.colorSettings.inputColorSpaces["float-test-source"] = inputSpace;
     // Manually constructed plans must pin the validated asset just like
     // CompositionBuilder; the render thread must not reopen a pathname.
@@ -379,7 +379,7 @@ protected:
     }
 
     bool compile(const CompositionPlan& plan, int64_t frame, CompiledGrade& result, std::string& error) {
-        return GradeCompiler::compile(plan.clips.front().visualSnapshot, frame, result, &error,
+        return GradeCompiler::compile(plan.tracks.front().clips.front().visualSnapshot, frame, result, &error,
             {.strict = true}, nullptr, &plan.gradeLuts);
     }
 
@@ -622,7 +622,7 @@ TEST_F(CompleteGradeDagTest, AnimationChangesOnlyUniformsAndWarmRendererMatchesE
     }
     // Immutable curve data must invalidate the same cache that ignores UBO edits.
     auto curveEdit = plan;
-    (*curveEdit.clips.front().visualSnapshot.effects)[0]["params"]["curves"]["red"][1][1] = 0.4;
+    (*curveEdit.tracks.front().clips.front().visualSnapshot.effects)[0]["params"]["curves"]["red"][1][1] = 0.4;
     CompiledGrade changed;
     ASSERT_TRUE(compile(curveEdit, 0, changed, error)) << error;
     EXPECT_NE(changed.topologyKey, first.topologyKey);
@@ -641,7 +641,7 @@ TEST_F(CompleteGradeDagTest, MissingPinnedLutFailsStrictPreviewDiagnosesAndZeroN
     EXPECT_FALSE(compile(plan, 0, compiled, error));
     EXPECT_NE(error.find(asset->id), std::string::npos);
     CompositionRenderRequest request;
-    request.plan = &plan; request.source = source; request.clipId = plan.clips.front().id;
+    request.plan = &plan; request.source = source; request.clipId = plan.tracks.front().clips.front().id;
     request.strict = true;
     EXPECT_FALSE(renderer->render(request, &error));
     EXPECT_NE(error.find(asset->id), std::string::npos);
@@ -693,10 +693,9 @@ TEST_F(CompleteGradeDagTest, NeutralDisabledAndLinearGradePreserveNegativeHdrAnd
         EXPECT_LT(pixelAt(graded, x)[size_t(x) % samples.size() == 0 ? 0 : 1], 0);
         EXPECT_GT(pixelAt(graded, x)[2], 1);
     }
-    // Fractional source alpha is composited before grading in this renderer.
-    // Verify that enabling the DAG does not change that established output
-    // alpha; raw straight-alpha preservation is covered by ColorGradeGpuTest
-    // and GpuProgramGraphTest, without the canvas compositing stage.
+    // The clip DAG preserves straight alpha, then composition blends the
+    // graded contribution over opaque black. Exposure commutes with this
+    // blend, so verify both the weighted RGB and opaque canvas alpha.
     auto translucentSource = floatSource({{0.2f, 0.3f, 0.4f, 0.37f}});
     ASSERT_TRUE(translucentSource);
     auto translucentBaseline = renderFloat(makePlan(nullptr), translucentSource);
@@ -704,7 +703,11 @@ TEST_F(CompleteGradeDagTest, NeutralDisabledAndLinearGradePreserveNegativeHdrAnd
     effect["enabled"] = true;
     auto translucentGrade = renderFloat(makePlan(effect), translucentSource);
     ASSERT_NE(translucentGrade, nullptr);
-    for (int x = 0; x < width; ++x)
-        EXPECT_NEAR(pixelAt(translucentGrade, x)[3], pixelAt(translucentBaseline, x)[3], 0.001f);
+    for (int x = 0; x < width; ++x) {
+        EXPECT_NEAR(pixelAt(translucentBaseline, x)[3], 1.0f, 0.001f);
+        EXPECT_NEAR(pixelAt(translucentGrade, x)[3], 1.0f, 0.001f);
+        for (size_t c = 0; c < 3; ++c)
+            EXPECT_NEAR(pixelAt(translucentGrade, x)[c], pixelAt(translucentBaseline, x)[c]*2, 0.002f);
+    }
 }
 } // namespace

@@ -135,6 +135,11 @@ void MainWindow::setupUi() {
     timelinePreviewAction->setShortcut(QKeySequence("Escape"));
 
     auto* timelineMenu = menuBar()->addMenu(tr("Timeline"));
+    auto* addVideoTrack = timelineMenu->addAction(tr("Add Video Track"));
+    addVideoTrack->setObjectName("addVideoTrack");
+    auto* addAudioTrack = timelineMenu->addAction(tr("Add Audio Track"));
+    addAudioTrack->setObjectName("addAudioTrack");
+    timelineMenu->addSeparator();
     auto* zoomOutAction = timelineMenu->addAction(tr("Zoom Out"));
     zoomOutAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Minus));
     auto* zoomInAction = timelineMenu->addAction(tr("Zoom In"));
@@ -329,6 +334,8 @@ void MainWindow::setupUi() {
             tr("Filter Graphs (*.json);;All Files (*)"));
         if (!path.isEmpty()) emit openFilterGraphRequested(path);
     });
+    connect(addVideoTrack, &QAction::triggered, timelineWidget_, &TimelineWidget::addVideoTrack);
+    connect(addAudioTrack, &QAction::triggered, timelineWidget_, &TimelineWidget::addAudioTrack);
     connect(zoomOutAction, &QAction::triggered, timelineWidget_, &TimelineWidget::zoomOut);
     connect(zoomInAction, &QAction::triggered, timelineWidget_, &TimelineWidget::zoomIn);
     connect(fitAction, &QAction::triggered, timelineWidget_, &TimelineWidget::fitToContent);
@@ -371,13 +378,15 @@ void MainWindow::setupConnections() {
     connect(mediaPool_, &MediaPoolWidget::placeRequested, this, [this](const QString& ref) {
         colorGrade_->finishEditing();
         timelineWidget_->cancelInteraction();
-        const auto result = session_->placeMedia(ref, timelineWidget_->currentFrame());
+        const auto result = session_->placeMedia(ref, timelineWidget_->currentFrame(),
+                                                  timelineWidget_->targetTrackForMedia(ref));
         if (!result.changed()) showError(QString::fromUtf8(result.message.c_str()));
     });
     connect(mediaPool_, &MediaPoolWidget::insertRequested, this, [this](const QString& ref) {
         colorGrade_->finishEditing();
         timelineWidget_->cancelInteraction();
-        const auto result = session_->insertMedia(ref, timelineWidget_->currentFrame());
+        const auto result = session_->insertMedia(ref, timelineWidget_->currentFrame(),
+                                                   timelineWidget_->targetTrackForMedia(ref));
         if (!result.changed()) showError(QString::fromUtf8(result.message.c_str()));
     });
     connect(timelineWidget_, &TimelineWidget::editRequested, colorGrade_, &ColorGradePanel::finishEditing);

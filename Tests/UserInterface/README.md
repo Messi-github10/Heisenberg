@@ -30,11 +30,11 @@ must be allowed to launch FFmpeg and create temporary project packages.
    with **Ctrl+O** and check both the pool and clips. Save As preserves existing
    package media and unknown files.
 
-Editing supports at most one video track and one independent audio track.
-Imported files are external references, not copied into the package. Offline
-assets remain visible but cannot be dragged or added; duplicate same-type tracks
-and other unsupported layouts are retained but cannot be edited. Media import
-itself is not part of timeline undo history.
+Editing supports multiple video and audio tracks. Same-track overlaps are resolved
+by overwrite edits; different tracks can overlap. Imported files are external
+references, not copied into the package. Offline assets remain visible but cannot be
+dragged or added; unsupported track types remain loadable but cannot be edited.
+Media import itself is not part of timeline undo history.
 
 ## Track-aware clip interaction
 
@@ -44,8 +44,9 @@ itself is not part of timeline undo history.
   of the timeline origin, the playhead, or another clip's start/end. A yellow guide
   marks the snapped boundary. Toggle **Snap** in the toolbar/menu, or hold **Shift**
   to temporarily bypass snapping. The moving clip does not snap to its old edges.
-- Release inside the clip's original lane to commit one overwrite move and one
-  undo step. Moving clips between tracks is not supported.
+- Release inside the original or another compatible lane to commit one overwrite
+  move and one undo step. Cross-track moves leave a source gap and preserve clip ID,
+  trims, grade and audio settings. Audio/video type mismatches are rejected.
   **Ctrl+Z** undoes it; **Ctrl+Shift+Z** redoes it. The preview reloads the current
   in-memory timeline, so saving is not required before playback.
 - **Esc**, releasing outside the lane, or deactivating the window cancels the draft.
@@ -85,12 +86,42 @@ itself is not part of timeline undo history.
   0–200%; linear fade in/out are entered in seconds and rounded to timeline
   frames. The two fades must fit the clip. Changing controls is only a local
   draft; OK commits one undo step, while Cancel or unchanged OK commits nothing.
-- Click an existing track header to toggle mute, including a video's original
-  audio. Mute, gain and fades use the existing serialized project fields and
-  survive undo/redo and save/reopen.
+- Click M in a track header to toggle mute, including a video's original audio.
+  Click H on video tracks to hide/show picture without changing audio. Mute, gain
+  and fades use the existing serialized project fields and survive undo/redo and
+  save/reopen.
 - Delete a selected clip using its context menu or **Delete**/**Backspace** with
   timeline focus. Those keys do not delete clips while typing in media search.
   Removal is one undo step and never changes the source file.
+
+## Multi-track editing and compositing
+
+- Use Timeline > Add Video Track / Add Audio Track or the track header context
+  menu. Right-click a header to rename, move up/down within its media type, or delete
+  a track. Removing a populated track asks for confirmation and is fully undoable.
+- Drag a media-pool video or an existing timeline video into the 20 px strip above
+  the video group, just below the fixed ruler. The strip highlights the proposed
+  horizontal range; releasing creates a new top video track and places/moves the
+  clip. One undo removes the new track and reverses placement/movement, and redo
+  restores stable IDs. Source marks apply to pool drops; moved clips retain their
+  own trim, effects and audio payload. Escape/drag leave/invalid drops create no track.
+  Audio, trim handles, ruler, headers and the scrollbar do not create video tracks.
+  When the true top boundary scrolls away, the top visible lane is not a creation target.
+- Click a header name or select a clip to target its track. Video/audio targets are
+  remembered separately. Pool overwrite/insert buttons use the selected compatible
+  target; direct drops use their actual lane. Track removal, undo and project changes
+  must leave a valid target or a predictable compatible fallback.
+- Video lanes appear above audio lanes. Within video, the visually upper lane is
+  composited over lower lanes. Right-click a video clip's appearance settings to set
+  constant opacity. Verify 0%, 50% and 100%, transparent source pixels, and differently
+  shaped sources whose fitted borders should reveal lower layers rather than black.
+- Wheel scrolls vertically beneath the fixed ruler; Shift-wheel or horizontal wheel
+  scrolls horizontally, Ctrl-wheel zooms. Verify hit testing, track buttons, cross-track
+  ghosts and drops after scrolling and after deleting tracks near the bottom.
+- Hidden video tracks retain their original sound; muted tracks retain picture.
+  All independent audio tracks and video-original audio mix together with per-clip
+  gain/fades. Save/reopen and actual export must reproduce order, opacity, visibility,
+  mute states and audio tails. Pending grades finish before structural track edits.
 
 ## Source range, insert and ripple delete
 

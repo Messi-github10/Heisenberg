@@ -79,7 +79,10 @@ CompositionPlan planWith(const char* effects = "[]") {
     clip.visualSnapshot.mediaRef = clip.mediaRef;
     clip.visualSnapshot.durationFrames = 24;
     clip.visualSnapshot.effects = JsonValue::parse(effects);
-    plan.clips.push_back(clip);
+    CompositionTrack track;
+    track.id = "video";
+    track.clips.push_back(clip);
+    plan.tracks.push_back(track);
     plan.colorSettings.inputColorSpaces["media"] = color::kWorkingSpace;
     return plan;
 }

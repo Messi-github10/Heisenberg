@@ -29,7 +29,17 @@ struct CompositionClip {
     Clip visualSnapshot; // Owned complete clip appearance/effects/animation snapshot.
 };
 
+struct CompositionTrack {
+    std::string id;
+    ClipType type = ClipType::Video;
+    bool hidden = false;
+    bool muted = false;
+    std::vector<CompositionClip> clips;
+};
+
 struct CompositionSample {
+    size_t trackIndex = 0;
+    std::string trackId;
     size_t clipIndex = 0;
     double sourceSeconds = 0.0;
     int64_t clipLocalFrame = 0;
@@ -44,14 +54,8 @@ struct CompositionPlan {
     TimelineSettings settings;
     ColorSettings colorSettings;
     int64_t frameCount = 0;
-    bool hidden = false;
-    bool muted = false;
-    // Legacy clips/flags describe the video track only.
-    std::string videoTrackId;
-    std::string audioTrackId;
-    bool audioMuted = false;
-    std::vector<CompositionClip> clips;
-    std::vector<CompositionClip> audioClips;
+    // Canonical owned tracks, in UI order (top first). Render bottom to top.
+    std::vector<CompositionTrack> tracks;
     std::vector<std::string> warnings;
     // Captured once at plan build. Active renders retain immutable validated
     // CPU data even when the library cache/root or external files change.
@@ -60,6 +64,10 @@ struct CompositionPlan {
     std::map<std::string, std::shared_ptr<const grade::LutAsset>> gradeLuts;
     std::map<std::string, std::string> gradeLutErrors;
 
+    std::vector<CompositionSample> videoSamplesAt(int64_t frame) const;
+    // Includes embedded audio on video tracks. Hidden affects pictures only.
+    std::vector<CompositionSample> audioSamplesAt(int64_t frame) const;
+    // Computed first-match conveniences, with no separate legacy storage.
     std::optional<CompositionSample> videoSampleAt(int64_t frame) const;
     std::optional<CompositionSample> audioSampleAt(int64_t frame) const;
     std::optional<CompositionSample> sampleAt(int64_t frame) const {

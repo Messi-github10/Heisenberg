@@ -91,8 +91,9 @@ TEST(IndependentAudioEditorTest, ImportsMp3WavAndCoverArtAsAudioOnly) {
         EXPECT_EQ(editor.compatibility().level, CompatibilityLevel::Supported);
         CompositionPlan plan;
         ASSERT_TRUE(CompositionBuilder::build(*editor.activeTimeline(), editor.manifest(), "", plan, &error)) << error;
-        EXPECT_TRUE(plan.clips.empty());
-        EXPECT_EQ(plan.audioClips.size(), 1u);
+        ASSERT_EQ(plan.tracks.size(), 1u);
+        EXPECT_EQ(plan.tracks.front().type, ClipType::Audio);
+        EXPECT_EQ(plan.tracks.front().clips.size(), 1u);
         EXPECT_FALSE(plan.sampleAt(0));
         EXPECT_TRUE(plan.audioSampleAt(0));
     }
@@ -235,8 +236,11 @@ TEST(IndependentAudioEditorTest, GainMuteFadesPersistThroughSaveReopenAndBuildTw
     ASSERT_TRUE(CompositionBuilder::build(*reopened.editor().activeTimeline(), reopened.editor().manifest(),
         reopened.editor().projectDir(), plan, &error)) << error;
     EXPECT_EQ(plan.frameCount, 72);
-    EXPECT_EQ(plan.clips.size(), 1u);
-    EXPECT_EQ(plan.audioClips.size(), 1u);
+    ASSERT_EQ(plan.tracks.size(), 2u);
+    EXPECT_EQ(plan.tracks[0].type, ClipType::Video);
+    EXPECT_EQ(plan.tracks[1].type, ClipType::Audio);
+    EXPECT_EQ(plan.tracks[0].clips.size(), 1u);
+    EXPECT_EQ(plan.tracks[1].clips.size(), 1u);
     ASSERT_TRUE(plan.videoSampleAt(6));
     ASSERT_TRUE(plan.audioSampleAt(6));
     EXPECT_DOUBLE_EQ(plan.videoSampleAt(6)->gain, 0.5);

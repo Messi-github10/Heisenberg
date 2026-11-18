@@ -152,6 +152,8 @@ TEST(TimelineModelTest, IndependentTrackLookupAndCompatibilityRejectOnlyUnsuppor
     timeline.tracks.back().clips.front().sourceClipType = heisenberg::ClipType::Audio;
     auto duplicate = audio; duplicate.id = "duplicate-audio"; duplicate.clips.clear();
     timeline.tracks.push_back(duplicate);
+    EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Supported);
+    timeline.tracks.back().type = heisenberg::ClipType::Text;
     EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Unsupported);
 }
 
@@ -174,6 +176,30 @@ TEST(ProjectCodecTest, IndependentAudioUsesExistingBergWireAndRoundTripsAutomati
     heisenberg::ProjectFile reopened;
     ASSERT_TRUE(heisenberg::ProjectCodec::decode(encoded, reopened, &error)) << error;
     EXPECT_EQ(reopened, project);
+}
+
+TEST(TimelineModelTest, ConstantOpacityAndNormalBlendAreSupportedButAnimationStillWarns) {
+    auto timeline = timelineWithTrack({clip("picture", "media", 0, 10)});
+    auto& picture = timeline.tracks.front().clips.front();
+    for (const double opacity : {0.0, 0.5, 1.0}) {
+        picture.opacity = opacity;
+        picture.blendMode = "normal";
+        EXPECT_TRUE(heisenberg::validateTimeline(timeline));
+        EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Supported);
+    }
+    picture.opacityTrack = heisenberg::KeyframeTrackPayload{heisenberg::JsonValue::parse(
+        R"({"keyframes":[{"frame":0,"value":0.5}]})")};
+    EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Warning);
+    picture.opacityTrack.reset();
+    picture.blendMode = "multiply";
+    EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Warning);
+    picture.blendMode.reset();
+    for (const double opacity : {-0.1, 1.1, std::numeric_limits<double>::infinity(),
+                                 std::numeric_limits<double>::quiet_NaN()}) {
+        picture.opacity = opacity;
+        EXPECT_FALSE(heisenberg::validateTimeline(timeline));
+        EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Unsupported);
+    }
 }
 
 TEST(TimelineModelTest, ValidationRejectsOverlapDuplicateIdsAndOverflow) {
@@ -259,7 +285,19 @@ TEST(VideoEngineTimelineTest, ReadsRealMediaAcrossCutWithTrimAndSpeed) {
         const auto value = pumpUntilFrame(engine, frame);
         ASSERT_TRUE(value) << frame;
         EXPECT_FALSE(value->blank) << frame;
-        ASSERT_TRUE(value->source) << frame;
+        EXPECT_FALSE(value->sourceMode);
+        ASSERT_EQ(value->layers.size(), 1u) << frame;
+        const auto& layer = value->layers.front();
+        EXPECT_EQ(layer.trackId, timeline.tracks.front().id);
+        EXPECT_EQ(layer.clipId, frame < 4 ? "a" : "b");
+        EXPECT_EQ(layer.clipLocalFrame, frame < 4 ? frame : frame - 4);
+        ASSERT_TRUE(layer.frame) << frame;
+        ASSERT_TRUE(layer.frame->get()) << frame;
+        ASSERT_TRUE(layer.frame->hasTimestamp()) << frame;
+        const int64_t sourceFrame = frame < 4 ? frame + 2 : 4 + (frame - 4) * 2;
+        EXPECT_NEAR(layer.frame->pts() * layer.frame->timeBase().toDouble(),
+                    static_cast<double>(sourceFrame) / timeline.fps, 1e-9) << frame;
+        EXPECT_EQ(layer.frame->get()->pts, layer.frame->pts());
         EXPECT_EQ(value->targetPosition, frame);
         EXPECT_EQ(value->targetTimeBase, timeline.settings().timeBase());
     }

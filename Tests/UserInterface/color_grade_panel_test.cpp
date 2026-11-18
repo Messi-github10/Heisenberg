@@ -46,7 +46,7 @@ void setConstant(JsonValue& effects, const char* parameter, double value) {
     field.erase("track");
 }
 
-void selectClip(TimelineWidget& timeline, QPointF point = QPointF(200, 48)) {
+void selectClip(TimelineWidget& timeline, QPointF point = QPointF(200, 68)) {
     QMouseEvent press(QEvent::MouseButtonPress, point, timeline.mapToGlobal(point.toPoint()),
                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(&timeline, &press);
@@ -187,7 +187,7 @@ TEST_F(ColorGradePanelTest, TimelineSelectionUsesPersistentInspectorAndNeverOpen
         EXPECT_TRUE(window.grab().save(screenshot + ".small.png"));
     }
 
-    selectClip(*window.timelineWidget(), QPointF(900, 48));
+    selectClip(*window.timelineWidget(), QPointF(900, 68));
     EXPECT_TRUE(window.timelineWidget()->selectedClipId().isEmpty());
     EXPECT_TRUE(panel->clipId().isEmpty());
     EXPECT_EQ(panel->findChild<ColorGradeControls*>(), nullptr);

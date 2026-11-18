@@ -27,7 +27,7 @@ manifest, package context and revision. Saving checkpoints the captured revision
 newer edits stay dirty. Package writes are staged beside the destination with
 rollback on replacement failure. They are not crash-journaled transactions.
 
-`CompositionBuilder` plans at most one video track and one independent audio track.
+`CompositionBuilder` captures an ordered set of video and audio tracks.
 It resolves expected source
 paths without probing files, maps half-open clip intervals, trims and speed, and
 captures hide/mute flags, visual effects and versioned color settings. File availability
@@ -49,12 +49,21 @@ dimensions and manifest version 2. Older directory packages can still be opened
 and saved in place; Save As defaults to `.berg`.
 Settings that cannot be represented by that schema are rejected by project editing.
 
-This version supports one video track plus one independent audio track, including
-audio-only projects. Audio clips can be imported, previewed, placed, moved, trimmed,
-split and deleted. Clip audio settings provide 0–200% volume and linear fades;
-track headers toggle mute. All edits use the existing undo history and package
-fields. Video-original audio and the independent audio track are mixed together;
-audio can continue after video ends while the preview presents a black canvas.
+Video and audio tracks support overlapping contributions across tracks, including
+audio-only projects. Within each track, clips remain non-overlapping. The upper video
+track is composited over lower tracks in linear ACEScg, preserving source alpha,
+transparent fitted borders and constant clip opacity. Each layer keeps its own grade;
+the composition-wide graph and output transform run after stacking.
+
+Tracks can be added, removed, renamed and reordered within their media type. Clips
+can move between compatible tracks. Drag a pool video or an existing video clip into
+the narrow strip above the video lanes to create a new top video track and place/move
+it in one undo step. Cancelling the drag leaves no empty track.
+Header M controls mute; video H controls picture
+visibility independently. Every video track's original audio and all audio tracks are
+mixed, with per-clip 0–200% gain and linear fades applied before final clamping.
+Audio can continue after video ends while the preview presents a black canvas.
+Track edits use the existing undo history and serialized package fields.
 
 Source preview supports session-local In/Out marks (I/O while the preview has focus).
 Media-pool placement uses the marked range, with separate overwrite and insert actions.
@@ -70,8 +79,8 @@ transforms. Offline MP4 export uses software H.264/H.265 and AAC, independent of
 playback clock and window. See [composition, color and export](docs/composition-color-export.md)
 for input policies, effect semantics, deployment and output-safety details.
 
-There is no video-layer compositing, arbitrary track count, hardware encoding, HDR
-output, waveform cache, or pitch-preserving time stretching.
+There is no advanced blend-mode compositing, animated geometry/opacity, hardware
+encoding, HDR output, waveform cache, or pitch-preserving time stretching.
 
 ## Third-party dependencies
 

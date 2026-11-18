@@ -326,9 +326,10 @@ TEST(EditorViewModelTest, ExtremeTrimDeltasAreRejectedWithoutHistory) {
     std::filesystem::remove_all(root, code);
 }
 
-TEST(EditorViewModelTest, DuplicateVideoTracksArePreservedButUnsupportedForEditing) {
-    const auto root = tempPackage("multi-track");
-    const auto project = testProject(initialClip(), true);
+TEST(EditorViewModelTest, UnsupportedTrackTypesArePreservedButBlockEditing) {
+    const auto root = tempPackage("unsupported-track");
+    auto project = testProject(initialClip(), true);
+    project.timelines.front().tracks.back().type = heisenberg::ClipType::Text;
     auto editor = loadEditor(root, project, testManifest());
     const auto before = heisenberg::ProjectCodec::encode(editor->project());
     EXPECT_EQ(editor->compatibility().level, heisenberg::CompatibilityLevel::Unsupported);

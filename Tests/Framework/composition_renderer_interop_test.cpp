@@ -287,7 +287,7 @@ void checkSdrAppearance(bool tenBit, bool hardware, bool videoPreview = false) {
             CompositionPlan plan; plan.settings=TimelineSettings::fromTimelineSettings(32,24,24);
             CompositionClip clip; clip.id="neutral"; clip.mediaRef="source"; clip.durationFrames=24;
             clip.visualSnapshot.effects=JsonValue::parse(R"([{"type":"video.basicGrade","params":{"exposure":{"value":0},"contrast":{"value":1},"saturation":{"value":1}}}])");
-            plan.clips.push_back(clip);
+            plan.tracks.push_back({"video",ClipType::Video,false,false,{clip}});
             std::shared_ptr<AVFrame> ungraded;
             for (const bool identityGrade : {false,true}) {
                 auto req=request(source); req.sourceId="sdr-range-fixture";

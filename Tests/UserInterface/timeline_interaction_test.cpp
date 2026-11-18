@@ -87,7 +87,7 @@ protected:
         return session.loadPackage(package);
     }
     // Default geometry: 160px header, 4px/frame. The grab is ten frames into the first clip.
-    QPointF target(qint64 start, int y = 48) const {
+    QPointF target(qint64 start, int y = 68) const {
         return {160.0 + (start + 10) * 4.0, double(y)};
     }
     heisenberg::ui::EditorSession session;
@@ -195,7 +195,7 @@ TEST_F(TimelineInteractionTest, PlayheadAndTimelineOriginSnapWithShiftBypassAndT
 
 TEST_F(TimelineInteractionTest, MovingClipDoesNotSnapToItsOwnOldEdges) {
     // Add vertical motion to exceed the drag threshold, while remaining in the video lane.
-    drag(timeline, target(30), target(32, 62));
+    drag(timeline, target(30), target(32, 82));
     EXPECT_EQ(first()->startFrame, 32);
 }
 
@@ -207,7 +207,7 @@ TEST_F(TimelineInteractionTest, EscapeOutsideLaneAndWindowDeactivationCancelDraf
     QApplication::sendEvent(&timeline, &escape);
     mouse(timeline, QEvent::MouseButtonRelease, target(150));
     EXPECT_EQ(json(), before);
-    drag(timeline, target(30), target(150, 120));
+    drag(timeline, target(30), target(150, 140));
     EXPECT_EQ(json(), before);
     mouse(timeline, QEvent::MouseButtonPress, target(30));
     mouse(timeline, QEvent::MouseMove, target(150));
@@ -243,7 +243,7 @@ TEST_F(TimelineInteractionTest, RulerAndEmptySpaceScrubWithoutMovingOrMisSelecti
     drag(timeline, QPointF(400, 15), QPointF(440, 15));
     EXPECT_EQ(timeline.currentFrame(), 70);
     EXPECT_EQ(timeline.selectedClipId(), firstId);
-    drag(timeline, QPointF(760, 48), QPointF(760, 48)); // Past totalFrames=120.
+    drag(timeline, QPointF(760, 68), QPointF(760, 68)); // Past totalFrames=120.
     EXPECT_TRUE(timeline.selectedClipId().isEmpty());
     EXPECT_EQ(timeline.currentFrame(), 119);
     EXPECT_EQ(scrubs, 2);
@@ -254,43 +254,36 @@ TEST_F(TimelineInteractionTest, RulerAndEmptySpaceScrubWithoutMovingOrMisSelecti
 TEST_F(TimelineInteractionTest, MovementUsesZoomAndHorizontalScrollCoordinates) {
     timeline.setSnappingEnabled(false);
     timeline.zoomIn(); // 5 px/frame; short timeline stays at scrollOffset=0.
-    drag(timeline, QPointF(360, 48), QPointF(960, 48));
+    drag(timeline, QPointF(360, 68), QPointF(960, 68));
     EXPECT_EQ(first()->startFrame, 150);
     session.undo();
     timeline.zoomOut(); // Back to 4 px/frame.
     ASSERT_TRUE(session.placeMedia(ref, 300).changed());
-    QWheelEvent wheel(QPointF(600, 48), timeline.mapToGlobal(QPoint(600, 48)),
-        QPoint(), QPoint(0, -120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QWheelEvent wheel(QPointF(600, 68), timeline.mapToGlobal(QPoint(600, 68)),
+        QPoint(), QPoint(0, -120), Qt::NoButton, Qt::ShiftModifier, Qt::NoScrollPhase, false);
     QApplication::sendEvent(&timeline, &wheel); // ScrollOffset=80.
-    drag(timeline, QPointF(240, 48), QPointF(412, 48));
+    drag(timeline, QPointF(240, 68), QPointF(412, 68));
     EXPECT_EQ(first()->startFrame, 73);
 }
 
-TEST_F(TimelineInteractionTest, MultiTrackSelectionIsAllowedButMovementIsRejected) {
+TEST_F(TimelineInteractionTest, MultiTrackSelectionAndMovementAreSupported) {
     auto project = session.editor().project();
     heisenberg::Track extra;
     extra.id = heisenberg::makeUuid();
     project.timelines.front().tracks.push_back(extra);
-    const auto text = heisenberg::ProjectCodec::encode(project);
-    const auto package = QString::fromStdString(session.editor().projectDir());
-    QFile file(package + "/project.json");
-    ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
-    ASSERT_EQ(file.write(text.data(), static_cast<qint64>(text.size())), static_cast<qint64>(text.size()));
-    file.close();
-    QString error;
-    ASSERT_TRUE(session.loadPackage(package, &error)) << error.toStdString();
+    ASSERT_TRUE(reloadProject(project));
     const auto before = json();
     int failures = 0;
     QObject::connect(&timeline, &TimelineWidget::editFailed, [&](const QString&) { ++failures; });
     drag(timeline, target(30), target(150));
     EXPECT_EQ(timeline.selectedClipId(), firstId);
+    ASSERT_NE(first(), nullptr);
+    EXPECT_EQ(first()->startFrame, 150);
+    EXPECT_NE(json(), before);
+    EXPECT_EQ(failures, 0);
+    session.undo();
     EXPECT_EQ(json(), before);
-    EXPECT_EQ(failures, 1);
-    EXPECT_EQ(session.moveClip(firstId, 150).status, heisenberg::EditStatus::Unsupported);
-    EXPECT_EQ(session.trimClip(firstId, heisenberg::TrimEdge::Left, 10).status, heisenberg::EditStatus::Unsupported);
-    EXPECT_EQ(session.splitClip(firstId, 45).status, heisenberg::EditStatus::Unsupported);
-    EXPECT_EQ(json(), before);
-    EXPECT_FALSE(session.isDirty());
+    EXPECT_EQ(failures, 0);
 }
 
 TEST_F(TimelineInteractionTest, EdgeDraftIsLocalAndEitherTrimCommitsOneUndoStep) {
@@ -298,12 +291,12 @@ TEST_F(TimelineInteractionTest, EdgeDraftIsLocalAndEitherTrimCommitsOneUndoStep)
     const auto before = json();
     int changes = 0;
     QObject::connect(&session, &heisenberg::ui::EditorSession::timelineChanged, [&](qint64) { ++changes; });
-    mouse(timeline, QEvent::MouseButtonPress, {281, 48});
-    mouse(timeline, QEvent::MouseMove, {321, 48});
+    mouse(timeline, QEvent::MouseButtonPress, {281, 68});
+    mouse(timeline, QEvent::MouseMove, {321, 68});
     EXPECT_EQ(json(), before);
     EXPECT_FALSE(session.isDirty());
     EXPECT_EQ(changes, 0);
-    mouse(timeline, QEvent::MouseButtonRelease, {321, 48});
+    mouse(timeline, QEvent::MouseButtonRelease, {321, 68});
     ASSERT_NE(first(), nullptr);
     EXPECT_EQ(first()->startFrame, 40);
     EXPECT_EQ(first()->durationFrames, 20);
@@ -319,7 +312,7 @@ TEST_F(TimelineInteractionTest, EdgeDraftIsLocalAndEitherTrimCommitsOneUndoStep)
     EXPECT_EQ(json(), afterLeft);
     session.undo();
 
-    drag(timeline, {399, 48}, {359, 48});
+    drag(timeline, {399, 68}, {359, 68});
     EXPECT_EQ(first()->startFrame, 30);
     EXPECT_EQ(first()->durationFrames, 20);
     EXPECT_EQ(first()->trimStartFrame, 0);
@@ -335,25 +328,25 @@ TEST_F(TimelineInteractionTest, EdgeDraftIsLocalAndEitherTrimCommitsOneUndoStep)
 TEST_F(TimelineInteractionTest, EdgesRestoreAvailableSourceAndClampToOneFrame) {
     timeline.setSnappingEnabled(false);
     const auto before = json();
-    drag(timeline, {281, 48}, {201, 48}); // No unused head: cannot extend to frame 10.
-    drag(timeline, {399, 48}, {479, 48}); // No unused tail: cannot extend to frame 80.
+    drag(timeline, {281, 68}, {201, 68}); // No unused head: cannot extend to frame 10.
+    drag(timeline, {399, 68}, {479, 68}); // No unused tail: cannot extend to frame 80.
     EXPECT_EQ(json(), before);
     EXPECT_FALSE(session.isDirty());
 
-    drag(timeline, {281, 48}, {321, 48}); // Trim ten frames, then restore only that head.
-    drag(timeline, {321, 48}, {241, 48});
+    drag(timeline, {281, 68}, {321, 68}); // Trim ten frames, then restore only that head.
+    drag(timeline, {321, 68}, {241, 68});
     EXPECT_EQ(json(), before);
-    drag(timeline, {399, 48}, {359, 48});
-    drag(timeline, {359, 48}, {479, 48});
+    drag(timeline, {399, 68}, {359, 68});
+    drag(timeline, {359, 68}, {479, 68});
     EXPECT_EQ(json(), before);
 
-    drag(timeline, {281, 48}, {481, 48});
+    drag(timeline, {281, 68}, {481, 68});
     EXPECT_EQ(first()->startFrame, 59);
     EXPECT_EQ(first()->durationFrames, 1);
     EXPECT_EQ(first()->trimStartFrame, 29);
     session.undo();
     EXPECT_EQ(json(), before);
-    drag(timeline, {399, 48}, {199, 48});
+    drag(timeline, {399, 68}, {199, 68});
     EXPECT_EQ(first()->startFrame, 30);
     EXPECT_EQ(first()->durationFrames, 1);
     EXPECT_EQ(first()->trimEndFrame, 29);
@@ -365,20 +358,20 @@ TEST_F(TimelineInteractionTest, TrimCancellationAndNoOpPreserveSavedDataAndRedo)
     session.undo();
     ASSERT_TRUE(session.savePackage(QString::fromStdString(session.editor().projectDir())));
     const auto before = json();
-    mouse(timeline, QEvent::MouseButtonPress, {281, 48});
-    mouse(timeline, QEvent::MouseMove, {321, 48});
+    mouse(timeline, QEvent::MouseButtonPress, {281, 68});
+    mouse(timeline, QEvent::MouseMove, {321, 68});
     QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
     QApplication::sendEvent(&timeline, &escape);
-    mouse(timeline, QEvent::MouseButtonRelease, {321, 48});
-    drag(timeline, {399, 48}, {359, 120});
-    mouse(timeline, QEvent::MouseButtonPress, {399, 48});
-    mouse(timeline, QEvent::MouseMove, {359, 48});
+    mouse(timeline, QEvent::MouseButtonRelease, {321, 68});
+    drag(timeline, {399, 68}, {359, 140});
+    mouse(timeline, QEvent::MouseButtonPress, {399, 68});
+    mouse(timeline, QEvent::MouseMove, {359, 68});
     QEvent deactivate(QEvent::WindowDeactivate);
     QApplication::sendEvent(&timeline, &deactivate);
-    mouse(timeline, QEvent::MouseButtonRelease, {359, 48});
-    mouse(timeline, QEvent::MouseButtonPress, {281, 48});
-    mouse(timeline, QEvent::MouseMove, {321, 48});
-    mouse(timeline, QEvent::MouseButtonRelease, {281, 48});
+    mouse(timeline, QEvent::MouseButtonRelease, {359, 68});
+    mouse(timeline, QEvent::MouseButtonPress, {281, 68});
+    mouse(timeline, QEvent::MouseMove, {321, 68});
+    mouse(timeline, QEvent::MouseButtonRelease, {281, 68});
     EXPECT_EQ(json(), before);
     EXPECT_FALSE(session.isDirty());
     session.redo();
@@ -387,20 +380,20 @@ TEST_F(TimelineInteractionTest, TrimCancellationAndNoOpPreserveSavedDataAndRedo)
 
 TEST_F(TimelineInteractionTest, MovedTrimEdgeSnapsToPlayheadWithShiftAndToggleBypass) {
     timeline.setCurrentFrame(42);
-    drag(timeline, {281, 48}, {321, 48}); // Desired frame 40 snaps to 42.
+    drag(timeline, {281, 68}, {321, 68}); // Desired frame 40 snaps to 42.
     EXPECT_EQ(first()->startFrame, 42);
     session.undo();
     timeline.setCurrentFrame(42);
-    drag(timeline, {399, 48}, {335, 48}); // Desired end 44 snaps to 42.
+    drag(timeline, {399, 68}, {335, 68}); // Desired end 44 snaps to 42.
     EXPECT_EQ(first()->endFrame(), 42);
     session.undo();
     timeline.setCurrentFrame(42);
-    drag(timeline, {281, 48}, {321, 48}, Qt::ShiftModifier);
+    drag(timeline, {281, 68}, {321, 68}, Qt::ShiftModifier);
     EXPECT_EQ(first()->startFrame, 40);
     session.undo();
     timeline.setCurrentFrame(42);
     timeline.setSnappingEnabled(false);
-    drag(timeline, {399, 48}, {335, 48});
+    drag(timeline, {399, 68}, {335, 68});
     EXPECT_EQ(first()->endFrame(), 44);
 }
 
@@ -409,16 +402,16 @@ TEST_F(TimelineInteractionTest, TailExtensionSnapsAndOverwritesNeighborInOneUndo
     ASSERT_TRUE(session.moveClip(secondId, 50).changed());
     timeline.setCurrentFrame(0);
     const auto before = json();
-    drag(timeline, {339, 48}, {351, 48}); // End 48 snaps to neighbor start 50.
+    drag(timeline, {339, 68}, {351, 68}); // End 48 snaps to neighbor start 50.
     EXPECT_EQ(first()->endFrame(), 50);
     EXPECT_EQ(second()->startFrame, 50);
     session.undo();
     EXPECT_EQ(json(), before);
-    drag(timeline, {339, 48}, {351, 48}, Qt::ShiftModifier);
+    drag(timeline, {339, 68}, {351, 68}, Qt::ShiftModifier);
     EXPECT_EQ(first()->endFrame(), 48);
     session.undo();
     timeline.setSnappingEnabled(false);
-    drag(timeline, {339, 48}, {399, 48});
+    drag(timeline, {339, 68}, {399, 68});
     EXPECT_EQ(first()->endFrame(), 60);
     EXPECT_EQ(first()->trimEndFrame, 0);
     EXPECT_EQ(second()->startFrame, 60);
@@ -437,15 +430,15 @@ TEST_F(TimelineInteractionTest, FractionalSpeedTrimRestoresRoundedSourceBudget) 
     ASSERT_TRUE(reloadProject(project));
     timeline.setSnappingEnabled(false);
     const auto before = json();
-    drag(timeline, {281, 48}, {289, 62}); // Two timeline frames consume round(1.2) = one source frame.
+    drag(timeline, {281, 68}, {289, 82}); // Two timeline frames consume round(1.2) = one source frame.
     EXPECT_EQ(first()->startFrame, 32);
     EXPECT_EQ(first()->trimStartFrame, 1);
-    drag(timeline, {289, 48}, {281, 62});
+    drag(timeline, {289, 68}, {281, 82});
     EXPECT_EQ(json(), before); // floor(1 / 0.6) would incorrectly allow only one restored frame.
-    drag(timeline, {399, 48}, {391, 62});
+    drag(timeline, {399, 68}, {391, 82});
     EXPECT_EQ(first()->endFrame(), 58);
     EXPECT_EQ(first()->trimEndFrame, 1);
-    drag(timeline, {391, 48}, {399, 62});
+    drag(timeline, {391, 68}, {399, 82});
     EXPECT_EQ(json(), before);
 }
 
@@ -453,17 +446,17 @@ TEST_F(TimelineInteractionTest, EdgeTrimUsesZoomAndScrollCoordinates) {
     timeline.setSnappingEnabled(false);
     const auto before = json();
     timeline.zoomIn(); // Five pixels/frame.
-    drag(timeline, {311, 48}, {361, 48});
+    drag(timeline, {311, 68}, {361, 68});
     EXPECT_EQ(first()->startFrame, 40);
     EXPECT_EQ(first()->trimStartFrame, 10);
     session.undo();
     EXPECT_EQ(json(), before);
     timeline.zoomOut();
     ASSERT_TRUE(session.placeMedia(ref, 300).changed());
-    QWheelEvent wheel(QPointF(600, 48), timeline.mapToGlobal(QPoint(600, 48)),
-        QPoint(), QPoint(0, -120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QWheelEvent wheel(QPointF(600, 68), timeline.mapToGlobal(QPoint(600, 68)),
+        QPoint(), QPoint(0, -120), Qt::NoButton, Qt::ShiftModifier, Qt::NoScrollPhase, false);
     QApplication::sendEvent(&timeline, &wheel); // ScrollOffset = 80.
-    drag(timeline, {319, 48}, {279, 48});
+    drag(timeline, {319, 68}, {279, 68});
     EXPECT_EQ(first()->endFrame(), 50);
     EXPECT_EQ(first()->trimEndFrame, 10);
 }
@@ -525,12 +518,12 @@ TEST_F(TimelineInteractionTest, SplitRequiresSelectedClipAndInteriorFrameAndKeep
 
 TEST_F(TimelineInteractionTest, SplitCancelsPendingTrimAndCutsOriginalSnapshot) {
     timeline.setCurrentFrame(45);
-    mouse(timeline, QEvent::MouseButtonPress, {281, 48});
-    mouse(timeline, QEvent::MouseMove, {321, 48});
+    mouse(timeline, QEvent::MouseButtonPress, {281, 68});
+    mouse(timeline, QEvent::MouseMove, {321, 68});
     const auto before = json();
     QKeyEvent split(QEvent::KeyPress, Qt::Key_S, Qt::NoModifier);
     QApplication::sendEvent(&timeline, &split);
-    mouse(timeline, QEvent::MouseButtonRelease, {321, 48});
+    mouse(timeline, QEvent::MouseButtonRelease, {321, 68});
     EXPECT_EQ(first()->startFrame, 30);
     EXPECT_EQ(first()->durationFrames, 15);
     EXPECT_EQ(first()->trimStartFrame, 0);
@@ -568,7 +561,7 @@ TEST_F(TimelineInteractionTest, TrimAndSplitRefreshUnsavedPlaybackAndPersistOnRe
     player.showTimeline(0);
     ASSERT_TRUE(waitFor([&]() { return player.isSeekable(); }));
     timeline.setSnappingEnabled(false);
-    drag(timeline, {639, 48}, {579, 48}); // Last clip end 120 -> 105.
+    drag(timeline, {639, 68}, {579, 68}); // Last clip end 120 -> 105.
     ASSERT_TRUE(waitFor([&]() { return player.frameCount() == 105 && player.currentTime() > 3.45; }));
     EXPECT_NEAR(player.duration(), 3.5, 0.01);
     drag(timeline, target(30), target(30));
@@ -664,10 +657,10 @@ protected:
 TEST_F(AudioTimelineInteractionTest, SecondLaneMovesOnlyOnOwnTrackSnapsTrimsSplitsAndUndoRedo) {
     const auto before = json();
     const auto video = *first();
-    drag(timeline, target(30, 92), target(150, 48)); // Cross-track move is not supported.
+    drag(timeline, target(30, 112), target(150, 68)); // Cross-track move is not supported.
     EXPECT_EQ(json(), before);
     EXPECT_FALSE(session.isDirty());
-    drag(timeline, target(30, 92), target(118, 92)); // Snap audio start to video end at 120.
+    drag(timeline, target(30, 112), target(118, 112)); // Snap audio start to video end at 120.
     ASSERT_NE(audio(), nullptr);
     EXPECT_EQ(audio()->startFrame, 120);
     EXPECT_EQ(*first(), video);
@@ -678,16 +671,16 @@ TEST_F(AudioTimelineInteractionTest, SecondLaneMovesOnlyOnOwnTrackSnapsTrimsSpli
     EXPECT_EQ(json(), moved);
     session.undo();
     timeline.setSnappingEnabled(false);
-    mouse(timeline, QEvent::MouseButtonPress, {281, 92});
-    mouse(timeline, QEvent::MouseMove, {321, 92});
+    mouse(timeline, QEvent::MouseButtonPress, {281, 112});
+    mouse(timeline, QEvent::MouseMove, {321, 112});
     EXPECT_EQ(json(), before);
-    mouse(timeline, QEvent::MouseButtonRelease, {321, 92});
+    mouse(timeline, QEvent::MouseButtonRelease, {321, 112});
     EXPECT_EQ(audio()->startFrame, 40);
     EXPECT_EQ(audio()->durationFrames, 80);
     EXPECT_EQ(audio()->trimStartFrame, 10);
     EXPECT_EQ(*first(), video);
     const auto trimmed = json();
-    drag(timeline, {639, 92}, {599, 48}); // Wrong-lane trim cancels too.
+    drag(timeline, {639, 112}, {599, 68}); // Wrong-lane trim cancels too.
     EXPECT_EQ(json(), trimmed);
     timeline.setCurrentFrame(70);
     timeline.splitSelectedClip();
@@ -716,23 +709,23 @@ TEST_F(AudioTimelineInteractionTest, SecondLaneGeometryUsesActualTrackHeight) {
     ASSERT_TRUE(reloadProject(project));
     timeline.setSnappingEnabled(false);
     const auto before = json();
-    drag(timeline, target(30, 130), target(150, 92)); // y92 is now still the video lane.
+    drag(timeline, target(30, 150), target(150, 112)); // y112 is now still the video lane.
     EXPECT_EQ(json(), before);
-    drag(timeline, target(30, 130), target(150, 130));
+    drag(timeline, target(30, 150), target(150, 150));
     EXPECT_EQ(timeline.selectedClipId(), audioId);
     ASSERT_NE(audio(), nullptr);
     EXPECT_EQ(audio()->startFrame, 150);
     EXPECT_EQ(first()->startFrame, 30);
     session.undo();
     EXPECT_EQ(json(), before);
-    mouse(timeline, QEvent::MouseButtonPress, {140, 130});
-    mouse(timeline, QEvent::MouseButtonRelease, {140, 130});
+    mouse(timeline, QEvent::MouseButtonPress, {140, 150});
+    mouse(timeline, QEvent::MouseButtonRelease, {140, 150});
     EXPECT_TRUE(audioTrack()->muted);
     EXPECT_FALSE(session.editor().activeTimeline()->tracks[0].muted);
 }
 
 TEST_F(AudioTimelineInteractionTest, AudioSettingsCommitOnceCancelNoOpMuteDeleteAndPersistence) {
-    drag(timeline, target(30, 92), target(30, 92));
+    drag(timeline, target(30, 112), target(30, 112));
     const auto before = json();
     int changes = 0;
     QObject::connect(&session, &heisenberg::ui::EditorSession::timelineChanged, [&](qint64) { ++changes; });
@@ -745,7 +738,7 @@ TEST_F(AudioTimelineInteractionTest, AudioSettingsCommitOnceCancelNoOpMuteDelete
             menu->close();
         }
     });
-    const QPoint contextPoint = target(30, 92).toPoint();
+    const QPoint contextPoint = target(30, 112).toPoint();
     QContextMenuEvent context(QContextMenuEvent::Mouse, contextPoint, timeline.mapToGlobal(contextPoint));
     QApplication::sendEvent(&timeline, &context);
     EXPECT_TRUE(menuSeen);
@@ -800,8 +793,8 @@ TEST_F(AudioTimelineInteractionTest, AudioSettingsCommitOnceCancelNoOpMuteDelete
     timeline.editSelectedClipAudio(); // Unchanged confirmation does not create history.
     EXPECT_EQ(json(), configured);
     EXPECT_EQ(changes, configuredChanges);
-    mouse(timeline, QEvent::MouseButtonPress, {140, 92});
-    mouse(timeline, QEvent::MouseButtonRelease, {140, 92});
+    mouse(timeline, QEvent::MouseButtonPress, {140, 112});
+    mouse(timeline, QEvent::MouseButtonRelease, {140, 112});
     EXPECT_TRUE(audioTrack()->muted);
     const auto muted = json();
     session.undo();
@@ -841,7 +834,7 @@ TEST_F(AudioTimelineInteractionTest, BackspaceDeletesTimelineSelectionButSearchK
     window.show();
     QCoreApplication::processEvents();
     auto* widget = window.timelineWidget();
-    drag(*widget, target(30, 92), target(30, 92));
+    drag(*widget, target(30, 112), target(30, 112));
     const auto before = json();
     auto* search = window.findChild<QLineEdit*>("mediaSearch");
     ASSERT_NE(search, nullptr);

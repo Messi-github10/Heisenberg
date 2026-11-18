@@ -252,6 +252,9 @@ bool validateTimeline(const Timeline& timeline, std::string* error) {
                 !numeric || clip->speed <= 0 || clip->endFrame() == std::numeric_limits<int64_t>::max() || sourceOverflow) {
                 setError(error, "clip timing is invalid"); return false;
             }
+            if (clip->opacity < 0.0 || clip->opacity > 1.0) {
+                setError(error, "clip opacity must be between 0 and 1"); return false;
+            }
             if (clip->startFrame < previousEnd) { setError(error, "clips on a track must not overlap"); return false; }
             previousEnd = clip->endFrame();
         }
@@ -268,26 +271,27 @@ bool validateTimeline(const Timeline& timeline, std::string* error) {
 
 ProjectCompatibility compatibilityFor(const Timeline& timeline) {
     ProjectCompatibility result;
-    bool hasVideo = false, hasAudio = false;
     for (const Track& track : timeline.tracks) {
-        if ((track.type != ClipType::Video && track.type != ClipType::Audio) ||
-            (track.type == ClipType::Video && hasVideo) || (track.type == ClipType::Audio && hasAudio)) {
+        if (track.type != ClipType::Video && track.type != ClipType::Audio) {
             result.level = CompatibilityLevel::Unsupported;
-            result.messages.push_back("preview and editing support at most one video and one audio track");
+            result.messages.push_back("preview and editing support only video and audio tracks");
             return result;
         }
-        hasVideo |= track.type == ClipType::Video;
-        hasAudio |= track.type == ClipType::Audio;
         for (const Clip& clip : track.clips) {
             if (clip.mediaType != track.type || clip.sourceClipType != track.type) {
                 result.level = CompatibilityLevel::Unsupported;
                 result.messages.push_back("video and audio clips must match their owning track type");
                 return result;
             }
-            if (clip.opacity != 1.0 || clip.transform != Transform{} || clip.crop != Crop{} ||
+            if (!finite(clip.opacity) || clip.opacity < 0.0 || clip.opacity > 1.0) {
+                result.level = CompatibilityLevel::Unsupported;
+                result.messages.push_back("clip opacity must be finite and between 0 and 1");
+                return result;
+            }
+            if (clip.transform != Transform{} || clip.crop != Crop{} ||
                 clip.edgeRounding != 0.0 || clip.edgeSoftness != 0.0 || clip.opacityTrack ||
                 clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack ||
-                clip.volumeTrack || clip.blendMode ||
+                clip.volumeTrack || (clip.blendMode && *clip.blendMode != "normal") ||
                 (clip.fadeInFrames != 0 && clip.fadeInInterpolation != Interpolation::Linear) ||
                 (clip.fadeOutFrames != 0 && clip.fadeOutInterpolation != Interpolation::Linear)) {
                 result.level = CompatibilityLevel::Warning;

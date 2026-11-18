@@ -308,7 +308,7 @@ struct VideoEngine::Impl {
                     options.hardwareDecode = decodeHardware;
                     options.errorPolicy = CompositionErrorPolicy::Preview;
                     auto opened = sourceMode
-                        ? executor.openSource(plan.clips.front().sourcePath, options, context(generation))
+                        ? executor.openSource(plan.tracks.front().clips.front().sourcePath, options, context(generation))
                         : executor.open(plan, options, context(generation));
                     if (opened.status == CompositionStatus::Cancelled) continue;
                     if (!opened) { ready = false; fail(generation, opened.error); continue; }

@@ -472,7 +472,8 @@ TEST(InsertRippleTest, MissingRippleDeleteDoesNotCreateHistoryOrClearRedo) {
 TEST(InsertRippleTest, UnsupportedTrackLayoutIsRejectedWithoutHistory) {
     auto before = makeProject({makeClip("original", 0, 20)});
     Track extra;
-    extra.id = "extra-video";
+    extra.id = "extra-text";
+    extra.type = ClipType::Text;
     before.timelines[0].tracks.push_back(extra);
     EditorViewModel editor;
     ASSERT_TRUE(editor.replaceDocument(before, makeManifest()));

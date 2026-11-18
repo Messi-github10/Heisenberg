@@ -151,13 +151,14 @@ bool EditorSession::sourcePlacementRange(const QString& mediaRef, qint64& trimSt
     return true;
 }
 
-EditResult EditorSession::placeMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId) {
+EditResult EditorSession::placeMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId,
+                                     bool createNewTrack) {
     qint64 trimStart = 0, duration = -1;
     QString error;
     if (!sourcePlacementRange(mediaRef, trimStart, duration, &error))
         return {EditStatus::Invalid, {}, error.toUtf8().toStdString()};
     auto result = project_.editor().placeClip(mediaRef.toUtf8().toStdString(), frame, duration, trimStart,
-                                            targetTrackId.toUtf8().toStdString());
+                                            targetTrackId.toUtf8().toStdString(), createNewTrack);
     if (result.changed()) {
         syncDirty();
         emit timelineChanged(frame);
@@ -165,13 +166,14 @@ EditResult EditorSession::placeMedia(const QString& mediaRef, qint64 frame, cons
     return result;
 }
 
-EditResult EditorSession::insertMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId) {
+EditResult EditorSession::insertMedia(const QString& mediaRef, qint64 frame, const QString& targetTrackId,
+                                      bool createNewTrack) {
     qint64 trimStart = 0, duration = -1;
     QString error;
     if (!sourcePlacementRange(mediaRef, trimStart, duration, &error))
         return {EditStatus::Invalid, {}, error.toUtf8().toStdString()};
     auto result = project_.editor().insertClip(mediaRef.toUtf8().toStdString(), frame, duration, trimStart,
-                                             targetTrackId.toUtf8().toStdString());
+                                             targetTrackId.toUtf8().toStdString(), createNewTrack);
     if (result.changed()) {
         syncDirty();
         emit timelineChanged(frame);
@@ -251,6 +253,42 @@ bool EditorSession::importGradeLut(const QString& path, QString& id, QString& di
     return true;
 }
 
+EditResult EditorSession::addTrack(ClipType type) {
+    auto result = project_.editor().addTrack(type);
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
+EditResult EditorSession::removeTrack(const QString& trackId) {
+    auto result = project_.editor().removeTrack(trackId.toUtf8().toStdString());
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
+EditResult EditorSession::renameTrack(const QString& trackId, const QString& name) {
+    auto result = project_.editor().renameTrack(trackId.toUtf8().toStdString(), name.toUtf8().toStdString());
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
+EditResult EditorSession::reorderTrack(const QString& trackId, int finalIndex) {
+    auto result = project_.editor().reorderTrack(trackId.toUtf8().toStdString(), finalIndex);
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
+EditResult EditorSession::setTrackHidden(const QString& trackId, bool hidden) {
+    auto result = project_.editor().setTrackHidden(trackId.toUtf8().toStdString(), hidden);
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
+EditResult EditorSession::setClipOpacity(const QString& clipId, double opacity) {
+    auto result = project_.editor().setClipOpacity(clipId.toUtf8().toStdString(), opacity);
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
 EditResult EditorSession::setTrackMuted(const QString& trackId, bool muted) {
     auto result = project_.editor().setTrackMuted(trackId.toUtf8().toStdString(), muted);
     if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
@@ -266,10 +304,12 @@ EditResult EditorSession::removeClips(const QStringList& clipIds) {
     return result;
 }
 
-EditResult EditorSession::moveClip(const QString& clipId, qint64 frame) {
+EditResult EditorSession::moveClip(const QString& clipId, qint64 frame, const QString& targetTrackId,
+                                   bool createNewTrack) {
     if (project_.editor().compatibility().level == CompatibilityLevel::Unsupported)
         return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
-    auto result = project_.editor().moveClip(clipId.toUtf8().toStdString(), frame);
+    auto result = project_.editor().moveClip(clipId.toUtf8().toStdString(), frame,
+                                           targetTrackId.toUtf8().toStdString(), createNewTrack);
     if (result.changed()) {
         syncDirty();
         emit timelineChanged(frame);

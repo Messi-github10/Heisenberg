@@ -174,6 +174,50 @@ TEST(IndependentAudioEngineTest, SameSourceDifferentContributionOffsetsHaveSepar
     EXPECT_GT(amplitude, 0.06); EXPECT_LT(amplitude, 0.11);
 }
 
+TEST(IndependentAudioEngineTest, MultipleVideoAndAudioTracksKeepHiddenSoundAndMuteOnlyAudio) {
+    Timeline timeline; timeline.id = "multitrack-tones"; timeline.fps = 24;
+    Track hidden; hidden.id = "hidden-picture"; hidden.hidden = true;
+    hidden.clips.push_back(clip("hidden-440", "v", ClipType::Video, 24));
+    Track visible; visible.id = "visible-muted"; visible.muted = true;
+    visible.clips.push_back(clip("visible-440", "v", ClipType::Video, 24));
+    Track audio; audio.id = "music"; audio.type = ClipType::Audio;
+    audio.clips.push_back(clip("audible-880", "a", ClipType::Audio, 24));
+    Track muted = audio; muted.id = "muted-music"; muted.muted = true;
+    muted.clips.front().id = "muted-880"; muted.clips.front().mediaRef = "missing";
+    timeline.tracks = {hidden, visible, audio, muted};
+    MediaManifest manifest;
+    ASSERT_TRUE(manifest.add(media("v", HEISENBERG_PLAYLIST_CLIP_A, ClipType::Video)));
+    ASSERT_TRUE(manifest.add(media("a", HEISENBERG_TEST_LONG_AUDIO, ClipType::Audio)));
+    Capture capture; VideoEngine engine; configure(engine, capture);
+    bool sawLayer = false;
+    engine.onFrameDecoded = [&](DecodedFrame frame) {
+        EXPECT_FALSE(frame.source);
+        if (!frame.layers.empty()) {
+            ASSERT_EQ(frame.layers.size(), 1u);
+            EXPECT_EQ(frame.layers.front().trackId, "visible-muted");
+            sawLayer = true;
+        }
+    };
+    ASSERT_TRUE(engine.openTimeline(timeline, manifest, ""));
+    ASSERT_TRUE(pumpUntil(engine, [&] { return sawLayer && engine.snapshot().state == VideoEngine::State::Paused; }));
+    const auto generation = engine.snapshot().generation;
+    engine.play(); engine.setManualClock(10.0);
+    ASSERT_TRUE(pumpUntil(engine, [&] { return engine.snapshot().state == VideoEngine::State::Ended; }));
+    auto frames = capture.frames(generation);
+    EXPECT_GT(tone(frames, 440), 0.04); // Hidden pictures retain their original sound.
+    EXPECT_GT(tone(frames, 880), 0.04);
+    EXPECT_LT(tone(frames, 440), 0.11); // Visible muted duplicate did not double the tone.
+    engine.seek(0.25);
+    const auto soughtGeneration = engine.snapshot().generation;
+    ASSERT_TRUE(pumpUntil(engine, [&] { return engine.snapshot().state == VideoEngine::State::Paused
+        && !capture.frames(soughtGeneration).empty(); }));
+    engine.play(); engine.setManualClock(20.0);
+    ASSERT_TRUE(pumpUntil(engine, [&] { return engine.snapshot().state == VideoEngine::State::Ended; }));
+    frames = capture.frames(soughtGeneration);
+    EXPECT_GT(tone(frames, 440, 0.3, 0.65), 0.04);
+    EXPECT_GT(tone(frames, 880, 0.3, 0.65), 0.04);
+}
+
 TEST(IndependentAudioEngineTest, OfflineContributionsKeepDistinctStableWarnings) {
     Timeline timeline; timeline.id = "offline-audio"; timeline.fps = 24;
     Track video; video.id = "video";

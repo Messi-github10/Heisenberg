@@ -471,6 +471,8 @@ private:
             now - stats.lastSummary < std::chrono::seconds(1)) return;
 
         const auto extent = lastRendered_.image().extent; // Metadata only; no GPU readback.
+        const auto source = packet.source ? packet.source
+            : packet.layers.empty() ? std::shared_ptr<VideoFrame>{} : packet.layers.front().frame;
         LOG_INFO("[PlaybackDiag] render summary generation={} clipId='{}' mediaRef='{}' sourceMode={} "
                  "source={}x{} output={}x{} surface={}x{} target_frame={} count={} fallbacks={} failures={} "
                  "timings=API_wall_ms_not_GPU_timestamps "
@@ -479,8 +481,8 @@ private:
                  "present_ms_wall(count/avg/max/worst_target_frame)={}/{:.3f}/{:.3f}/{} "
                  "total_ms_wall(count/avg/max/worst_target_frame)={}/{:.3f}/{:.3f}/{}",
                  packet.generation, packet.clipId, packet.mediaRef, packet.sourceMode,
-                 packet.source ? packet.source->spec().width : 0,
-                 packet.source ? packet.source->spec().height : 0,
+                 source ? source->spec().width : 0,
+                 source ? source->spec().height : 0,
                  extent.width, extent.height, videoWidth_, videoHeight_, packet.targetPosition,
                  stats.total.count, stats.fallbacks, stats.failures,
                  stats.render.count, stats.render.averageMs(), stats.render.maxMs, stats.render.worstTargetFrame,
@@ -507,6 +509,7 @@ private:
         }
         renderer::CompositionRenderRequest request;
         request.plan = projectSourceColor ? &sourcePlan : packet.plan.get(); request.source = packet.source;
+        request.layers = packet.layers;
         if (projectSourceColor) {
             const auto overrideSpace = sourceColorSettings_.inputColorSpaces.find(sourceMediaRef_);
             if (overrideSpace != sourceColorSettings_.inputColorSpaces.end()) request.inputColorSpace = overrideSpace->second;
@@ -526,7 +529,7 @@ private:
             LOG_ERROR("IPreviewer: composition render failed: {}", error);
             notifyListener([error](Listener& listener) { listener.onFilterGraphFailed(error); });
             // Do not leave a stale successful frame visible after a failed request.
-            request.blank = true; request.source.reset();
+            request.blank = true; request.source.reset(); request.layers.clear();
             fallback = true;
             renderStart = Clock::now();
             working = compositionRenderer_->render(request, nullptr);
@@ -554,12 +557,17 @@ private:
         }
         std::string diagnosticSource = projectSourceColor ? sourceMediaRef_ : packet.mediaRef;
         if (diagnosticSource.empty() && request.plan) {
-            for (const auto& clip : request.plan->clips) {
-                if (packet.sourceMode || clip.id == packet.clipId) {
-                    diagnosticSource = clip.sourcePath;
-                    break;
+            for (const auto& track : request.plan->tracks) {
+                for (const auto& clip : track.clips) {
+                    if (packet.sourceMode || clip.id == packet.clipId) {
+                        diagnosticSource = clip.sourcePath;
+                        break;
+                    }
                 }
+                if (!diagnosticSource.empty()) break;
             }
+            if (diagnosticSource.empty() && !packet.layers.empty())
+                diagnosticSource = packet.layers.front().trackId + ":" + packet.layers.front().clipId;
         }
         for (const auto& diagnostic : diagnostics) {
             if (!reportedDiagnostics_.emplace(diagnosticSource, diagnostic).second) continue;

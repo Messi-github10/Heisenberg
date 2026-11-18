@@ -262,8 +262,9 @@ TEST(ExportEngineTest, InsertThenRippleSaveReopenPreservesSourceMappingAndExport
         ASSERT_TRUE(CompositionBuilder::build(capture, preview, &error)) << error;
         EXPECT_EQ(preview.frameCount, expectedFrames);
         EXPECT_NEAR(preview.settings.secondsFromFrame(preview.frameCount), expectedSeconds, 1e-9);
-        ASSERT_EQ(preview.clips.size(), expected.size());
-        EXPECT_TRUE(preview.audioClips.empty()); // Export still carries embedded video audio.
+        ASSERT_EQ(preview.tracks.size(), 1u);
+        ASSERT_EQ(preview.tracks.front().clips.size(), expected.size());
+        EXPECT_EQ(preview.tracks.front().type, ClipType::Video); // Embedded video audio is also exported.
         for (size_t index = 0; index < expected.size(); ++index) {
             const auto& range = expected[index];
             SCOPED_TRACE(range.id);
@@ -275,7 +276,7 @@ TEST(ExportEngineTest, InsertThenRippleSaveReopenPreservesSourceMappingAndExport
             EXPECT_EQ(clip->trimStartFrame, range.sourceStart);
             EXPECT_EQ(clip->trimEndFrame, 24 - range.sourceEnd);
             EXPECT_DOUBLE_EQ(clip->speed, 1.0);
-            const auto& planned = preview.clips[index];
+            const auto& planned = preview.tracks.front().clips[index];
             EXPECT_EQ(planned.id, range.id);
             EXPECT_EQ(planned.mediaRef, range.mediaRef);
             EXPECT_EQ(fs::u8path(planned.sourcePath).lexically_normal(),

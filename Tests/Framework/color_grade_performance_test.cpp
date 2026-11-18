@@ -105,7 +105,11 @@ TEST_P(ColorGradePerformanceTest, FullPipelineColdAndFiveWarmFramesReportApiWall
                       {"hue":120,"rotation":-5,"saturation":0.9,"lightness":-0.01}]
     }})");
     effect["params"]["lut"] = {{"id", asset->id}, {"domain", "rec709"}, {"intensity", {{"value", 0.6}}}};
-    clip.visualSnapshot.effects = JsonValue::array({effect}); plan.clips.push_back(clip);
+    clip.visualSnapshot.effects = JsonValue::array({effect});
+    CompositionTrack track;
+    track.id = "video";
+    track.clips.push_back(clip);
+    plan.tracks.push_back(track);
     std::vector<double> cold, warm;
     for (int trial = 0; trial < 3; ++trial) {
         CompositionRenderer renderer;

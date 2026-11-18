@@ -16,7 +16,7 @@
 
 namespace {
 void selectFirst(TimelineWidget& widget) {
-    const QPointF point(200, 48);
+    const QPointF point(200, 68);
     QMouseEvent press(QEvent::MouseButtonPress, point, widget.mapToGlobal(point.toPoint()), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(&widget, &press);
     QMouseEvent release(QEvent::MouseButtonRelease, point, widget.mapToGlobal(point.toPoint()), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);

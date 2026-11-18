@@ -151,6 +151,12 @@ add_executable(HeisenbergFrameworkTests
     video_engine_transport_test.cpp
     native_preview_test.cpp
     independent_audio_editor_test.cpp
+    multitrack_editor_test.cpp
+    multitrack_executor_test.cpp
+    multitrack_renderer_test.cpp
+    mixed_resolution_interop_test.cpp
+    multitrack_export_test.cpp
+    logger_concurrency_test.cpp
     independent_audio_engine_test.cpp
     export_engine_test.cpp
     grade_test.cpp

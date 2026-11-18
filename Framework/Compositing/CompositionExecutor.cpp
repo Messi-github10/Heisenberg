@@ -13,6 +13,7 @@
 #include <deque>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 
 extern "C" {
 #include <libavutil/error.h>
@@ -445,8 +446,8 @@ struct CompositionExecutor::Impl {
         generation = context.generation;
     }
 
-    std::string identity(const char* lane, size_t index) const {
-        return std::string(lane) + std::to_string(index);
+    std::string identity(const CompositionTrack& track, const CompositionClip& clip) const {
+        return std::string(track.type == ClipType::Video ? "video:" : "audio:") + clip.id;
     }
 
     Status failure(const std::string& key, const std::string& path, const std::string& message, std::string& error) {
@@ -527,13 +528,13 @@ struct CompositionExecutor::Impl {
         return static_cast<double>(clip.trimStartFrame * timeBase * rate + local * clip.speed);
     }
 
-    Status mixContribution(const CompositionClip& clip, size_t index, const char* lane, bool muted,
+    Status mixContribution(const CompositionTrack& track, const CompositionClip& clip,
                            int64_t begin, int64_t end, AudioFrame& output, int64_t outputBegin,
-                           const Context& context, std::vector<std::string>& used, std::string& error) {
-        const auto key = identity(lane, index);
-        used.push_back(key);
+                           const Context& context, std::string& error) {
+        if (track.muted) return Status::Succeeded;
+        const auto key = identity(track, clip);
         DecoderSession* decoder = nullptr;
-        auto status = session(key, clip, std::string(lane) == "video:", context, decoder, error);
+        auto status = session(key, clip, track.type == ClipType::Video, context, decoder, error);
         if (status != Status::Succeeded || !decoder || !decoder->audio) return status;
         const double firstPosition = sourcePosition(clip, begin);
         const double lastPosition = sourcePosition(clip, end - 1);
@@ -548,7 +549,6 @@ struct CompositionExecutor::Impl {
         status = decoder->decode(std::nullopt, first, last, context);
         if (status == Status::Cancelled) return status;
         if (status == Status::Failure) return failure(key, clip.sourcePath, decoder->error, error);
-        if (muted) return Status::Succeeded;
         const int rate = info.settings.sampleRate();
         const auto clipStart = info.settings.audioSamplePosition(clip.startFrame);
         const double duration = info.settings.secondsFromFrame(clip.durationFrames);
@@ -605,18 +605,25 @@ CompositionExecutor::OpenResult CompositionExecutor::open(const CompositionPlan&
     std::string error;
     if (!owned.settings.valid(&error) || owned.frameCount < 0)
         return {Status::Failure, {}, error.empty() ? "Negative composition duration" : error};
-    auto validate = [&](const std::vector<CompositionClip>& clips) {
+    std::unordered_set<std::string> ids;
+    for (const auto& track : owned.tracks) {
+        if (track.id.empty() || !ids.insert(track.id).second
+            || (track.type != ClipType::Video && track.type != ClipType::Audio))
+            return {Status::Failure, {}, "Invalid composition track identity or type"};
         int64_t previousEnd = 0;
-        for (const auto& clip : clips) {
-            if (clip.startFrame < previousEnd || clip.durationFrames < 0 || clip.trimStartFrame < 0
-                || clip.startFrame > owned.frameCount || clip.durationFrames > owned.frameCount - clip.startFrame
+        for (const auto& clip : track.clips) {
+            if (clip.id.empty() || !ids.insert(clip.id).second
+                || clip.startFrame < previousEnd || clip.durationFrames <= 0 || clip.trimStartFrame < 0
+                || clip.trimEndFrame < 0 || clip.startFrame > owned.frameCount
+                || clip.durationFrames > owned.frameCount - clip.startFrame
                 || !std::isfinite(clip.speed) || clip.speed <= 0 || !std::isfinite(clip.volume)
-                || clip.fadeInFrames < 0 || clip.fadeOutFrames < 0) return false;
+                || !std::isfinite(clip.visualSnapshot.opacity)
+                || clip.visualSnapshot.opacity < 0.0 || clip.visualSnapshot.opacity > 1.0
+                || clip.fadeInFrames < 0 || clip.fadeOutFrames < 0)
+                return {Status::Failure, {}, "Invalid identity, timing or overlapping clips in composition track " + track.id};
             previousEnd = clip.startFrame + clip.durationFrames;
         }
-        return true;
-    };
-    if (!validate(owned.clips) || !validate(owned.audioClips)) return {Status::Failure, {}, "Invalid or overlapping composition clips"};
+    }
     impl_->snapshot = std::move(snapshot);
     impl_->options = options;
     impl_->warnings = impl_->snapshot->warnings;
@@ -625,8 +632,10 @@ CompositionExecutor::OpenResult CompositionExecutor::open(const CompositionPlan&
     impl_->info.audioSampleCount = impl_->info.settings.audioSamplePosition(impl_->info.frameCount);
     impl_->info.duration = impl_->info.settings.secondsFromFrame(impl_->info.frameCount);
     impl_->info.seekable = impl_->info.frameCount > 0;
-    impl_->info.hasVideo = !impl_->snapshot->clips.empty();
-    impl_->info.hasAudio = !impl_->snapshot->clips.empty() || !impl_->snapshot->audioClips.empty();
+    for (const auto& track : impl_->snapshot->tracks) {
+        impl_->info.hasVideo |= track.type == ClipType::Video && !track.clips.empty();
+        impl_->info.hasAudio |= !track.clips.empty();
+    }
     impl_->prepare(context);
     return {Status::Succeeded, impl_->info, {}};
 }
@@ -636,7 +645,7 @@ CompositionExecutor::OpenResult CompositionExecutor::openSource(const std::strin
     close();
     if (cancelled(context)) return {Status::Cancelled, {}, {}};
     auto decoder = std::make_unique<DecoderSession>();
-    decoder->diagnosticIdentity = "video:0";
+    decoder->diagnosticIdentity = "video:source-clip";
     auto settings = TimelineSettings::hd1080p24();
     const auto status = decoder->open(sourcePath, options.hardwareDecode, settings.audioSpec(), true, context);
     if (status != Status::Succeeded) return {status, {}, status == Status::Failure ? decoder->error : std::string{}};
@@ -659,9 +668,10 @@ CompositionExecutor::OpenResult CompositionExecutor::openSource(const std::strin
     sourcePlan.settings = settings;
     sourcePlan.frameCount = static_cast<int64_t>(frames);
     CompositionClip clip;
+    clip.id = "source-clip";
     clip.sourcePath = sourcePath;
     clip.durationFrames = sourcePlan.frameCount;
-    sourcePlan.clips = {clip};
+    sourcePlan.tracks = {{"source-track", ClipType::Video, false, false, {clip}}};
     impl_->snapshot = std::make_shared<const CompositionPlan>(std::move(sourcePlan));
     impl_->options = options;
     impl_->info.settings = settings;
@@ -672,7 +682,7 @@ CompositionExecutor::OpenResult CompositionExecutor::openSource(const std::strin
     impl_->info.seekable = decoder->seekable;
     impl_->info.hasVideo = decoder->video != nullptr;
     impl_->info.hasAudio = decoder->audio != nullptr;
-    impl_->sessions.emplace("video:0", std::move(decoder));
+    impl_->sessions.emplace("video:source-clip", std::move(decoder));
     impl_->prepare(context);
     return {Status::Succeeded, impl_->info, {}};
 }
@@ -692,15 +702,15 @@ CompositionExecutor::VideoResult CompositionExecutor::videoFrame(int64_t frame, 
     output.plan = impl_->snapshot;
     std::vector<std::string> used;
     std::string error;
-    if (auto sample = impl_->snapshot->videoSampleAt(frame)) {
-        const auto& clip = impl_->snapshot->clips[sample->clipIndex];
-        output.clipId = clip.id;
-        output.mediaRef = clip.mediaRef;
-        output.clipLocalFrame = sample->clipLocalFrame;
-        const auto key = impl_->identity("video:", sample->clipIndex);
+    for (const auto& sample : impl_->snapshot->videoSamplesAt(frame)) {
+        const auto& track = impl_->snapshot->tracks[sample.trackIndex];
+        const auto& clip = track.clips[sample.clipIndex];
+        const auto key = impl_->identity(track, clip);
         used.push_back(key);
+        if (sample.hidden) continue;
         DecoderSession* decoder = nullptr;
         auto status = impl_->session(key, clip, true, context, decoder, error);
+        std::shared_ptr<VideoFrame> image;
         if (status == Status::Succeeded && decoder) {
             const auto begin = impl_->info.settings.audioSamplePosition(frame);
             const auto end = std::min(impl_->info.audioSampleCount, impl_->info.settings.audioSamplePosition(frame + 1));
@@ -715,8 +725,7 @@ CompositionExecutor::VideoResult CompositionExecutor::videoFrame(int64_t frame, 
             const auto last = static_cast<int64_t>(std::floor(lastPosition)) + 1;
             const auto prefetchLast = static_cast<int64_t>(std::min(
                 static_cast<long double>(last), static_cast<long double>(first) + kMixBlock));
-            status = decoder->decode(sample->hidden ? std::nullopt : std::optional<double>(sample->sourceSeconds),
-                first, prefetchLast, context, &output.source);
+            status = decoder->decode(sample.sourceSeconds, first, prefetchLast, context, &image);
             if (status == Status::Failure) status = impl_->failure(key, clip.sourcePath, decoder->error, error);
         }
         if (status == Status::Cancelled) {
@@ -724,14 +733,22 @@ CompositionExecutor::VideoResult CompositionExecutor::videoFrame(int64_t frame, 
             return {status, {}, {}};
         }
         if (status == Status::Failure) return {status, {}, error};
-        if (sample->hidden) output.source.reset();
+        if (output.sourceMode) {
+            output.source = std::move(image);
+            output.clipId = clip.id;
+            output.mediaRef = clip.mediaRef;
+            output.clipLocalFrame = sample.clipLocalFrame;
+        } else if (image) {
+            output.layers.push_back({std::move(image), track.id, clip.id, sample.clipLocalFrame,
+                std::clamp(clip.visualSnapshot.opacity, 0.0, 1.0)});
+        }
     }
     impl_->retain("video:", used);
     if (cancelled(context)) {
         reset();
         return {Status::Cancelled, {}, {}};
     }
-    output.blank = !output.source;
+    output.blank = output.sourceMode ? !output.source : output.layers.empty();
     return {Status::Succeeded, std::move(output), {}};
 }
 
@@ -742,11 +759,9 @@ CompositionExecutor::AudioResult CompositionExecutor::audioSamples(int64_t begin
         return {Status::Failure, {}, "Invalid audio range (maximum 1048576 samples per call)"};
     if (begin >= impl_->info.audioSampleCount) return {Status::End, {}, {}};
     impl_->prepare(context);
-    if (impl_->audioCursor && begin < *impl_->audioCursor) {
-        if (impl_->info.sourceMode && !impl_->info.seekable)
-            return {Status::Failure, {}, "Cannot seek backward in non-seekable audio"};
-        impl_->retain("independent-audio:", {});
-    }
+    if (impl_->audioCursor && begin < *impl_->audioCursor
+        && impl_->info.sourceMode && !impl_->info.seekable)
+        return {Status::Failure, {}, "Cannot seek backward in non-seekable audio"};
     end = std::min(end, impl_->info.audioSampleCount);
     auto output = std::make_shared<AudioFrame>();
     output->setSpec(impl_->info.settings.audioSpec());
@@ -762,32 +777,32 @@ CompositionExecutor::AudioResult CompositionExecutor::audioSamples(int64_t begin
         }
 
         int64_t stop = std::min(end, cursor + std::min(kMixBlock, end - cursor));
-        stop = impl_->boundary(plan.clips, cursor, stop);
-        stop = impl_->boundary(plan.audioClips, cursor, stop);
-        size_t videoIndex = 0, audioIndex = 0;
-        const auto* videoClip = impl_->clipAt(plan.clips, cursor, videoIndex);
-        const auto* audioClip = impl_->clipAt(plan.audioClips, cursor, audioIndex);
-        for (const auto* clip : {videoClip, audioClip}) {
-            if (clip && clip->speed > 1.0) {
-                stop = std::min(stop, cursor + static_cast<int64_t>(std::max(1.0, std::floor(kMixBlock / clip->speed))));
+        std::vector<std::pair<const CompositionTrack*, const CompositionClip*>> active;
+        std::vector<std::string> used;
+        for (const auto& track : plan.tracks) {
+            stop = impl_->boundary(track.clips, cursor, stop);
+            size_t index = 0;
+            if (const auto* clip = impl_->clipAt(track.clips, cursor, index)) {
+                // Retain the complete batch before mixing any contribution.
+                // A hidden picture still owns its embedded audio session.
+                used.push_back(impl_->identity(track, *clip));
+                if (track.muted) continue;
+                active.emplace_back(&track, clip);
+                if (clip->speed > 1.0)
+                    stop = std::min(stop, cursor + static_cast<int64_t>(std::max(1.0, std::floor(kMixBlock / clip->speed))));
             }
         }
-
-        std::vector<std::string> original, independent;
-        Status status = Status::Succeeded;
-        if (videoClip)
-            status = impl_->mixContribution(*videoClip, videoIndex, "video:", plan.muted,
-                cursor, stop, *output, begin, context, original, error);
-        if (status == Status::Succeeded && audioClip)
-            status = impl_->mixContribution(*audioClip, audioIndex, "independent-audio:", plan.audioMuted,
-                cursor, stop, *output, begin, context, independent, error);
-        impl_->retain("video:", original);
-        impl_->retain("independent-audio:", independent);
-        if (status == Status::Cancelled) {
-            reset();
-            return {status, {}, {}};
+        impl_->retain("video:", used);
+        impl_->retain("audio:", used);
+        for (const auto& contribution : active) {
+            const auto status = impl_->mixContribution(*contribution.first, *contribution.second,
+                cursor, stop, *output, begin, context, error);
+            if (status == Status::Cancelled) {
+                reset();
+                return {status, {}, {}};
+            }
+            if (status == Status::Failure) return {status, {}, error};
         }
-        if (status == Status::Failure) return {status, {}, error};
         cursor = stop;
     }
     for (int channel = 0; channel < output->spec().channels; ++channel)

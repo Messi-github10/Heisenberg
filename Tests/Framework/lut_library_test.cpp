@@ -374,7 +374,9 @@ TEST_F(LutLibraryTest, CompositionPlanPinsValidatedCpuSnapshotAcrossInvalidation
     LutLibrary::setDefaultRoot(directory / "replacement-root");
     timeline.tracks.clear();
     EXPECT_EQ(plan.gradeLuts.at(asset->id)->cubeText,identity);
-    EXPECT_EQ(plan.clips.front().visualSnapshot.effects,clip.effects);
+    ASSERT_EQ(plan.tracks.size(),1u);
+    ASSERT_EQ(plan.tracks.front().clips.size(),1u);
+    EXPECT_EQ(plan.tracks.front().clips.front().visualSnapshot.effects,clip.effects);
 }
 
 TEST_F(LutLibraryTest, CompositionPlanPinsDisabledEffectsAreIgnoredAndOtherLutsArePinned) {

@@ -205,21 +205,27 @@ TEST_F(ColorGradeExportTest, H264FullGradeMatchesPreviewAndIndependentCpuReferen
     color::ColorPipeline color;
     std::vector<Patches> expected;
     auto ungraded = plan;
-    for (auto& clip : ungraded.clips) clip.visualSnapshot.effects = JsonValue::array();
+    for (auto& track : ungraded.tracks)
+        for (auto& clip : track.clips) clip.visualSnapshot.effects = JsonValue::array();
     CompositionRenderer baselineRenderer;
     ASSERT_TRUE(baselineRenderer.initialize(gpu.plGpu(), gpu.plVulkan(), nullptr, nullptr, &error)) << error;
     for (int frame = 0; frame < 6; ++frame) {
         const auto decoded = executor.videoFrame(frame);
         ASSERT_TRUE(decoded) << decoded.error;
+        ASSERT_EQ(decoded.value.layers.size(), 1u);
+        ASSERT_TRUE(decoded.value.layers.front().frame);
+        EXPECT_EQ(decoded.value.layers.front().trackId, "video");
+        EXPECT_EQ(decoded.value.layers.front().clipId, "clip");
+        EXPECT_EQ(decoded.value.layers.front().clipLocalFrame, frame);
         // Use the same decoded source and normalization path, with only grade
         // disabled. This isolates grade math from YUV unpack/IDT precision.
-        auto baseline = baselineRenderer.render(ungraded, frame, decoded.value.source, &error);
+        auto baseline = baselineRenderer.render(ungraded, frame, decoded.value.layers, &error);
         ASSERT_TRUE(baseline) << error;
         auto baselinePixels = baselineRenderer.download(baseline, DownloadFormat::RgbaFloat, &error);
         ASSERT_TRUE(baselinePixels) << error;
         CompositionRenderRequest preview;
-        preview.plan = &plan; preview.settings = plan.settings; preview.source = decoded.value.source;
-        preview.targetFrame = frame; preview.clipLocalFrame = frame; preview.clipId = "clip"; preview.strict = false;
+        preview.plan = &plan; preview.settings = plan.settings; preview.layers = decoded.value.layers;
+        preview.targetFrame = frame; preview.blank = decoded.value.blank; preview.strict = false;
         auto working = renderer.render(preview, &error);
         ASSERT_TRUE(working) << error;
         ColorOutputRequest output; output.display = plan.colorSettings.exportOutput.display;

@@ -9,7 +9,18 @@
 
 namespace heisenberg {
 
+struct CompositionVideoLayer {
+    std::shared_ptr<VideoFrame> frame;
+    std::string trackId;
+    std::string clipId;
+    int64_t clipLocalFrame = 0;
+    double opacity = 1.0;
+};
+
 struct CompositionVideoSample {
+    // Visible decoded layers in canonical top-first track order.
+    std::vector<CompositionVideoLayer> layers;
+    // Source-mode convenience only. Timeline pictures are carried by layers.
     std::shared_ptr<VideoFrame> source;
     TimelineSettings settings;
     int64_t targetPosition = 0;

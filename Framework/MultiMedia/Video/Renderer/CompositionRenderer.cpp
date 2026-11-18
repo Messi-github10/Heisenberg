@@ -15,16 +15,22 @@
 #include <volk.h>
 extern "C" {
 #include <libavutil/pixdesc.h>
+#include <libplacebo/dispatch.h>
+#include <libplacebo/shaders/custom.h>
+#include <libplacebo/shaders/sampling.h>
 }
 #include <d3d11.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 
 namespace heisenberg::renderer {
 namespace {
@@ -57,6 +63,35 @@ pl_tex wrap(pl_gpu gpu, const VulkanImageRef& image) {
     release.qf = image.queueFamilyIndex; release.semaphore.sem = image.ready.semaphore; release.semaphore.value = image.ready.value;
     pl_vulkan_release_ex(gpu, &release); return tex;
 }
+// Every wrapper returns ownership before destruction, including exception and
+// cancellation paths. Its private semaphore never re-signals a frame's lease.
+class BorrowedTexture {
+public:
+    BorrowedTexture(pl_gpu gpu, const VulkanImageRef& image) : gpu_(gpu), image_(image) {
+        pl_vulkan_sem_params params{}; params.type = VK_SEMAPHORE_TYPE_TIMELINE;
+        done_ = pl_vulkan_sem_create(gpu_, &params);
+        require(done_ != VK_NULL_HANDLE, "Cannot create image return semaphore");
+        try { texture_ = wrap(gpu_, image_); }
+        catch (...) { pl_vulkan_sem_destroy(gpu_, &done_); throw; }
+    }
+    ~BorrowedTexture() { close(); }
+    BorrowedTexture(const BorrowedTexture&) = delete;
+    BorrowedTexture& operator=(const BorrowedTexture&) = delete;
+    pl_tex get() const { return texture_; }
+    bool close() {
+        if (!texture_) return returned_;
+        pl_vulkan_hold_params params{}; params.tex = texture_;
+        params.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        params.qf = image_.queueFamilyIndex; params.semaphore = {done_, 1};
+        returned_ = pl_vulkan_hold_ex(gpu_, &params);
+        pl_gpu_finish(gpu_);
+        pl_tex_destroy(gpu_, &texture_); pl_vulkan_sem_destroy(gpu_, &done_);
+        return returned_;
+    }
+private:
+    pl_gpu gpu_; VulkanImageRef image_; pl_tex texture_ = nullptr;
+    VkSemaphore done_ = VK_NULL_HANDLE; bool returned_ = false;
+};
 float halfToFloat(uint16_t h) {
     const uint32_t sign = (h & 0x8000u) << 16;
     uint32_t exp = (h >> 10) & 31, mantissa = h & 1023, bits;
@@ -118,10 +153,24 @@ struct CompositionRenderer::Impl {
     pl_gpu gpu = nullptr; pl_vulkan vulkan = nullptr; VulkanGraphContext context;
     ID3D11Device* d3dDevice = nullptr; ID3D11DeviceContext* d3dContext = nullptr;
     std::unique_ptr<SoftwareContext> software; std::unique_ptr<RenderEngine> placement;
-    std::unique_ptr<color::ColorPipeline> colorPipeline; std::unique_ptr<D3D11VulkanInterop> interop;
-    int interopW = 0, interopH = 0; VulkanGraphDocument graphDocument; std::unique_ptr<VulkanFilterGraph> graph;
+    std::unique_ptr<color::ColorPipeline> colorPipeline;
+    // Devices/queue are fixed for this initialized renderer. Both import paths
+    // use the same RGBA16F pool; source format/metadata are handled per frame.
+    using InteropKey = std::pair<int, int>;
+    std::map<InteropKey, std::unique_ptr<D3D11VulkanInterop>> interops;
+    VulkanGraphDocument graphDocument; std::unique_ptr<VulkanFilterGraph> graph;
+    D3D11VulkanInterop& interopFor(InteropKey key) {
+        const auto found = interops.find(key);
+        if (found != interops.end()) return *found->second;
+        auto next = std::make_unique<D3D11VulkanInterop>();
+        require(next->init(d3dDevice,d3dContext,context.device,context.physicalDevice,context.queue,context.queueFamilyIndex,key.first,key.second), "Cannot initialize interop");
+        // A failed/partial initialization never becomes a reusable cache entry.
+        return *interops.emplace(key,std::move(next)).first->second;
+    }
     struct GradeCache { std::string key; std::unique_ptr<VulkanFilterGraph> graph; };
-    GradeCache gradeGraph; std::thread::id owner;
+    std::map<std::string, GradeCache> gradeGraphs;
+    pl_dispatch compositor = nullptr;
+    std::thread::id owner;
     std::function<bool()> cancelled;
     bool cancellationObserved = false;
     // LRU signatures, not frame counters: metadata/source/output changes may
@@ -194,14 +243,17 @@ struct CompositionRenderer::Impl {
         b.image = image.image; b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
     }
-    void hold(pl_tex texture, RenderedFrame& frame) {
-        pl_gpu_flush(gpu); pl_vulkan_hold_params params{}; params.tex = texture; params.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; params.qf = context.queueFamilyIndex;
-        params.semaphore.sem = frame.storage_->completion; params.semaphore.value = 1;
-        require(pl_vulkan_hold_ex(gpu, &params), "Cannot return libplacebo ownership");
-        frame.storage_->ready = {frame.storage_->completion, 1}; waitGpu(frame.storage_->ready); frame.storage_->resource.setLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    void clear(RenderedFrame& frame) {
+        commands([&](VkCommandBuffer cmd) {
+            barrier(cmd,frame.image(),VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            VkClearColorValue black{}; black.float32[3] = 1.0f;
+            VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+            vkCmdClearColorImage(cmd,frame.image().image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&black,1,&range);
+            barrier(cmd,frame.image(),VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }); frame.storage_->complete();
     }
     void draw(const pl_frame& input, RenderedFrame& output, bool fit, double sourceAspect = 0) {
-        auto texture = wrap(gpu, output.image()); auto target = rgb(texture, output.image().extent.width, output.image().extent.height); pl_frame source = input;
+        BorrowedTexture texture(gpu, output.image()); auto target = rgb(texture.get(), output.image().extent.width, output.image().extent.height); pl_frame source = input;
         // Identical linear labels make libplacebo unpack/resize only. OCIO owns all color transforms.
         source.color = target.color;
         if (fit) {
@@ -211,7 +263,38 @@ struct CompositionRenderer::Impl {
             else { const float w = static_cast<float>(output.image().extent.height*src); target.crop.x0 = (output.image().extent.width-w)*0.5f; target.crop.x1 = target.crop.x0+w; }
         }
         pl_render_params params = pl_render_default_params; params.disable_linear_scaling = true;
-        const bool ok = placement->render(&source, &target, &params); hold(texture, output); pl_tex_destroy(gpu, &texture); checkCancellation(); require(ok, "libplacebo unpack/placement failed");
+        // Keep straight alpha through unpacking and fit. The canvas is blended
+        // only after each clip's complete grade DAG has run.
+        params.background = PL_CLEAR_SKIP; params.border = PL_CLEAR_COLOR;
+        params.background_transparency = 1.0f;
+        const bool ok = placement->render(&source, &target, &params);
+        const bool returned = texture.close();
+        output.storage_->resource.setLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        output.storage_->complete(); checkCancellation();
+        require(returned && ok, "libplacebo unpack/placement failed");
+    }
+    void blend(pl_tex target, const RenderedFrame& input, double opacity) {
+        BorrowedTexture source(gpu, input.image());
+        auto shader = pl_dispatch_begin(compositor);
+        pl_sample_src sample{}; sample.tex = source.get(); sample.components = 4;
+        const bool sampled = pl_shader_sample_direct(shader, &sample);
+        const float amount = static_cast<float>(opacity);
+        pl_shader_var variable{}; variable.var = pl_var_float("layer_opacity");
+        variable.data = &amount; variable.dynamic = true;
+        pl_custom_shader alpha{}; alpha.input = alpha.output = PL_SHADER_SIG_COLOR;
+        alpha.body = "color.a = clamp(color.a, 0.0, 1.0) * layer_opacity;";
+        alpha.variables = &variable; alpha.num_variables = 1;
+        const bool modified = pl_shader_custom(shader, &alpha);
+        // Inputs are independent (straight) alpha; the destination starts
+        // opaque, so source-over keeps its alpha exactly one.
+        const pl_blend_params over{PL_BLEND_SRC_ALPHA, PL_BLEND_ONE_MINUS_SRC_ALPHA,
+                                   PL_BLEND_ONE, PL_BLEND_ONE_MINUS_SRC_ALPHA};
+        pl_dispatch_params params{}; params.shader = &shader; params.target = target;
+        params.blend_params = &over;
+        const bool submitted = sampled && modified && pl_dispatch_finish(compositor, &params);
+        if (shader) pl_dispatch_abort(compositor, &shader);
+        const bool returned = source.close();
+        checkCancellation(); require(submitted && returned, "libplacebo layer blend failed");
     }
     RenderedFrame copy(const VulkanImageRef& input, int64_t position, AVRational timeBase) {
         waitGpu(input.ready); checkCancellation(); auto frame = allocate(input.extent, input.contract, position, timeBase);
@@ -244,7 +327,9 @@ bool CompositionRenderer::initialize(pl_gpu gpu, pl_vulkan vk, ID3D11Device* dev
         impl_->gpu = gpu; impl_->vulkan = vk; impl_->owner = std::this_thread::get_id();
         impl_->context.instance = vk->instance; impl_->context.device = vk->device; impl_->context.physicalDevice = vk->phys_device; impl_->context.queueFamilyIndex = vk->queue_graphics.index;
         vkGetDeviceQueue(vk->device,vk->queue_graphics.index,0,&impl_->context.queue); impl_->d3dDevice = device; impl_->d3dContext = context;
-        impl_->software = std::make_unique<SoftwareContext>(gpu); impl_->placement = std::make_unique<RenderEngine>(gpu); impl_->colorPipeline = std::make_unique<color::ColorPipeline>(impl_->context); return true;
+        impl_->software = std::make_unique<SoftwareContext>(gpu); impl_->placement = std::make_unique<RenderEngine>(gpu); impl_->colorPipeline = std::make_unique<color::ColorPipeline>(impl_->context);
+        impl_->compositor = pl_dispatch_create(nullptr, gpu);
+        require(impl_->compositor != nullptr, "Cannot create libplacebo compositor"); return true;
     } catch (const std::exception& e) { if (error) *error = e.what(); shutdown(); return false; }
 }
 void CompositionRenderer::setCancellation(std::function<bool()> cancelled) {
@@ -253,13 +338,23 @@ void CompositionRenderer::setCancellation(std::function<bool()> cancelled) {
 }
 void CompositionRenderer::shutdown() {
     if (!impl_ || !impl_->gpu) return; impl_->check(); pl_gpu_finish(impl_->gpu); synchronizedQueueWaitIdle(impl_->context.queue);
-    impl_->reportedColorPaths.clear(); impl_->gradeGraph = {}; impl_->graph.reset(); impl_->interop.reset(); impl_->colorPipeline.reset(); impl_->software.reset(); impl_->placement.reset(); impl_->gpu = nullptr; impl_->vulkan = nullptr; impl_->owner = {};
+    impl_->reportedColorPaths.clear(); impl_->gradeGraphs.clear(); pl_dispatch_destroy(&impl_->compositor); impl_->graph.reset(); impl_->interops.clear(); impl_->colorPipeline.reset(); impl_->software.reset(); impl_->placement.reset(); impl_->gpu = nullptr; impl_->vulkan = nullptr; impl_->owner = {};
+}
+RenderedFrame CompositionRenderer::render(const CompositionPlan& plan, int64_t frame, const std::vector<CompositionVideoLayer>& layers, std::string* error) {
+    CompositionRenderRequest request; request.plan = &plan; request.layers = layers;
+    request.settings = plan.settings; request.targetFrame = frame; request.strict = true;
+    return render(request,error);
 }
 RenderedFrame CompositionRenderer::render(const CompositionPlan& plan, int64_t frame, const std::shared_ptr<VideoFrame>& source, std::string* error) {
-    CompositionRenderRequest request; request.plan = &plan; request.source = source; request.settings = plan.settings; request.targetFrame = frame; request.strict = true; request.blank = !source || plan.hidden;
-    if (auto sample = plan.videoSampleAt(frame)) { request.clipLocalFrame = sample->clipLocalFrame; request.clipId = plan.clips[sample->clipIndex].id; request.blank = request.blank || sample->hidden; }
-    else request.blank = true;
-    return render(request,error);
+    std::vector<CompositionVideoLayer> layers;
+    const auto samples = plan.videoSamplesAt(frame);
+    if (source && !samples.empty()) {
+        const auto& sample = samples.front();
+        const auto& track = plan.tracks[sample.trackIndex];
+        const auto& clip = track.clips[sample.clipIndex];
+        layers.push_back({source,track.id,clip.id,sample.clipLocalFrame,clip.visualSnapshot.opacity});
+    }
+    return render(plan,frame,layers,error);
 }
 RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& request, std::string* error) {
     try {
@@ -267,16 +362,78 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
         const auto& settings = request.plan ? request.plan->settings : request.settings;
         if (!settings.valid(error)) throw std::runtime_error(error && !error->empty() ? *error : "Invalid renderer settings");
         const AVRational timeBase = settings.timeBase().toAVRational();
-        const CompositionClip* clip = nullptr; if (request.plan) for (const auto& candidate : request.plan->clips) if (candidate.id == request.clipId) { clip = &candidate; break; }
         VkExtent2D canvas{static_cast<uint32_t>(settings.width()),static_cast<uint32_t>(settings.height())};
         if (request.sourceMode && request.source) canvas = {static_cast<uint32_t>(request.source->get()->width),static_cast<uint32_t>(request.source->get()->height)};
-        if (request.blank || !request.source || (request.plan && request.plan->hidden)) {
-            auto frame = impl_->allocate(canvas,kWorkingImageContract,request.targetFrame,timeBase);
-            impl_->commands([&](VkCommandBuffer cmd) {
-                Impl::barrier(cmd,frame.image(),VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL); VkClearColorValue black{}; black.float32[3] = 1.0f; VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
-                vkCmdClearColorImage(cmd,frame.image().image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&black,1,&range); Impl::barrier(cmd,frame.image(),VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            }); frame.storage_->complete(); return frame;
+        auto layers = request.layers;
+        // Compatibility for explicit source requests used by existing clients.
+        // Normal composition packets carry only layers.
+        if (layers.empty() && request.source) {
+            CompositionVideoLayer layer{request.source,{},request.clipId,request.clipLocalFrame,1.0};
+            if (request.plan && !request.sourceMode) {
+                const auto samples = request.plan->videoSamplesAt(request.targetFrame);
+                for (const auto& sample : samples) {
+                    const auto& track = request.plan->tracks[sample.trackIndex];
+                    const auto& clip = track.clips[sample.clipIndex];
+                    if (!request.clipId.empty() && request.clipId != clip.id) continue;
+                    layer.trackId = track.id; layer.clipId = clip.id;
+                    layer.clipLocalFrame = sample.clipLocalFrame; layer.opacity = clip.visualSnapshot.opacity;
+                    break;
+                }
+            }
+            layers.push_back(std::move(layer));
         }
+        struct Contribution { CompositionVideoLayer layer; const CompositionClip* clip; };
+        std::vector<Contribution> contributions;
+        const auto active = request.plan ? request.plan->videoSamplesAt(request.targetFrame) : std::vector<CompositionSample>{};
+        if (!request.blank) for (auto layer : layers) {
+            if (!layer.frame) continue;
+            require(std::isfinite(layer.opacity), "Layer opacity must be finite");
+            layer.opacity = std::clamp(layer.opacity,0.0,1.0);
+            if (layer.opacity == 0.0) continue;
+            const CompositionClip* clip = nullptr;
+            if (request.plan && !request.sourceMode) {
+                for (const auto& sample : active) {
+                    const auto& track = request.plan->tracks[sample.trackIndex];
+                    const auto& candidate = track.clips[sample.clipIndex];
+                    if (!track.hidden && !sample.hidden && track.id == layer.trackId && candidate.id == layer.clipId) { clip = &candidate; break; }
+                }
+                if (!clip) continue; // hidden, inactive or stale packet contribution
+            }
+            if (request.plan && request.sourceMode && !layer.clipId.empty()) {
+                for (const auto& track : request.plan->tracks)
+                    for (const auto& candidate : track.clips)
+                        if (candidate.id == layer.clipId) { clip = &candidate; break; }
+            }
+            contributions.push_back({std::move(layer),clip});
+        }
+        if (request.plan && !request.sourceMode) {
+            const auto rank = [&](const Contribution& contribution) {
+                return std::find_if(request.plan->tracks.begin(),request.plan->tracks.end(),[&](const auto& track) {
+                    return track.id == contribution.layer.trackId;
+                }) - request.plan->tracks.begin();
+            };
+            std::stable_sort(contributions.begin(),contributions.end(),[&](const auto& a, const auto& b) { return rank(a) < rank(b); });
+        }
+        // Select the complete hardware set before pruning: another layer may
+        // still need an extent encountered earlier in this same render.
+        std::set<Impl::InteropKey> activeInterops;
+        for (const auto& contribution : contributions) {
+            const auto* av = contribution.layer.frame->get();
+            if (av->format == AV_PIX_FMT_D3D11) activeInterops.emplace(av->width,av->height);
+        }
+        std::erase_if(impl_->interops,[&](const auto& entry) { return !activeInterops.contains(entry.first); });
+        std::erase_if(impl_->gradeGraphs,[&](const auto& entry) {
+            return std::none_of(contributions.begin(),contributions.end(),[&](const auto& contribution) {
+                return contribution.clip && contribution.clip->id == entry.first;
+            });
+        });
+        const auto& baseRequest = request;
+        auto prepare = [&](const Contribution& contribution) {
+        auto request = baseRequest;
+        request.source = contribution.layer.frame;
+        request.clipId = contribution.layer.clipId;
+        request.clipLocalFrame = contribution.layer.clipLocalFrame;
+        const auto* clip = contribution.clip;
         std::string overrideSpace = request.inputColorSpace;
         if (overrideSpace.empty() && clip && request.plan) { const auto found = request.plan->colorSettings.inputColorSpaces.find(clip->mediaRef); if (found != request.plan->colorSettings.inputColorSpaces.end()) overrideSpace = found->second; }
         const int inputPolicyVersion = request.plan ? request.plan->colorSettings.inputPolicyVersion : 2;
@@ -286,26 +443,30 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
         auto encodedContract = kWorkingImageContract; encodedContract.primaries = filtergraph::ColorPrimaries::unknown; encodedContract.transfer = filtergraph::ColorTransfer::unknown; RenderedFrame working;
         if (av->format == AV_PIX_FMT_D3D11) {
             require(impl_->d3dDevice && impl_->d3dContext, "D3D11 source needs interop device");
-            if (!impl_->interop || impl_->interopW != av->width || impl_->interopH != av->height) {
-                impl_->interop = std::make_unique<D3D11VulkanInterop>(); require(impl_->interop->init(impl_->d3dDevice,impl_->d3dContext,impl_->context.device,impl_->context.physicalDevice,impl_->context.queue,impl_->context.queueFamilyIndex,av->width,av->height), "Cannot initialize interop"); impl_->interopW = av->width; impl_->interopH = av->height;
-            }
+            require(av->data[0] != nullptr, "D3D11 source needs a texture");
+            const Impl::InteropKey key{av->width,av->height};
+            auto& interop = impl_->interopFor(key);
             D3D11_TEXTURE2D_DESC desc{}; reinterpret_cast<ID3D11Texture2D*>(av->data[0])->GetDesc(&desc); VulkanImageRef imported;
-            require(desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ? impl_->interop->processRgbFrame(av,imported) : impl_->interop->processFrame(av,imported), "Cannot import D3D11 frame");
+            const bool importedOk = desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT
+                ? interop.processRgbFrame(av,imported) : interop.processFrame(av,imported);
+            if (!importedOk) {
+                // Processing may have acquired a slot without exporting it.
+                // Retire that pool rather than reusing partially acquired state.
+                impl_->interops.erase(key);
+                require(false, "Cannot import D3D11 frame");
+            }
+            struct ImportedFrameReturn {
+                D3D11VulkanInterop& interop;
+                VulkanSyncPoint done;
+                ~ImportedFrameReturn() { interop.releaseFrame(done); }
+            } returned{interop,imported.ready};
             working = impl_->allocate(imported.extent,kWorkingImageContract,request.targetFrame,timeBase);
-            auto done = impl_->colorPipeline->executeSpace(imported,working.image(),selection.colorSpace,color::kWorkingSpace,error); impl_->interop->releaseFrame(done.valid() ? done : imported.ready);
+            auto done = impl_->colorPipeline->executeSpace(imported,working.image(),selection.colorSpace,color::kWorkingSpace,error);
+            if (done.valid()) returned.done = done;
             require(done.valid(), error && !error->empty() ? error->c_str() : "OCIO IDT failed"); working.storage_->complete(done);
         } else {
             auto unpacked = impl_->allocate({static_cast<uint32_t>(av->width),static_cast<uint32_t>(av->height)},encodedContract,request.targetFrame,timeBase);
             auto source = impl_->software->uploadAvFrame(av); require(source != nullptr, "Cannot upload source frame"); impl_->draw(*source,unpacked,false); working = impl_->convert(unpacked,selection.colorSpace,color::kWorkingSpace,kWorkingImageContract,error);
-        }
-        if (working.image().extent.width != canvas.width || working.image().extent.height != canvas.height || av->sample_aspect_ratio.num != av->sample_aspect_ratio.den) {
-            auto placed = impl_->allocate(canvas,kWorkingImageContract,request.targetFrame,timeBase); auto texture = wrap(impl_->gpu,working.image()); auto source = rgb(texture,av->width,av->height);
-            const double sar = av->sample_aspect_ratio.num > 0 && av->sample_aspect_ratio.den > 0 ? av_q2d(av->sample_aspect_ratio) : 1.0; impl_->draw(source,placed,true,av->width*sar/av->height);
-            pl_vulkan_hold_params hold{}; hold.tex = texture; hold.layout = working.image().layout; hold.qf = impl_->context.queueFamilyIndex;
-            hold.semaphore.sem = placed.image().ready.semaphore; hold.semaphore.value = 2;
-            const bool returned = pl_vulkan_hold_ex(impl_->gpu,&hold);
-            pl_gpu_finish(impl_->gpu); pl_tex_destroy(impl_->gpu,&texture);
-            require(returned, "Cannot release placement input"); working = std::move(placed);
         }
         FrameContext timing; timing.pts = request.targetFrame; timing.frameIndex = request.clipLocalFrame; timing.timeBaseNum = timeBase.num; timing.timeBaseDen = timeBase.den; timing.timeSeconds = request.clipLocalFrame*av_q2d(timeBase);
         if (clip) {
@@ -315,7 +476,7 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
             if (request.diagnostics) for (const auto& diagnostic : compiled.diagnostics) request.diagnostics->push_back(diagnostic.message);
             if (!compiled.neutral()) {
                 impl_->checkCancellation();
-                auto& cache = impl_->gradeGraph;
+                auto& cache = impl_->gradeGraphs[clip->id];
                 if (!cache.graph || cache.key != compiled.topologyKey) {
                     cache.graph = std::make_unique<VulkanFilterGraph>(impl_->context,compiled.document);
                     cache.key = compiled.topologyKey;
@@ -328,7 +489,13 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
                 working = impl_->runGraph(*cache.graph,working,timing);
             }
         }
-        if (impl_->graph) working = impl_->runGraph(*impl_->graph,working,timing);
+        if (working.image().extent.width != canvas.width || working.image().extent.height != canvas.height || av->sample_aspect_ratio.num != av->sample_aspect_ratio.den) {
+            auto placed = impl_->allocate(canvas,kWorkingImageContract,request.targetFrame,timeBase);
+            BorrowedTexture texture(impl_->gpu,working.image()); auto source = rgb(texture.get(),av->width,av->height);
+            const double sar = av->sample_aspect_ratio.num > 0 && av->sample_aspect_ratio.den > 0 ? av_q2d(av->sample_aspect_ratio) : 1.0;
+            impl_->draw(source,placed,true,av->width*sar/av->height);
+            require(texture.close(), "Cannot release placement input"); working = std::move(placed);
+        }
         const auto& metadata = selection.observedMetadata;
         const auto* formatName = av_get_pix_fmt_name(metadata.format);
         const auto repr = colorReprFromAvFrame(av);
@@ -356,6 +523,39 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
         working.storage_->inputPath = path.str();
         working.storage_->finishedRec709 = inputPolicyVersion == 2 && selection.colorSpace == color::kExportDisplay;
         return working;
+        };
+        auto composite = impl_->allocate(canvas,kWorkingImageContract,request.targetFrame,timeBase);
+        impl_->clear(composite);
+        bool finishedRec709 = !contributions.empty();
+        std::string inputPath;
+        if (!contributions.empty()) {
+            pl_dispatch_reset_frame(impl_->compositor);
+            BorrowedTexture target(impl_->gpu,composite.image());
+            require(target.get()->params.format->caps & PL_FMT_CAP_BLENDABLE, "RGBA16F target does not support blending");
+            // UI tracks and request layers are top first; source-over draws
+            // from bottom to top without clipping scene-linear RGB values.
+            for (auto it = contributions.rbegin(); it != contributions.rend(); ++it) {
+                impl_->checkCancellation(); auto layer = prepare(*it);
+                finishedRec709 = finishedRec709 && layer.storage_->finishedRec709;
+                if (!inputPath.empty()) inputPath += " | ";
+                inputPath += layer.storage_->inputPath;
+                impl_->blend(target.get(),layer,it->layer.opacity);
+            }
+            require(target.close(), "Cannot return composite image");
+        }
+        composite.storage_->inputPath = std::move(inputPath);
+        composite.storage_->finishedRec709 = finishedRec709;
+        if (impl_->graph) {
+            FrameContext timing; timing.pts = request.targetFrame;
+            timing.frameIndex = request.sourceMode ? request.clipLocalFrame : request.targetFrame;
+            timing.timeBaseNum = timeBase.num; timing.timeBaseDen = timeBase.den;
+            timing.timeSeconds = timing.frameIndex*av_q2d(timeBase);
+            auto filtered = impl_->runGraph(*impl_->graph,composite,timing);
+            filtered.storage_->inputPath = composite.storage_->inputPath;
+            filtered.storage_->finishedRec709 = composite.storage_->finishedRec709;
+            composite = std::move(filtered);
+        }
+        return composite;
     } catch (const std::exception& e) { if (error) *error = e.what(); return {}; }
 }
 RenderedFrame CompositionRenderer::output(const RenderedFrame& input, const ColorOutputRequest& request, std::string* error) {

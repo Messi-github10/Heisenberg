@@ -1,3 +1,4 @@
+#include <Compositing/CompositionBuilder.hpp>
 #include <Preview/IPreviewer.hpp>
 #include <Models/Timeline.hpp>
 #include <Models/MediaManifest.hpp>
@@ -341,6 +342,73 @@ TEST(NativePreviewTest, ProjectSourceColorSnapshotPreservesSourceTiming) {
     EXPECT_TRUE(listener.allNotificationsOnUi);
     preview->shutdown();
     tasks.process();
+    EXPECT_EQ(heisenberg::renderer::VulkanContext::instance().validationErrorCount(), 0u);
+}
+
+TEST(NativePreviewTest, MultipleVideoAndAudioTracksSeekReplayAndReopenWithNewOrder) {
+    heisenberg::IPreviewer::initLoader();
+    PreviewWindow window;
+    ASSERT_NE(window.handle, nullptr);
+    UiTasks tasks;
+    PresentationListener listener;
+    auto preview = heisenberg::IPreviewer::create();
+    preview->setTaskDispatcher([&](auto task) { tasks.push(std::move(task)); });
+    preview->setListener(&listener);
+    preview->setHardwareDecode(false);
+    preview->attachWindow(window.handle, 160, 120);
+    heisenberg::Timeline timeline;
+    timeline.id = "multitrack-native";
+    timeline.fps = 24; timeline.width = 160; timeline.height = 120;
+    heisenberg::MediaManifest manifest;
+    heisenberg::MediaManifestEntry video;
+    video.id = "video"; video.duration = 1.0; video.hasAudio = true;
+    video.source.path = HEISENBERG_TEST_MEDIA;
+    ASSERT_TRUE(manifest.add(video));
+    heisenberg::MediaManifestEntry audio;
+    audio.id = "audio"; audio.type = heisenberg::ClipType::Audio;
+    audio.duration = 3.0; audio.hasAudio = true;
+    audio.source.path = HEISENBERG_TEST_LONG_AUDIO;
+    ASSERT_TRUE(manifest.add(audio));
+    for (int i = 0; i < 5; ++i) {
+        heisenberg::Track track;
+        track.id = "track-" + std::to_string(i);
+        track.type = i < 2 ? heisenberg::ClipType::Video : heisenberg::ClipType::Audio;
+        heisenberg::Clip clip;
+        clip.id = "clip-" + std::to_string(i);
+        clip.mediaRef = i < 2 ? video.id : audio.id;
+        clip.mediaType = clip.sourceClipType = track.type;
+        clip.durationFrames = i < 2 ? 24 : 36;
+        clip.volume = .2;
+        clip.opacity = i == 0 ? .5 : 1.0;
+        track.clips.push_back(clip);
+        timeline.tracks.push_back(track);
+    }
+    heisenberg::ColorSettings color;
+    color.inputColorSpaces[video.id] = "Rec.1886 Rec.709 - Display";
+    heisenberg::CompositionPlan plan;
+    std::string error;
+    ASSERT_TRUE(heisenberg::CompositionBuilder::build(timeline, manifest, {}, color, plan, &error)) << error;
+    preview->openComposition(plan);
+    ASSERT_TRUE(tasks.wait([&] { return listener.frames > 0 && preview->state() == heisenberg::IPreviewer::State::Paused; }));
+    EXPECT_EQ(preview->frameCount(), 36);
+    preview->seek(.5);
+    ASSERT_TRUE(tasks.wait([&] { return listener.seconds >= .49; }));
+    int frames = listener.frames;
+    std::swap(timeline.tracks[0], timeline.tracks[1]);
+    timeline.tracks[0].hidden = true;
+    timeline.tracks[2].muted = true;
+    ASSERT_TRUE(heisenberg::CompositionBuilder::build(timeline, manifest, {}, color, plan, &error)) << error;
+    preview->openComposition(plan);
+    ASSERT_TRUE(tasks.wait([&] { return listener.frames > frames && preview->state() == heisenberg::IPreviewer::State::Paused; }));
+    preview->seek(1.25);
+    ASSERT_TRUE(tasks.wait([&] { return listener.seconds >= 1.24; }));
+    preview->play();
+    ASSERT_TRUE(tasks.wait([&] { return preview->state() == heisenberg::IPreviewer::State::Ended; }));
+    EXPECT_NEAR(preview->currentTime(), 1.5, 1.0 / 24.0);
+    EXPECT_TRUE(listener.allNotificationsOnUi);
+    preview->shutdown();
+    tasks.process();
+    EXPECT_TRUE(listener.diagnostics.empty());
     EXPECT_EQ(heisenberg::renderer::VulkanContext::instance().validationErrorCount(), 0u);
 }
 

@@ -43,13 +43,21 @@ public:
 
     EditResult placeClip(const std::string& mediaRef, int64_t startFrame,
                          int64_t durationFrames = -1, int64_t trimStartFrame = 0,
-                         const std::string& targetTrackId = {});
+                         const std::string& targetTrackId = {}, bool createNewTrack = false);
     EditResult insertClip(const std::string& mediaRef, int64_t startFrame,
                           int64_t durationFrames = -1, int64_t trimStartFrame = 0,
-                          const std::string& targetTrackId = {});
+                          const std::string& targetTrackId = {}, bool createNewTrack = false);
     EditResult rippleDeleteClip(const std::string& clipId);
     EditResult setClipAudio(const std::string& clipId, double volume,
                             int64_t fadeInFrames, int64_t fadeOutFrames);
+    EditResult addTrack(ClipType type);
+    EditResult removeTrack(const std::string& trackId);
+    EditResult renameTrack(const std::string& trackId, const std::string& name);
+    // finalIndex is a global Timeline::tracks index of the same type. Reorder
+    // only same-type slots, preserving other-type positions; order is top-first.
+    EditResult reorderTrack(const std::string& trackId, int finalIndex);
+    EditResult setTrackHidden(const std::string& trackId, bool hidden);
+    EditResult setClipOpacity(const std::string& clipId, double opacity);
     EditResult setTrackMuted(const std::string& trackId, bool muted);
     EditResult setColorSettings(const ColorSettings& settings);
     EditResult setMediaInputColorSpace(const std::string& mediaRef, const std::string& space);
@@ -60,7 +68,8 @@ public:
     EditResult updateClipEffectsTransaction(std::optional<JsonValue> effects);
     EditResult commitClipEffectsTransaction();
     EditResult cancelClipEffectsTransaction();
-    EditResult moveClip(const std::string& clipId, int64_t startFrame);
+    EditResult moveClip(const std::string& clipId, int64_t startFrame,
+                        const std::string& targetTrackId = {}, bool createNewTrack = false);
     EditResult splitClip(const std::string& clipId, int64_t atFrame);
     EditResult trimClip(const std::string& clipId, TrimEdge edge, int64_t deltaFrames);
     EditResult removeClips(const std::vector<std::string>& clipIds);
@@ -89,7 +98,9 @@ private:
     void setProjectDir(std::string root);
     EditResult placeClipInternal(const std::string& mediaRef, int64_t startFrame,
                                  int64_t durationFrames, int64_t trimStartFrame,
-                                 const std::string& targetTrackId, bool insert);
+                                 const std::string& targetTrackId, bool insert, bool createNewTrack);
+    EditResult commitTimelineEdit(Timeline candidate, std::vector<std::string> affectedIds,
+                                  const std::string& name);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

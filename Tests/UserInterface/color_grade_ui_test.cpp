@@ -32,7 +32,7 @@ JsonValue importedEffects() {
     return JsonValue::parse(R"([{"type":"video.custom","payload":{"keep":true}},{"id":"grade","type":"video.colorGrade","schemaVersion":1,"enabled":true,"unknown":3,"params":{"exposure":{"value":0,"label":"preserved","track":{"keyframes":[{"frame":0,"value":0},{"frame":10,"value":1}]}},"contrast":{"value":1,"track":{"keyframes":[{"frame":0,"value":1}]}},"curves":{"master":[[0,0],[1,1]],"red":[[0,0],[0.5,0.6],[1,1]],"future":"preserve"},"hueTargets":[{"hue":30,"rotation":{"value":0,"track":{"keyframes":[{"frame":0,"value":0}]}},"saturation":{"value":1,"track":{"keyframes":[{"frame":0,"value":1}]}},"lightness":0,"unknown":8}],"lut":{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","name":"Imported","domain":"acescct","intensity":{"value":0.5,"track":{"keyframes":[{"frame":0,"value":0.5}]}},"extra":4}}}])");
 }
 void selectFirstGradeClip(TimelineWidget& widget) {
-    const QPointF point(200, 48);
+    const QPointF point(200, 68);
     QMouseEvent press(QEvent::MouseButtonPress, point, widget.mapToGlobal(point.toPoint()), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(&widget, &press);
     QMouseEvent release(QEvent::MouseButtonRelease, point, widget.mapToGlobal(point.toPoint()), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);

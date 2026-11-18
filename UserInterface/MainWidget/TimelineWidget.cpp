@@ -26,10 +26,17 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QPushButton>
 #include <QPointer>
 #include <QScopedValueRollback>
+#include <QInputDialog>
+#include <QMessageBox>
+#include <QResizeEvent>
+#include <QScrollBar>
+#include <QSignalBlocker>
+#include <QStyle>
 
 #include <algorithm>
 #include <array>
@@ -39,6 +46,7 @@
 namespace {
 constexpr double kHeaderWidth = 160.0;
 constexpr double kRulerHeight = 30.0;
+constexpr double kNewVideoTrackStripHeight = 20.0;
 constexpr double kDefaultTrackHeight = 44.0;
 constexpr double kMinZoom = 0.05;
 constexpr double kMaxZoom = 40.0;
@@ -82,16 +90,36 @@ TimelineWidget::TimelineWidget(QWidget* parent)
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setAcceptDrops(true);
+    verticalScrollBar_ = new QScrollBar(Qt::Vertical, this);
+    verticalScrollBar_->setObjectName("timelineVerticalScrollBar");
+    verticalScrollBar_->hide();
+    verticalScrollBar_->setSingleStep(static_cast<int>(kDefaultTrackHeight));
+    connect(verticalScrollBar_, &QScrollBar::valueChanged, this, [this] {
+        // Drag previews store IDs; resolve the lane again after scrolling.
+        dropDestination_.reset();
+        draggedMedia_.clear();
+        if (clipMove_ && clipMove_->dragging)
+            updateClipMove(clipMove_->lastPosition, clipMove_->modifiers);
+        update();
+    });
 }
 
 void TimelineWidget::setSession(heisenberg::ui::EditorSession* session) {
     if (session_) disconnect(session_, nullptr, this, nullptr);
     cancelInteraction();
+    selectedTrackId_.clear();
+    videoTargetTrackId_.clear();
+    audioTargetTrackId_.clear();
+    verticalScrollBar_->setValue(0);
     setSelectedClipId({});
     session_ = session;
     if (!session_) { refreshProject(); return; }
     connect(session_, &heisenberg::ui::EditorSession::projectChanged, this, [this]() {
         cancelInteraction();
+        selectedTrackId_.clear();
+        videoTargetTrackId_.clear();
+        audioTargetTrackId_.clear();
+        verticalScrollBar_->setValue(0);
         setSelectedClipId({});
         hoveredClipId_.clear();
         currentFrame_ = 0;
@@ -119,7 +147,7 @@ void TimelineWidget::setSession(heisenberg::ui::EditorSession* session) {
 
 void TimelineWidget::refreshProject() {
     draggedMedia_.clear();
-    dropLane_.reset();
+    dropDestination_.reset();
     mediaNames_.clear();
     missingMedia_.clear();
     if (session_) {
@@ -131,6 +159,10 @@ void TimelineWidget::refreshProject() {
     playbackFrameCount_ = timeline() ? timeline()->totalFrames() : 0;
     if (!timeline() || !timeline()->clipById(selectedClipId_)) setSelectedClipId({});
     currentFrame_ = std::clamp<qint64>(currentFrame_, 0, std::max<qint64>(0, contentFrameCount() - 1));
+    if (!timeline() || !timeline()->trackById(selectedTrackId_)) selectedTrackId_.clear();
+    if (!timeline() || !timeline()->trackById(videoTargetTrackId_)) videoTargetTrackId_.clear();
+    if (!timeline() || !timeline()->trackById(audioTargetTrackId_)) audioTargetTrackId_.clear();
+    updateVerticalScrollBar();
     clampView();
     updateGeometry();
     update();
@@ -150,8 +182,10 @@ void TimelineWidget::setCurrentFrame(qint64 frame) {
 }
 
 bool TimelineWidget::cancelInteraction() {
-    const bool active = clipMove_.has_value();
+    const bool active = clipMove_.has_value() || !draggedMedia_.isEmpty() || dropDestination_.has_value();
     clipMove_.reset();
+    draggedMedia_.clear();
+    dropDestination_.reset();
     unsetCursor();
     update();
     return active;
@@ -167,6 +201,92 @@ void TimelineWidget::setInsertMode(bool enabled) {
     if (insertMode_ == enabled) return;
     insertMode_ = enabled;
     update();
+}
+
+void TimelineWidget::mutate(const std::function<heisenberg::EditResult(heisenberg::ui::EditorSession&)>& command) {
+    cancelInteraction();
+    if (editInProgress_ || !session_) return;
+    const QPointer<heisenberg::ui::EditorSession> session = session_;
+    QScopedValueRollback<bool> editing(editInProgress_, true);
+    emit editRequested();
+    if (!session || session_ != session.data()) return;
+    const auto result = command(*session);
+    if (!result.changed() && !result.message.empty()) emit editFailed(QString::fromStdString(result.message));
+}
+
+void TimelineWidget::selectTrack(const std::string& trackId) {
+    const auto* track = timeline() ? timeline()->trackById(trackId) : nullptr;
+    if (!track) return;
+    selectedTrackId_ = trackId;
+    if (track->type == heisenberg::ClipType::Video) videoTargetTrackId_ = trackId;
+    if (track->type == heisenberg::ClipType::Audio) audioTargetTrackId_ = trackId;
+    update();
+}
+
+QString TimelineWidget::targetTrackForMedia(const QString& mediaRef) const {
+    if (!session_ || !timeline()) return {};
+    const auto* entry = session_->editor().manifest().find(mediaRef.toStdString());
+    if (!entry || (entry->type != heisenberg::ClipType::Video && entry->type != heisenberg::ClipType::Audio)) return {};
+    const auto& remembered = entry->type == heisenberg::ClipType::Video ? videoTargetTrackId_ : audioTargetTrackId_;
+    const auto* track = timeline()->trackById(remembered);
+    if (track && track->type == entry->type) return QString::fromStdString(track->id);
+    for (const auto& candidate : timeline()->tracks)
+        if (candidate.type == entry->type) return QString::fromStdString(candidate.id);
+    return {};
+}
+
+void TimelineWidget::addVideoTrack() { addTrack(heisenberg::ClipType::Video); }
+void TimelineWidget::addAudioTrack() { addTrack(heisenberg::ClipType::Audio); }
+
+void TimelineWidget::addTrack(heisenberg::ClipType type) {
+    mutate([this, type](heisenberg::ui::EditorSession& session) {
+        auto result = session.addTrack(type);
+        if (session_ == &session && result.changed() && !result.affectedIds.empty()) selectTrack(result.affectedIds.back());
+        return result;
+    });
+}
+
+void TimelineWidget::toggleTrack(const std::string& trackId, bool hidden) {
+    const auto* current = timeline() ? timeline()->trackById(trackId) : nullptr;
+    if (!current || (hidden && current->type != heisenberg::ClipType::Video)) return;
+    mutate([trackId, hidden](heisenberg::ui::EditorSession& session) {
+        // editRequested can replace the entire timeline when it commits a grade.
+        const auto* track = session.editor().activeTimeline() ? session.editor().activeTimeline()->trackById(trackId) : nullptr;
+        if (!track || (hidden && track->type != heisenberg::ClipType::Video)) return heisenberg::EditResult{};
+        const bool value = hidden ? !track->hidden : !track->muted;
+        return hidden ? session.setTrackHidden(QString::fromStdString(trackId), value)
+                      : session.setTrackMuted(QString::fromStdString(trackId), value);
+    });
+}
+
+void TimelineWidget::editSelectedClipAppearance() {
+    cancelInteraction();
+    const auto* clip = timeline() ? timeline()->clipById(selectedClipId_) : nullptr;
+    if (!session_ || !clip || clip->mediaType != heisenberg::ClipType::Video) return;
+    const QString id = QString::fromStdString(clip->id);
+    const QPointer<heisenberg::ui::EditorSession> session = session_;
+    const double original = clip->opacity;
+    QDialog dialog(this);
+    dialog.setObjectName("clipAppearanceDialog");
+    dialog.setWindowTitle(tr("Clip Appearance"));
+    auto* form = new QFormLayout(&dialog);
+    auto* opacity = new QDoubleSpinBox(&dialog);
+    opacity->setObjectName("clipOpacity");
+    opacity->setRange(0.0, 100.0);
+    opacity->setDecimals(2);
+    opacity->setSuffix(tr(" %"));
+    opacity->setValue(original * 100.0);
+    form->addRow(tr("Opacity"), opacity);
+    auto* hint = new QLabel(tr("Sets a fixed opacity for this clip."), &dialog);
+    form->addRow(hint);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted || !session || session_ != session.data()) return;
+    const double value = opacity->value() / 100.0;
+    if (std::abs(value - original) < 0.000001) return;
+    mutate([id, value](heisenberg::ui::EditorSession& active) { return active.setClipOpacity(id, value); });
 }
 
 void TimelineWidget::splitSelectedClip() {
@@ -214,11 +334,8 @@ void TimelineWidget::editSelectedClipAudio() {
     cancelInteraction();
     const auto* clip = timeline() ? timeline()->clipById(selectedClipId_) : nullptr;
     if (!session_ || !clip) return;
-    if (session_->editor().compatibility().level == heisenberg::CompatibilityLevel::Unsupported) {
-        emit editFailed(tr("Audio editing supports at most one video track and one audio track."));
-        return;
-    }
     const QString id = QString::fromStdString(clip->id);
+    const QPointer<heisenberg::ui::EditorSession> session = session_;
     const int fps = framesPerSecond();
     const qint64 duration = clip->durationFrames;
     QDialog dialog(this);
@@ -260,16 +377,19 @@ void TimelineWidget::editSelectedClipAudio() {
     connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() { if (validFades()) dialog.accept(); });
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     validate();
-    if (dialog.exec() != QDialog::Accepted) return;
-    const auto result = session_->setClipAudio(id, gain->value() / 100.0,
-        std::llround(fadeIn->value() * fps), std::llround(fadeOut->value() * fps));
-    if (!result.changed() && !result.message.empty()) emit editFailed(QString::fromUtf8(result.message.c_str()));
+    if (dialog.exec() != QDialog::Accepted || !session || session_ != session.data()) return;
+    const double volume = gain->value() / 100.0;
+    const qint64 inFrames = std::llround(fadeIn->value() * fps), outFrames = std::llround(fadeOut->value() * fps);
+    mutate([id, volume, inFrames, outFrames](heisenberg::ui::EditorSession& active) {
+        return active.setClipAudio(id, volume, inFrames, outFrames);
+    });
 }
 
 void TimelineWidget::editSelectedClipGrade() {
     cancelInteraction();
     const auto* clip = timeline() ? timeline()->clipById(selectedClipId_) : nullptr;
     if (!session_ || !clip || clip->mediaType != heisenberg::ClipType::Video) return;
+    const QPointer<heisenberg::ui::EditorSession> session = session_;
     const QString id = QString::fromStdString(clip->id);
     auto effects = clip->effects.value_or(heisenberg::JsonValue::array());
     if (!effects.is_array()) { emit editFailed(tr("Unsupported effects payload is preserved.")); return; }
@@ -307,27 +427,41 @@ void TimelineWidget::editSelectedClipGrade() {
     form->addRow(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    if (dialog.exec() != QDialog::Accepted) return;
+    if (dialog.exec() != QDialog::Accepted || !session || session_ != session.data()) return;
     bool changed = false;
     for (size_t i = 0; i < fields.size(); ++i) changed |= fields[i]->value() != original[i];
     if (!changed) return;
-    if (index == effects.size()) effects.push_back({{"id", "basic-grade"}, {"type", "video.basicGrade"}, {"enabled", true}, {"params", heisenberg::JsonValue::object()}});
-    auto& params = effects[index]["params"];
-    if (!params.is_object()) params = heisenberg::JsonValue::object();
-    for (size_t i = 0; i < fields.size(); ++i) {
-        if (fields[i]->value() == original[i]) continue;
-        auto& parameter = params[names[i]];
-        if (!parameter.is_object()) parameter = heisenberg::JsonValue::object();
-        parameter["value"] = fields[i]->value();
-        parameter.erase("track");
-    }
-    const auto result = session_->setClipEffects(id, std::move(effects));
-    if (!result.changed() && !result.message.empty()) emit editFailed(QString::fromUtf8(result.message.c_str()));
+    std::array<double, 3> values{};
+    for (size_t i = 0; i < fields.size(); ++i) values[i] = fields[i]->value();
+    mutate([id, names, original, values](heisenberg::ui::EditorSession& active) {
+        const auto* current = active.editor().activeTimeline() ? active.editor().activeTimeline()->clipById(id.toStdString()) : nullptr;
+        if (!current) return heisenberg::EditResult{};
+        auto updated = current->effects.value_or(heisenberg::JsonValue::array());
+        if (!updated.is_array()) return heisenberg::EditResult{heisenberg::EditStatus::Unsupported, {}, "Unsupported effects payload is preserved."};
+        size_t gradeIndex = updated.size();
+        for (size_t i = 0; i < updated.size(); ++i)
+            if (updated[i].is_object() && updated[i].value("type", std::string{}) == "video.basicGrade") { gradeIndex = i; break; }
+        if (gradeIndex == updated.size()) updated.push_back({{"id", "basic-grade"}, {"type", "video.basicGrade"}, {"enabled", true}, {"params", heisenberg::JsonValue::object()}});
+        auto& params = updated[gradeIndex]["params"];
+        if (!params.is_object()) params = heisenberg::JsonValue::object();
+        for (size_t i = 0; i < values.size(); ++i) {
+            if (values[i] == original[i]) continue;
+            auto& parameter = params[names[i]];
+            if (!parameter.is_object()) parameter = heisenberg::JsonValue::object();
+            parameter["value"] = values[i];
+            parameter.erase("track");
+        }
+        return active.setClipEffects(id, std::move(updated));
+    });
 }
 
 void TimelineWidget::setSelectedClipId(const std::string& clipId) {
-    if (selectedClipId_ == clipId) return;
-    selectedClipId_ = clipId;
+    // Copy before emitting: callers may pass a model-owned ID.
+    const std::string id = clipId;
+    if (const auto* active = timeline())
+        if (const auto* track = active->trackForClip(id)) selectTrack(track->id);
+    if (selectedClipId_ == id) return;
+    selectedClipId_ = id;
     emit selectedClipChanged(selectedClipId());
 }
 
@@ -343,6 +477,16 @@ void TimelineWidget::editSelectedClipColorGrade() {
         emit colorGradeRequested(selectedClipId());
         return;
     }
+    const QString id = selectedClipId();
+    const QPointer<heisenberg::ui::EditorSession> session = session_;
+    {
+        if (editInProgress_) return;
+        QScopedValueRollback<bool> editing(editInProgress_, true);
+        emit editRequested();
+    }
+    if (!session || session_ != session.data()) return;
+    clip = timeline() ? timeline()->clipById(id.toStdString()) : nullptr;
+    if (!clip || clip->mediaType != heisenberg::ClipType::Video) return;
     const auto original = clip->effects;
     auto effects = original.value_or(heisenberg::JsonValue::array());
     if (!effects.is_array()) { emit editFailed(tr("Unsupported effects payload is preserved.")); return; }
@@ -354,21 +498,90 @@ void TimelineWidget::editSelectedClipColorGrade() {
         }
         break; // The dialog edits the first color-grade effect only.
     }
-    const auto begin = session_->beginClipEffectsTransaction(QString::fromStdString(clip->id));
+    const auto begin = session->beginClipEffectsTransaction(id);
     if (!begin.message.empty()) { emit editFailed(QString::fromStdString(begin.message)); return; }
     ColorGradeDialog dialog(effects, this);
-    dialog.setLutImporter([this](const QString& path, QString& id, QString& name, QString& error) {
-        return session_->importGradeLut(path, id, name, error);
+    dialog.setLutImporter([this, session](const QString& path, QString& lutId, QString& name, QString& error) {
+        return session && session_ == session.data() && session->importGradeLut(path, lutId, name, error);
     });
-    connect(&dialog, &ColorGradeDialog::effectsChanged, &dialog, [this, &dialog, &effects, &original] {
-        const auto result = session_->updateClipEffectsTransaction(dialog.effects() == effects ? original : std::optional<heisenberg::JsonValue>(dialog.effects()));
+    connect(&dialog, &ColorGradeDialog::effectsChanged, &dialog, [this, session, &dialog, &effects, &original] {
+        if (!session || session_ != session.data()) return;
+        const auto result = session->updateClipEffectsTransaction(dialog.effects() == effects ? original : std::optional<heisenberg::JsonValue>(dialog.effects()));
         if (!result.message.empty()) emit editFailed(QString::fromStdString(result.message));
     });
-    const auto result = dialog.exec() == QDialog::Accepted ? session_->commitClipEffectsTransaction() : session_->cancelClipEffectsTransaction();
+    const bool accepted = dialog.exec() == QDialog::Accepted;
+    if (!session || session_ != session.data()) return;
+    const auto result = accepted ? session->commitClipEffectsTransaction() : session->cancelClipEffectsTransaction();
     if (!result.message.empty()) emit editFailed(QString::fromStdString(result.message));
 }
 
+void TimelineWidget::trackContextMenu(const QPoint& position, const QPoint& globalPosition) {
+    const auto lane = laneAt(position);
+    if (!lane || !lane->track || !session_) return;
+    const std::string id = lane->track->id;
+    const QString name = lane->track->name ? QString::fromStdString(*lane->track->name) : QString::fromLatin1(heisenberg::toString(lane->type));
+    const auto type = lane->type;
+    const QPointer<heisenberg::ui::EditorSession> session = session_;
+    cancelInteraction();
+    selectTrack(id);
+    setSelectedClipId({});
+    setFocus(Qt::MouseFocusReason);
+    auto neighbor = [this, id, type](int direction) -> int {
+        if (!timeline()) return -1;
+        const auto& tracks = timeline()->tracks;
+        int index = -1;
+        for (int i = 0; i < static_cast<int>(tracks.size()); ++i) if (tracks[i].id == id) { index = i; break; }
+        if (index < 0) return -1;
+        for (int i = index + direction; i >= 0 && i < static_cast<int>(tracks.size()); i += direction)
+            if (tracks[i].type == type) return i;
+        return -1;
+    };
+    QMenu menu(this);
+    menu.setObjectName("timelineTrackMenu");
+    auto* rename = menu.addAction(tr("Rename Track..."));
+    rename->setObjectName("trackRename");
+    auto* up = menu.addAction(tr("Move Track Up"));
+    up->setObjectName("trackMoveUp");
+    up->setEnabled(neighbor(-1) >= 0);
+    auto* down = menu.addAction(tr("Move Track Down"));
+    down->setObjectName("trackMoveDown");
+    down->setEnabled(neighbor(1) >= 0);
+    menu.addSeparator();
+    auto* remove = menu.addAction(tr("Delete Track..."));
+    remove->setObjectName("trackDelete");
+    auto* chosen = menu.exec(globalPosition);
+    if (!session || session_ != session.data()) return;
+    const QString trackId = QString::fromStdString(id);
+    if (chosen == rename) {
+        bool ok = false;
+        const QString value = QInputDialog::getText(this, tr("Rename Track"), tr("Track name"), QLineEdit::Normal, name, &ok).trimmed();
+        if (ok && !value.isEmpty() && session && session_ == session.data())
+            mutate([trackId, value](heisenberg::ui::EditorSession& active) { return active.renameTrack(trackId, value); });
+    } else if (chosen == up || chosen == down) {
+        const int direction = chosen == up ? -1 : 1;
+        mutate([trackId, direction, neighbor](heisenberg::ui::EditorSession& active) {
+            const int index = neighbor(direction);
+            return index < 0 ? heisenberg::EditResult{} : active.reorderTrack(trackId, index);
+        });
+    } else if (chosen == remove) {
+        const bool populated = [this, &id] {
+            const auto* track = timeline() ? timeline()->trackById(id) : nullptr;
+            return track && !track->clips.empty();
+        }();
+        if (populated && QMessageBox::question(this, tr("Delete Track"),
+            tr("Delete \"%1\" and all of its clips? This can be undone.").arg(name),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+        if (session && session_ == session.data())
+            mutate([trackId](heisenberg::ui::EditorSession& active) { return active.removeTrack(trackId); });
+    }
+}
+
 void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
+    if (event->pos().x() < kHeaderWidth && laneAt(event->pos())) {
+        trackContextMenu(event->pos(), event->globalPos());
+        event->accept();
+        return;
+    }
     const auto hit = clipAt(event->pos());
     if (hit.empty()) { QWidget::contextMenuEvent(event); return; }
     cancelInteraction();
@@ -389,6 +602,9 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     }();
     grade->setEnabled(videoSelected);
     colorGrade->setEnabled(videoSelected);
+    auto* appearance = menu.addAction(tr("Clip Appearance..."));
+    appearance->setObjectName("clipAppearance");
+    appearance->setEnabled(videoSelected);
     auto* remove = menu.addAction(tr("Delete Clip"));
     auto* rippleDelete = menu.addAction(tr("Ripple Delete"));
     rippleDelete->setObjectName("clipRippleDelete");
@@ -396,6 +612,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     if (chosen == audio) editSelectedClipAudio();
     else if (chosen == colorGrade) editSelectedClipColorGrade();
     else if (chosen == grade) editSelectedClipGrade();
+    else if (chosen == appearance) editSelectedClipAppearance();
     else if (chosen == remove) removeSelectedClip();
     else if (chosen == rippleDelete) rippleDeleteSelectedClip();
     event->accept();
@@ -409,7 +626,7 @@ void TimelineWidget::setPlaying(bool playing) {
 
 void TimelineWidget::fitToContent() {
     const qint64 frames = contentFrameCount();
-    const double available = std::max(1.0, width() - kHeaderWidth - 24.0);
+    const double available = std::max(1.0, contentRight() - kHeaderWidth - 24.0);
     pixelsPerFrame_ = frames > 0
         ? std::clamp(available / static_cast<double>(frames), kMinZoom, kMaxZoom)
         : 4.0;
@@ -438,9 +655,31 @@ QSize TimelineWidget::sizeHint() const {
     return QSize(960, std::max(210, minimumSizeHint().height()));
 }
 QSize TimelineWidget::minimumSizeHint() const {
-    double laneHeight = kRulerHeight + 24.0;
-    for (const auto& lane : lanes()) laneHeight += lane.height;
-    return QSize(480, static_cast<int>(std::ceil(laneHeight)));
+    return QSize(480, 142);
+}
+
+int TimelineWidget::contentRight() const {
+    return width() - (verticalScrollBar_->isHidden() ? 0 : verticalScrollBar_->width());
+}
+
+void TimelineWidget::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    updateVerticalScrollBar();
+    clampView();
+}
+
+void TimelineWidget::updateVerticalScrollBar() {
+    double total = kNewVideoTrackStripHeight;
+    for (const auto& lane : lanes()) total += lane.height;
+    const int viewport = std::max(0, height() - static_cast<int>(kRulerHeight));
+    const int maximum = std::max(0, static_cast<int>(std::ceil(total)) - viewport);
+    const QSignalBlocker blocker(verticalScrollBar_);
+    verticalScrollBar_->setPageStep(viewport);
+    verticalScrollBar_->setRange(0, maximum);
+    verticalScrollBar_->setVisible(maximum > 0);
+    const int extent = style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, this);
+    verticalScrollBar_->setGeometry(std::max(0, width() - extent), static_cast<int>(kRulerHeight), extent, viewport);
+    verticalScrollBar_->raise();
 }
 
 const heisenberg::Timeline* TimelineWidget::timeline() const {
@@ -463,7 +702,7 @@ double TimelineWidget::xForFrame(qint64 frame) const {
 }
 
 double TimelineWidget::maximumScrollOffset() const {
-    const double viewport = std::max(1.0, width() - kHeaderWidth);
+    const double viewport = std::max(1.0, contentRight() - kHeaderWidth);
     return std::max(0.0, static_cast<double>(contentFrameCount()) * pixelsPerFrame_ - viewport + 24.0);
 }
 
@@ -473,7 +712,7 @@ void TimelineWidget::clampView() {
 }
 
 void TimelineWidget::setZoom(double zoom, double anchorX) {
-    const double boundedAnchor = std::clamp(anchorX, kHeaderWidth, static_cast<double>(width()));
+    const double boundedAnchor = std::clamp(anchorX, kHeaderWidth, std::max(kHeaderWidth, static_cast<double>(contentRight())));
     const double anchorFrame = (boundedAnchor - kHeaderWidth + scrollOffset_) / pixelsPerFrame_;
     pixelsPerFrame_ = std::clamp(zoom, kMinZoom, kMaxZoom);
     scrollOffset_ = anchorFrame * pixelsPerFrame_ - (boundedAnchor - kHeaderWidth);
@@ -578,11 +817,25 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
         painter.setPen(QPen(kMutedText, 1));
     }
 
+    painter.save();
+    painter.setClipRect(QRectF(0, kRulerHeight, contentRight(), std::max(0.0, height() - kRulerHeight)));
     const auto* active = timeline();
-    double y = kRulerHeight;
+    const double stripTop = kRulerHeight - verticalScrollBar_->value();
+    const QRectF strip(kHeaderWidth, stripTop, std::max(0.0, contentRight() - kHeaderWidth),
+                       kNewVideoTrackStripHeight);
+    painter.fillRect(QRectF(0, stripTop, kHeaderWidth, kNewVideoTrackStripHeight), kSurface);
+    painter.fillRect(strip, kRaised);
+    painter.setFont(smallFont);
+    painter.setPen(kMutedText);
+    painter.drawText(strip.adjusted(8, 0, -8, 0), Qt::AlignLeft | Qt::AlignVCenter,
+                     tr("Drop video to create a new track"));
+    painter.setPen(kSubtleBorder);
+    painter.drawLine(strip.bottomLeft(), strip.bottomRight());
+    double y = strip.bottom();
     for (const auto& lane : lanes()) {
         const double trackHeight = lane.height;
         y = lane.top;
+        if (y + trackHeight <= kRulerHeight || y >= height()) continue;
         if (!lane.track) {
             const QRectF headerRect(0, y, kHeaderWidth, trackHeight);
             const QRectF laneRect(kHeaderWidth, y, width() - kHeaderWidth, trackHeight);
@@ -599,7 +852,7 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
         const auto& track = *lane.track;
             const QRectF headerRect(0, y, kHeaderWidth, trackHeight);
             const QRectF laneRect(kHeaderWidth, y, width() - kHeaderWidth, trackHeight);
-            painter.fillRect(headerRect, kSurface);
+            painter.fillRect(headerRect, selectedTrackId_ == track.id ? kProminent : kSurface);
             painter.fillRect(laneRect, QColor(20, 21, 24));
             painter.fillRect(QRectF(0, y, 3, trackHeight), clipColor(track.type, false));
             painter.setPen(kSubtleBorder);
@@ -613,7 +866,17 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
             const QString trackName = track.name
                 ? QString::fromUtf8(track.name->c_str())
                 : QString::fromUtf8(heisenberg::toString(track.type)).toUpper();
-            painter.drawText(QRectF(12, y + 5, 105, 17), Qt::AlignLeft | Qt::AlignVCenter, trackName);
+            const int nameWidth = track.type == heisenberg::ClipType::Video ? 84 : 112;
+            painter.drawText(QRectF(12, y + 5, nameWidth, 17), Qt::AlignLeft | Qt::AlignVCenter,
+                             painter.fontMetrics().elidedText(trackName, Qt::ElideRight, nameWidth));
+            if (track.type == heisenberg::ClipType::Video) {
+                const QRectF hiddenRect(kHeaderWidth - 60, y + 8, 24, 22);
+                painter.setBrush(track.hidden ? QColor(84, 91, 145) : kRaised);
+                painter.setPen(kBorder);
+                painter.drawRoundedRect(hiddenRect, 3, 3);
+                painter.setPen(kPrimaryText);
+                painter.drawText(hiddenRect, Qt::AlignCenter, tr("H"));
+            }
             const QRectF muteRect(kHeaderWidth - 32, y + 8, 24, 22);
             painter.setBrush(track.muted ? QColor(169, 103, 44) : kRaised);
             painter.setPen(kBorder);
@@ -633,7 +896,7 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
                              states.isEmpty() ? tr("Ready") : states.join("  "));
 
             painter.save();
-            painter.setClipRect(laneRect);
+            painter.setClipRect(laneRect, Qt::IntersectClip);
             for (const auto& clip : track.clips) {
                 painter.setOpacity(clipMove_ && clipMove_->dragging && clipMove_->clipId == clip.id ? 0.35 : 1.0);
                 const double clipX = xForFrame(clip.startFrame);
@@ -692,6 +955,7 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
             painter.restore();
             y += trackHeight;
     }
+    painter.restore();
 
     if (active) {
         painter.save();
@@ -713,34 +977,46 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
         painter.restore();
     }
 
-    if (!draggedMedia_.isEmpty() && dropLane_ && session_ && active) {
+    if (!draggedMedia_.isEmpty() && dropDestination_ && session_ && active) {
         const auto* entry = session_->editor().manifest().find(draggedMedia_.toStdString());
         qint64 trim = 0, duration = 0;
         if (entry && session_->sourcePlacementRange(draggedMedia_, trim, duration)) {
             const double ghostWidth = std::max(2.0, duration * pixelsPerFrame_);
             painter.save();
-            painter.setClipRect(QRectF(kHeaderWidth, 0, width() - kHeaderWidth, height()));
+            painter.setClipRect(QRectF(kHeaderWidth, kRulerHeight, contentRight() - kHeaderWidth, height() - kRulerHeight));
+            if (dropDestination_->createNewTrack) {
+                painter.fillRect(QRectF(kHeaderWidth, dropDestination_->top, contentRight() - kHeaderWidth,
+                                        dropDestination_->height), QColor(112, 199, 238, 45));
+            }
             painter.setPen(QPen(QColor(255, 255, 255, 220), 1, Qt::DashLine));
             QColor ghostColor = clipColor(entry->type, false);
             ghostColor.setAlpha(95);
             painter.setBrush(ghostColor);
-            painter.drawRoundedRect(QRectF(xForFrame(dropFrame_), dropLane_->top + 3,
-                                           ghostWidth, dropLane_->height - 6), 4, 4);
+            painter.drawRoundedRect(QRectF(xForFrame(dropFrame_), dropDestination_->top + 3,
+                                           ghostWidth, dropDestination_->height - 6), 4, 4);
             painter.setPen(kPrimaryText);
-            painter.drawText(QPointF(xForFrame(dropFrame_) + 6, dropLane_->top + dropLane_->height + 18),
-                             (insertMode_ ? tr("Insert at %1") : tr("Overwrite at %1")).arg(formatTimecode(dropFrame_)));
+            const QString label = (dropDestination_->createNewTrack ? tr("Create video track — ") : QString()) +
+                (insertMode_ ? tr("Insert at %1") : tr("Overwrite at %1")).arg(formatTimecode(dropFrame_));
+            if (dropDestination_->createNewTrack) {
+                painter.drawText(QRectF(kHeaderWidth + 8, dropDestination_->top, contentRight() - kHeaderWidth - 16,
+                                        dropDestination_->height), Qt::AlignLeft | Qt::AlignVCenter, label);
+            } else {
+                painter.drawText(QPointF(xForFrame(dropFrame_) + 6, dropDestination_->top + dropDestination_->height + 18), label);
+            }
             painter.restore();
         }
     }
 
     if (clipMove_ && clipMove_->dragging && active && !active->tracks.empty()) {
         const auto& move = *clipMove_;
-        const auto lane = laneForTrack(move.trackId);
-        const double trackHeight = lane ? lane->height : kDefaultTrackHeight;
-        const double trackTop = lane ? lane->top : kRulerHeight;
+        const auto lane = laneForTrack(move.targetTrackId.empty() ? move.trackId : move.targetTrackId);
+        const double trackHeight = move.createNewTrack ? kNewVideoTrackStripHeight : lane ? lane->height : kDefaultTrackHeight;
+        const double trackTop = move.createNewTrack ? kRulerHeight - verticalScrollBar_->value() : lane ? lane->top : kRulerHeight;
         painter.save();
-        painter.setClipRect(QRectF(kHeaderWidth, 0, width() - kHeaderWidth, height()));
+        painter.setClipRect(QRectF(kHeaderWidth, kRulerHeight, contentRight() - kHeaderWidth, height() - kRulerHeight));
         const QColor accent = move.validDrop ? QColor(112, 199, 238) : QColor(229, 122, 122);
+        if (move.createNewTrack && move.validDrop)
+            painter.fillRect(QRectF(kHeaderWidth, trackTop, contentRight() - kHeaderWidth, trackHeight), QColor(112, 199, 238, 45));
         painter.setPen(QPen(accent, 1.5, Qt::DashLine));
         painter.setBrush(QColor(accent.red(), accent.green(), accent.blue(), 95));
         const QRectF ghost(xForFrame(move.targetFrame), trackTop + 3,
@@ -753,12 +1029,13 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
         }
         painter.setPen(accent);
         const double labelX = std::clamp(ghost.left() + 6, kHeaderWidth + 6, std::max(kHeaderWidth + 6, width() - 230.0));
-        QString label = tr("Release in the original lane to commit");
+        QString label = move.trimEdge ? tr("Release in the original lane to trim") : tr("Choose a track of the same type");
         if (move.validDrop) {
             label = move.trimEdge
                 ? tr("%1  %2  /  %3 frames").arg(*move.trimEdge == heisenberg::TrimEdge::Left ? tr("Trim In") : tr("Trim Out"))
                       .arg(formatTimecode(move.targetEdgeFrame)).arg(move.durationFrames)
-                : tr("Move / overwrite at %1").arg(formatTimecode(move.targetFrame));
+                : (move.createNewTrack ? tr("Create video track — Move at %1") : tr("Move / overwrite at %1"))
+                      .arg(formatTimecode(move.targetFrame));
             if (move.snapFrame) label += tr("  [Snap]");
             if (move.sourceLimited) label += tr("  [Limit]");
         }
@@ -768,7 +1045,10 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
                              QPointF(xForFrame(move.targetEdgeFrame), ghost.bottom()));
         }
         painter.setPen(accent);
-        painter.drawText(QPointF(labelX, trackTop + trackHeight + 18), label);
+        if (move.createNewTrack) {
+            painter.drawText(QRectF(kHeaderWidth + 8, trackTop, contentRight() - kHeaderWidth - 16, trackHeight),
+                             Qt::AlignLeft | Qt::AlignVCenter, label);
+        } else painter.drawText(QPointF(labelX, trackTop + trackHeight + 18), label);
         painter.restore();
     }
 
@@ -791,7 +1071,7 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
 
 std::vector<TimelineWidget::Lane> TimelineWidget::lanes() const {
     std::vector<Lane> result;
-    double top = kRulerHeight;
+    double top = kRulerHeight + kNewVideoTrackStripHeight - verticalScrollBar_->value();
     const auto* active = timeline();
     for (const auto type : {heisenberg::ClipType::Video, heisenberg::ClipType::Audio}) {
         bool found = false;
@@ -815,7 +1095,7 @@ std::vector<TimelineWidget::Lane> TimelineWidget::lanes() const {
 }
 
 std::optional<TimelineWidget::Lane> TimelineWidget::laneAt(const QPointF& point) const {
-    if (point.y() >= height()) return std::nullopt;
+    if (point.y() < kRulerHeight || point.y() >= height() || point.x() < 0 || point.x() >= contentRight()) return std::nullopt;
     for (const auto& lane : lanes())
         if (point.y() >= lane.top && point.y() < lane.top + lane.height) return lane;
     return std::nullopt;
@@ -850,7 +1130,7 @@ std::optional<heisenberg::TrimEdge> TimelineWidget::trimEdgeAt(const heisenberg:
     // Keep a usable move region even for narrow clips. Clipped-off edges are not handles.
     const double handleWidth = std::min(kTrimHandleWidth, (right - left) / 4.0);
     if (left >= kHeaderWidth && x - left <= handleWidth) return heisenberg::TrimEdge::Left;
-    if (right <= width() && right - x <= handleWidth) return heisenberg::TrimEdge::Right;
+    if (right <= contentRight() && right - x <= handleWidth) return heisenberg::TrimEdge::Right;
     return std::nullopt;
 }
 
@@ -871,10 +1151,16 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
     if (event->position().x() < kHeaderWidth) {
         const auto lane = laneAt(event->position());
         if (session_ && lane && lane->track) {
+            const std::string id = lane->track->id;
+            const bool video = lane->type == heisenberg::ClipType::Video;
+            const double relativeY = event->position().y() - lane->top;
+            const bool mute = relativeY >= 8 && relativeY < 30 && event->position().x() >= kHeaderWidth - 32 && event->position().x() < kHeaderWidth - 8;
+            const bool hidden = video && relativeY >= 8 && relativeY < 30 && event->position().x() >= kHeaderWidth - 60 && event->position().x() < kHeaderWidth - 36;
             setFocus(Qt::MouseFocusReason);
             cancelInteraction();
-            const auto result = session_->setTrackMuted(QString::fromStdString(lane->track->id), !lane->track->muted);
-            if (!result.changed() && !result.message.empty()) emit editFailed(QString::fromUtf8(result.message.c_str()));
+            selectTrack(id);
+            if (mute || hidden) toggleTrack(id, hidden);
+            else setSelectedClipId({});
             event->accept();
         } else QWidget::mousePressEvent(event);
         return;
@@ -895,7 +1181,8 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
         }
         ClipMove move;
         move.clipId = hit;
-        move.trackId = track->id;
+        move.trackId = move.targetTrackId = track->id;
+        move.type = track->type;
         move.pressPosition = move.lastPosition = event->position();
         move.trimEdge = trimEdgeAt(*clip, event->position().x());
         move.originalStartFrame = clip->startFrame;
@@ -936,7 +1223,7 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                 >= QApplication::startDragDistance()) {
             if (session_->editor().compatibility().level == heisenberg::CompatibilityLevel::Unsupported) {
                 cancelInteraction();
-                emit editFailed(tr("Editing supports at most one video track and one audio track."));
+                emit editFailed(tr("This timeline contains unsupported media or effects and cannot be edited."));
                 event->accept();
                 return;
             }
@@ -966,13 +1253,30 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
         if (clipMove_->dragging) updateClipMove(event->position(), event->modifiers());
         const auto move = *clipMove_;
         cancelInteraction();
-        if (move.dragging && move.validDrop) {
-            const auto result = move.trimEdge
-                ? session_->trimClip(QString::fromStdString(move.clipId), *move.trimEdge,
-                    move.targetEdgeFrame - (*move.trimEdge == heisenberg::TrimEdge::Left ? move.originalStartFrame : move.originalEndFrame))
-                : session_->moveClip(QString::fromStdString(move.clipId), move.targetFrame);
-            if (result.status == heisenberg::EditStatus::Invalid || result.status == heisenberg::EditStatus::Unsupported)
-                emit editFailed(QString::fromUtf8(result.message.c_str()));
+        const bool changed = move.trimEdge
+            ? move.targetEdgeFrame != (*move.trimEdge == heisenberg::TrimEdge::Left ? move.originalStartFrame : move.originalEndFrame)
+            : move.createNewTrack || move.targetFrame != move.originalStartFrame || move.targetTrackId != move.trackId;
+        if (move.dragging && move.validDrop && changed) {
+            mutate([this, move](heisenberg::ui::EditorSession& active) {
+                const auto* current = active.editor().activeTimeline();
+                const auto* clip = current ? current->clipById(move.clipId) : nullptr;
+                const auto* source = current ? current->trackForClip(move.clipId) : nullptr;
+                const auto* destination = current ? current->trackById(move.targetTrackId) : nullptr;
+                if (!clip || !source) return heisenberg::EditResult{};
+                if (move.createNewTrack) {
+                    if (move.trimEdge || source->type != heisenberg::ClipType::Video ||
+                        clip->mediaType != heisenberg::ClipType::Video || !move.targetTrackId.empty()) return heisenberg::EditResult{};
+                } else if (!destination || source->type != destination->type ||
+                           (move.trimEdge && source->id != destination->id)) return heisenberg::EditResult{};
+                const qint64 delta = move.trimEdge ? move.targetEdgeFrame -
+                    (*move.trimEdge == heisenberg::TrimEdge::Left ? clip->startFrame : clip->endFrame()) : 0;
+                auto result = move.trimEdge
+                    ? active.trimClip(QString::fromStdString(move.clipId), *move.trimEdge, delta)
+                    : active.moveClip(QString::fromStdString(move.clipId), move.targetFrame,
+                                      QString::fromStdString(move.targetTrackId), move.createNewTrack);
+                if (session_ == &active && result.changed()) setSelectedClipId(move.clipId);
+                return result;
+            });
         }
         event->accept();
         return;
@@ -987,15 +1291,20 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void TimelineWidget::wheelEvent(QWheelEvent* event) {
-    const QPoint delta = event->angleDelta();
+    const QPoint angle = event->angleDelta(), pixel = event->pixelDelta();
     if (event->modifiers().testFlag(Qt::ControlModifier)) {
-        const double steps = static_cast<double>(delta.y()) / 120.0;
+        const double steps = !angle.isNull() ? static_cast<double>(angle.y() ? angle.y() : angle.x()) / 120.0
+                                            : static_cast<double>(pixel.y()) / 80.0;
         setZoom(pixelsPerFrame_ * std::pow(1.25, steps), event->position().x());
-    } else {
-        const int wheel = std::abs(delta.x()) > std::abs(delta.y()) ? delta.x() : delta.y();
-        scrollOffset_ -= static_cast<double>(wheel) / 120.0 * 80.0;
+    } else if (event->modifiers().testFlag(Qt::ShiftModifier) || angle.x() || pixel.x()) {
+        const double distance = !pixel.isNull() ? (pixel.x() ? pixel.x() : pixel.y())
+            : static_cast<double>(angle.x() ? angle.x() : angle.y()) / 120.0 * 80.0;
+        scrollOffset_ -= distance;
         clampView();
         update();
+    } else {
+        const double distance = !pixel.isNull() ? pixel.y() : static_cast<double>(angle.y()) / 120.0 * 80.0;
+        verticalScrollBar_->setValue(verticalScrollBar_->value() - static_cast<int>(std::round(distance)));
     }
     if (clipMove_ && clipMove_->dragging)
         updateClipMove(clipMove_->lastPosition, clipMove_->modifiers);
@@ -1010,6 +1319,11 @@ void TimelineWidget::leaveEvent(QEvent* event) {
 }
 
 void TimelineWidget::keyPressEvent(QKeyEvent* event) {
+    if ((event->key() == Qt::Key_M || event->key() == Qt::Key_H) && event->modifiers() == Qt::NoModifier) {
+        if (!event->isAutoRepeat() && !selectedTrackId_.empty()) toggleTrack(selectedTrackId_, event->key() == Qt::Key_H);
+        event->accept();
+        return;
+    }
     if (event->key() == Qt::Key_Delete && event->modifiers() == Qt::ShiftModifier) {
         if (!event->isAutoRepeat()) rippleDeleteSelectedClip();
         event->accept();
@@ -1055,8 +1369,10 @@ void TimelineWidget::updateClipMove(const QPointF& point, Qt::KeyboardModifiers 
     auto& move = *clipMove_;
     move.lastPosition = point;
     move.modifiers = modifiers;
-    const auto lane = laneAt(point);
-    move.validDrop = canDropAt(point) && lane && lane->track && lane->track->id == move.trackId;
+    const auto destination = dropDestination(point, move.type, false, !move.trimEdge);
+    move.createNewTrack = destination && destination->createNewTrack;
+    move.targetTrackId = destination ? destination->trackId : move.trackId;
+    move.validDrop = destination && (!move.trimEdge || destination->trackId == move.trackId);
     const double raw = std::clamp((point.x() - kHeaderWidth + scrollOffset_) / pixelsPerFrame_ - move.grabOffsetFrames,
         0.0, static_cast<double>(std::numeric_limits<qint64>::max() / 4));
     const qint64 rounded = static_cast<qint64>(std::round(raw));
@@ -1120,15 +1436,20 @@ qint64 TimelineWidget::dropFrameAtX(double x) const {
         static_cast<double>(std::numeric_limits<qint64>::max() / 4)));
 }
 
-bool TimelineWidget::canDropAt(const QPointF& point, const QString& mediaRef) const {
-    if (!session_ || !timeline() || point.x() < kHeaderWidth || point.x() >= width()) return false;
-    if (session_->editor().compatibility().level == heisenberg::CompatibilityLevel::Unsupported) return false;
+std::optional<TimelineWidget::DropDestination> TimelineWidget::dropDestination(
+        const QPointF& point, heisenberg::ClipType type, bool allowPlaceholder, bool allowNewTrack) const {
+    if (!session_ || !timeline() || point.x() < kHeaderWidth || point.x() >= contentRight() ||
+        point.y() < kRulerHeight || point.y() >= height()) return std::nullopt;
+    if (session_->editor().compatibility().level == heisenberg::CompatibilityLevel::Unsupported) return std::nullopt;
+    const double stripTop = kRulerHeight - verticalScrollBar_->value();
+    if (point.y() >= stripTop && point.y() < stripTop + kNewVideoTrackStripHeight) {
+        if (allowNewTrack && type == heisenberg::ClipType::Video)
+            return DropDestination{{}, true, stripTop, kNewVideoTrackStripHeight};
+        return std::nullopt;
+    }
     const auto lane = laneAt(point);
-    if (!lane) return false;
-    if (mediaRef.isEmpty()) return lane->track != nullptr;
-    const auto* entry = session_->editor().manifest().find(mediaRef.toStdString());
-    qint64 trim = 0, duration = 0;
-    return entry && entry->type == lane->type && session_->sourcePlacementRange(mediaRef, trim, duration);
+    if (!lane || lane->type != type || (!lane->track && !allowPlaceholder)) return std::nullopt;
+    return DropDestination{lane->track ? lane->track->id : std::string{}, false, lane->top, lane->height};
 }
 
 void TimelineWidget::dragEnterEvent(QDragEnterEvent* event) {
@@ -1149,14 +1470,18 @@ void TimelineWidget::dragEnterEvent(QDragEnterEvent* event) {
 
 void TimelineWidget::dragMoveEvent(QDragMoveEvent* event) {
     const QString ref = mediaFromMime(event->mimeData());
-    if (!ref.isEmpty() && canDropAt(event->position(), ref)) {
+    const auto* entry = session_ ? session_->editor().manifest().find(ref.toStdString()) : nullptr;
+    const auto destination = entry ? dropDestination(event->position(), entry->type, true, true) : std::nullopt;
+    qint64 trim = 0, duration = 0;
+    if (!ref.isEmpty() && destination && session_->sourcePlacementRange(ref, trim, duration)) {
         draggedMedia_ = ref;
         dropFrame_ = dropFrameAtX(event->position().x());
-        dropLane_ = laneAt(event->position());
+        dropDestination_ = destination;
         event->setDropAction(Qt::CopyAction);
         event->accept();
     } else {
         draggedMedia_.clear();
+        dropDestination_.reset();
         event->ignore();
     }
     update();
@@ -1164,24 +1489,27 @@ void TimelineWidget::dragMoveEvent(QDragMoveEvent* event) {
 
 void TimelineWidget::dragLeaveEvent(QDragLeaveEvent* event) {
     draggedMedia_.clear();
-    dropLane_.reset();
+    dropDestination_.reset();
     update();
     event->accept();
 }
 
 void TimelineWidget::dropEvent(QDropEvent* event) {
     draggedMedia_.clear();
-    dropLane_.reset();
+    dropDestination_.reset();
     const QString ref = mediaFromMime(event->mimeData());
-    if (editInProgress_ || ref.isEmpty() || !canDropAt(event->position(), ref)) {
+    const auto* entry = session_ ? session_->editor().manifest().find(ref.toStdString()) : nullptr;
+    const auto destination = entry ? dropDestination(event->position(), entry->type, true, true) : std::nullopt;
+    qint64 initialTrim = 0, initialDuration = 0;
+    if (editInProgress_ || ref.isEmpty() || !destination ||
+        !session_->sourcePlacementRange(ref, initialTrim, initialDuration)) {
         event->ignore();
         update();
         return;
     }
-    const QString targetTrackId = [this, event] {
-        const auto lane = laneAt(event->position());
-        return lane->track ? QString::fromStdString(lane->track->id) : QString();
-    }();
+    // Keep only values across editRequested: flushing a grade replaces model storage.
+    const QString targetTrackId = QString::fromStdString(destination->trackId);
+    const bool createNewTrack = destination->createNewTrack;
     const qint64 frame = dropFrameAtX(event->position().x());
     const bool insert = insertMode_;
     const QPointer<heisenberg::ui::EditorSession> session = session_;
@@ -1200,8 +1528,8 @@ void TimelineWidget::dropEvent(QDropEvent* event) {
         update();
         return;
     }
-    const auto result = insert ? session->insertMedia(ref, frame, targetTrackId)
-                               : session->placeMedia(ref, frame, targetTrackId);
+    const auto result = insert ? session->insertMedia(ref, frame, targetTrackId, createNewTrack)
+                               : session->placeMedia(ref, frame, targetTrackId, createNewTrack);
     if (result.changed()) {
         if (session && session_ == session.data() && !result.affectedIds.empty())
             setSelectedClipId(result.affectedIds.back());

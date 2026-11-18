@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Common/VideoFrame.hpp>
+#include <Compositing/CompositionExecutor.hpp>
 #include <Models/TimelineSettings.hpp>
 #include <MultiMedia/Video/Renderer/FilterGraph/Common/FilterCommon.hpp>
 #include <MultiMedia/Video/Renderer/FilterGraph/Vulkan/Graph/VulkanGraphDocument.hpp>
@@ -54,6 +55,9 @@ private:
 struct CompositionRenderRequest {
     const CompositionPlan* plan = nullptr;
     std::shared_ptr<VideoFrame> source;
+    // Composition contributions in UI order (top first). Source remains the
+    // source-preview input; composition callers provide the complete layer set.
+    std::vector<CompositionVideoLayer> layers;
     TimelineSettings settings = TimelineSettings::hd1080p24();
     int64_t targetFrame = 0;
     int64_t clipLocalFrame = 0;
@@ -89,6 +93,9 @@ public:
     // submitted work before freeing GPU resources; it never abandons inflight work.
     void setCancellation(std::function<bool()> cancelled);
     RenderedFrame render(const CompositionRenderRequest&, std::string* error = nullptr);
+    RenderedFrame render(const CompositionPlan&, int64_t targetFrame,
+                         const std::vector<CompositionVideoLayer>& layers,
+                         std::string* error = nullptr);
     RenderedFrame render(const CompositionPlan&, int64_t targetFrame,
                          const std::shared_ptr<VideoFrame>& source,
                          std::string* error = nullptr);

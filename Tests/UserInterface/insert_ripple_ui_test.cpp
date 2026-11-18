@@ -24,7 +24,7 @@
 namespace {
 using heisenberg::ui::EditorSession;
 
-QPoint position(qint64 frame, int y = 48) {
+QPoint position(qint64 frame, int y = 68) {
     return {160 + static_cast<int>(frame * 4), y};
 }
 
@@ -35,7 +35,7 @@ void mouse(TimelineWidget& timeline, QEvent::Type type, QPoint point) {
     QApplication::sendEvent(&timeline, &event);
 }
 
-void select(TimelineWidget& timeline, qint64 frame, int y = 48) {
+void select(TimelineWidget& timeline, qint64 frame, int y = 68) {
     mouse(timeline, QEvent::MouseButtonPress, position(frame, y));
     mouse(timeline, QEvent::MouseButtonRelease, position(frame, y));
 }
@@ -47,7 +47,7 @@ void key(QWidget& widget, int code, Qt::KeyboardModifiers modifiers = Qt::NoModi
 }
 
 bool drop(TimelineWidget& timeline, EditorSession& session, const QString& ref,
-          qint64 frame, int y = 48) {
+          qint64 frame, int y = 68) {
     QMimeData mime;
     mime.setData(heisenberg::ui::kMediaMimeType, QJsonDocument(QJsonObject{
         {"session", session.token()}, {"mediaRef", ref}}).toJson());
@@ -154,12 +154,12 @@ TEST_F(InsertRippleUiTest, AudioInsertAffectsOnlyTargetTrackAndWrongLaneIsReject
     ASSERT_TRUE(session.setSourceIn(audioRef, .2));
     ASSERT_TRUE(session.setSourceOut(audioRef, .7));
     const auto before = json();
-    EXPECT_FALSE(drop(timeline, session, audioRef, 60, 48));
+    EXPECT_FALSE(drop(timeline, session, audioRef, 60, 68));
     EXPECT_EQ(json(), before);
     const auto videoBefore = track(heisenberg::ClipType::Video);
     const auto audioTrackId = track(heisenberg::ClipType::Audio).id;
     const auto laterAudioId = QString::fromStdString(track(heisenberg::ClipType::Audio).clips.back().id);
-    ASSERT_TRUE(drop(timeline, session, audioRef, 60, 92));
+    ASSERT_TRUE(drop(timeline, session, audioRef, 60, 112));
     ASSERT_NE(clip(laterAudioId), nullptr);
     EXPECT_EQ(clip(laterAudioId)->startFrame, 165);
     EXPECT_EQ(track(heisenberg::ClipType::Audio).id, audioTrackId);

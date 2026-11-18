@@ -237,7 +237,9 @@ TEST(ColorSnapshotTest, CapturesColorEffectsAndLocalFrameWithoutBorrowingEditor)
     ASSERT_TRUE(project.editor().setMediaInputColorSpace("media", "Raw").changed());
     ASSERT_TRUE(project.editor().setClipEffects("clip", std::nullopt).changed());
     EXPECT_EQ(plan.colorSettings.inputColorSpaces.at("media"), "ACEScg");
-    EXPECT_EQ(plan.clips.front().visualSnapshot.effects, gradeTrack());
+    ASSERT_EQ(plan.tracks.size(), 1u);
+    ASSERT_EQ(plan.tracks.front().clips.size(), 1u);
+    EXPECT_EQ(plan.tracks.front().clips.front().visualSnapshot.effects, gradeTrack());
     ASSERT_TRUE(plan.videoSampleAt(7)); EXPECT_EQ(plan.videoSampleAt(7)->clipLocalFrame, 7);
     EXPECT_EQ(snapshot.project().colorSettings, settings);
 }
