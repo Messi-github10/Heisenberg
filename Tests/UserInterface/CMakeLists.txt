@@ -12,6 +12,9 @@ add_executable(HeisenbergEditorUiTests
     source_edit_workflow_test.cpp
     multitrack_ui_test.cpp
     multi_selection_ui_test.cpp
+    clip_appearance_ui_test.cpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ClipAppearanceDialog.cpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ClipAppearanceDialog.hpp
     auto_track_drop_test.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ColorGradePanel.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ColorGradePanel.hpp

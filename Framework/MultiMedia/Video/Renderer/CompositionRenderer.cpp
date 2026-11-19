@@ -4,6 +4,7 @@
 #include "RenderEngine.hpp"
 #include <Compositing/CompositionPlan.hpp>
 #include <Compositing/Grade/GradeCompiler.hpp>
+#include <Models/ClipAppearance.hpp>
 #include <Platform/Software/SoftwareContext.hpp>
 #include <Platform/D3D11/D3D11VulkanInterop.hpp>
 #include <Platform/Vulkan/VulkanQueueSync.hpp>
@@ -16,11 +17,13 @@
 extern "C" {
 #include <libavutil/pixdesc.h>
 #include <libplacebo/dispatch.h>
+#include <libplacebo/filters.h>
 #include <libplacebo/shaders/custom.h>
 #include <libplacebo/shaders/sampling.h>
 }
 #include <d3d11.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <functional>
@@ -170,6 +173,7 @@ struct CompositionRenderer::Impl {
     struct GradeCache { std::string key; std::unique_ptr<VulkanFilterGraph> graph; };
     std::map<std::string, GradeCache> gradeGraphs;
     pl_dispatch compositor = nullptr;
+    pl_shader_obj geometryFilterLut[2] = {nullptr,nullptr};
     std::thread::id owner;
     std::function<bool()> cancelled;
     bool cancellationObserved = false;
@@ -296,6 +300,180 @@ struct CompositionRenderer::Impl {
         const bool returned = source.close();
         checkCancellation(); require(submitted && returned, "libplacebo layer blend failed");
     }
+    // All geometry shader text is invariant. Only uniforms change during edits;
+    // the dispatch cache is bounded by these two programs, not parameter values.
+    static pl_shader_va canvasCoordinates(pl_gpu gpu) {
+        static const float corners[4][2] = {{0,0},{1,0},{0,1},{1,1}};
+        pl_shader_va attribute{};
+        attribute.attr.name = "canvas_uv";
+        attribute.attr.fmt = pl_find_vertex_fmt(gpu, PL_FMT_FLOAT, 2);
+        for (int i = 0; i < 4; ++i) attribute.data[i] = corners[i];
+        return attribute;
+    }
+    RenderedFrame maskedPremultiplied(const RenderedFrame& input, const Clip& clip) {
+        auto contract = kWorkingImageContract; contract.alpha = AlphaMode::premultiplied;
+        auto output = allocate(input.image().extent, contract, input.position(), input.storage_->timeBase);
+        BorrowedTexture source(gpu, input.image()), target(gpu, output.image());
+        auto shader = pl_dispatch_begin(compositor);
+        pl_sample_src sample{}; sample.tex = source.get(); sample.components = 4;
+        const bool sampled = pl_shader_sample_direct(shader, &sample);
+        const double w = input.image().extent.width, h = input.image().extent.height;
+        const double croppedW = w*(1.0-clip.crop.left-clip.crop.right);
+        const double croppedH = h*(1.0-clip.crop.top-clip.crop.bottom);
+        const double shortSide = std::min(croppedW,croppedH);
+        const float box[4] = {float(w*(clip.crop.left+1.0-clip.crop.right)*0.5),
+            float(h*(clip.crop.top+1.0-clip.crop.bottom)*0.5), float(croppedW*0.5),float(croppedH*0.5)};
+        const float edge[4] = {float(clip.edgeRounding*shortSide*0.5),float(clip.edgeSoftness*shortSide*0.5),float(w),float(h)};
+        pl_shader_var variables[2]{};
+        variables[0] = {pl_var_vec4("crop_box"),box,true};
+        variables[1] = {pl_var_vec4("crop_edge"),edge,true};
+        auto uv = canvasCoordinates(gpu);
+        pl_custom_shader mask{}; mask.input = mask.output = PL_SHADER_SIG_COLOR;
+        mask.description = "Native source crop and premultiply";
+        mask.variables = variables; mask.num_variables = 2;
+        mask.vertex_attribs = &uv; mask.num_vertex_attribs = 1;
+        // Positive SDF is outside. The Palmier transition feathers inward in
+        // ORIGINAL source pixels, before local flips or anisotropic scaling.
+        mask.body = R"glsl(
+            vec2 q = abs(canvas_uv * crop_edge.zw - crop_box.xy)
+                       - crop_box.zw + vec2(crop_edge.x);
+            float sdf = length(max(q, vec2(0.0)))
+                        + min(max(q.x, q.y), 0.0) - crop_edge.x;
+            float coverage = 1.0 - smoothstep(-0.5 - crop_edge.y, 0.5, sdf);
+            color.a = clamp(color.a, 0.0, 1.0) * coverage;
+            color.rgb = color.a > 0.0 ? color.rgb * color.a : vec3(0.0);
+        )glsl";
+        const bool modified = pl_shader_custom(shader, &mask);
+        pl_dispatch_params params{}; params.shader = &shader; params.target = target.get();
+        const bool submitted = sampled && modified && pl_dispatch_finish(compositor, &params);
+        if (shader) pl_dispatch_abort(compositor, &shader);
+        const bool targetReturned = target.close(), sourceReturned = source.close();
+        require(submitted && targetReturned && sourceReturned, "Source geometry mask failed");
+        output.storage_->resource.setLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        output.storage_->complete(); checkCancellation(); return output;
+    }
+    RenderedFrame prefilterAxis(const RenderedFrame& input, VkExtent2D extent, int axis) {
+        auto output = allocate(extent,input.image().contract,input.position(),input.storage_->timeBase);
+        BorrowedTexture source(gpu,input.image()), target(gpu,output.image());
+        auto shader = pl_dispatch_begin(compositor);
+        pl_sample_src sample{}; sample.tex = source.get(); sample.components = 4;
+        sample.new_w = extent.width; sample.new_h = extent.height;
+        // Direct filtering deliberately avoids pl_renderer color conversion,
+        // which may clamp/gamut-map independent HDR RGB between its internal
+        // unpremultiply/premultiply stages. Here all four premult components
+        // receive exactly the same widened, normalized reconstruction kernel.
+        pl_sample_filter_params filter{}; filter.filter = pl_filter_lanczos;
+        filter.lut = &geometryFilterLut[axis];
+        const bool sampled = pl_shader_sample_ortho2(shader,&sample,&filter);
+        pl_dispatch_params params{}; params.shader = &shader; params.target = target.get();
+        const bool submitted = sampled && pl_dispatch_finish(compositor,&params);
+        if (shader) pl_dispatch_abort(compositor,&shader);
+        const bool targetReturned = target.close(), sourceReturned = source.close();
+        require(submitted && targetReturned && sourceReturned, "Premultiplied geometry prefilter failed");
+        output.storage_->resource.setLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        output.storage_->complete(); checkCancellation(); return output;
+    }
+    RenderedFrame prefilter(const RenderedFrame& input, VkExtent2D extent) {
+        auto filtered = input;
+        if (extent.width != filtered.image().extent.width)
+            filtered = prefilterAxis(filtered,{extent.width,filtered.image().extent.height},0);
+        if (extent.height != filtered.image().extent.height)
+            filtered = prefilterAxis(filtered,extent,1);
+        return filtered;
+    }
+    void geometryBlend(pl_tex target, const RenderedFrame& input, const Clip& clip,
+                       double sar, double opacity) {
+        const auto& t = clip.transform;
+        const double canvasW = target->params.w, canvasH = target->params.h;
+        const double sourceW = input.image().extent.width, sourceH = input.image().extent.height;
+        const bool identity = t == Transform{} && clip.crop == Crop{}
+            && clip.edgeRounding == 0.0 && clip.edgeSoftness == 0.0;
+        if (identity && sourceW == canvasW && sourceH == canvasH && sar == 1.0) {
+            blend(target,input,opacity); return;
+        }
+        const double aspect = sourceW*sar/sourceH;
+        const double fitW = std::min(canvasW,canvasH*aspect);
+        const double fitH = std::min(canvasH,canvasW/aspect);
+        const double width = fitW*t.width, height = fitH*t.height;
+        const double radians = std::remainder(t.rotation,360.0)*3.14159265358979323846/180.0;
+        const double c = std::cos(radians), s = std::sin(radians);
+        // Cull fully off-canvas images before inverse coefficients can overflow
+        // for very small sizes or distant (but valid) finite centers.
+        const double centerX = canvasW*t.centerX, centerY = canvasH*t.centerY;
+        const double boundX = (std::abs(c)*width+std::abs(s)*height)*0.5;
+        const double boundY = (std::abs(s)*width+std::abs(c)*height)*0.5;
+        if (centerX+boundX < 0 || centerX-boundX > canvasW ||
+            centerY+boundY < 0 || centerY-boundY > canvasH) return;
+        require(std::isfinite(width) && std::isfinite(height) && width > 0 && height > 0,
+                "Geometry size exceeds GPU coordinate range");
+        const double sx = (t.flipHorizontal ? -1.0 : 1.0)/width;
+        const double sy = (t.flipVertical ? -1.0 : 1.0)/height;
+        const auto coordinate = [](double v) {
+            require(std::isfinite(v) && std::abs(v) <= 1.0e30,
+                    "Geometry transform exceeds GPU coordinate range");
+            return float(v);
+        };
+        // Inverse clockwise rotation in top-left/y-down canvas coordinates.
+        // Rows operate on normalized canvas coordinates and pivot at the FULL
+        // image center; crop never changes this mapping or the fitted size.
+        const float rowX[4] = {coordinate(c*canvasW*sx),coordinate(s*canvasH*sx),
+            coordinate(0.5-(c*centerX+s*centerY)*sx),0};
+        const float rowY[4] = {coordinate(-s*canvasW*sy),coordinate(c*canvasH*sy),
+            coordinate(0.5-(-s*centerX+c*centerY)*sy),0};
+        auto prepared = maskedPremultiplied(input,clip);
+        // Downscale in source axes, before rotation. No canvas-sized or
+        // unbounded transformed allocation: each axis is <= native resolution.
+        const VkExtent2D filtered{static_cast<uint32_t>(std::clamp(std::ceil(width),1.0,sourceW)),
+                                 static_cast<uint32_t>(std::clamp(std::ceil(height),1.0,sourceH))};
+        if (filtered.width != input.image().extent.width || filtered.height != input.image().extent.height)
+            prepared = prefilter(prepared,filtered);
+        BorrowedTexture source(gpu,prepared.image());
+        auto shader = pl_dispatch_begin(compositor);
+        pl_shader_desc texture{}; texture.desc.name = "geometry_source";
+        texture.desc.type = PL_DESC_SAMPLED_TEX; texture.binding.object = source.get();
+        texture.binding.sample_mode = PL_TEX_SAMPLE_NEAREST;
+        const float amount = float(opacity);
+        pl_shader_var variables[3] = {{pl_var_vec4("geometry_x"),rowX,true},
+            {pl_var_vec4("geometry_y"),rowY,true},{pl_var_float("geometry_opacity"),&amount,true}};
+        auto uv = canvasCoordinates(gpu);
+        pl_custom_shader geometry{}; geometry.input = PL_SHADER_SIG_NONE; geometry.output = PL_SHADER_SIG_COLOR;
+        geometry.description = "Constant planar geometry";
+        geometry.descriptors = &texture; geometry.num_descriptors = 1;
+        geometry.variables = variables; geometry.num_variables = 3;
+        geometry.vertex_attribs = &uv; geometry.num_vertex_attribs = 1;
+        geometry.body = R"glsl(
+            vec3 p = vec3(canvas_uv, 1.0);
+            vec2 uv = vec2(dot(geometry_x.xyz,p), dot(geometry_y.xyz,p));
+            ivec2 size = textureSize(geometry_source, 0);
+            vec2 position = uv * vec2(size) - 0.5;
+            color = vec4(0.0);
+            // Test before float-to-int conversion: far-offscreen transforms
+            // must not overflow integer texel coordinates.
+            if (all(greaterThan(position,vec2(-1.0))) && all(lessThan(position,vec2(size)))) {
+                ivec2 base = ivec2(floor(position));
+                vec2 f = fract(position);
+                for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) {
+                    ivec2 tap = base + ivec2(x,y);
+                    if (all(greaterThanEqual(tap,ivec2(0))) && all(lessThan(tap,size))) {
+                        float weight = (x == 0 ? 1.0-f.x : f.x) * (y == 0 ? 1.0-f.y : f.y);
+                        color += texelFetch(geometry_source,tap,0) * weight;
+                    }
+                }
+            }
+            // Keep genuine negative/HDR RGB. Only coverage is bounded; zero
+            // alpha never releases hidden RGB into the straight blend.
+            color.rgb = color.a > 0.0 ? color.rgb / color.a : vec3(0.0);
+            color.a = clamp(color.a,0.0,1.0) * geometry_opacity;
+        )glsl";
+        const bool modified = pl_shader_custom(shader,&geometry);
+        const pl_blend_params over{PL_BLEND_SRC_ALPHA,PL_BLEND_ONE_MINUS_SRC_ALPHA,
+                                   PL_BLEND_ONE,PL_BLEND_ONE_MINUS_SRC_ALPHA};
+        pl_dispatch_params params{}; params.shader = &shader; params.target = target; params.blend_params = &over;
+        const bool submitted = modified && pl_dispatch_finish(compositor,&params);
+        if (shader) pl_dispatch_abort(compositor,&shader);
+        const bool returned = source.close(); checkCancellation();
+        require(submitted && returned,"Planar geometry blend failed");
+    }
     RenderedFrame copy(const VulkanImageRef& input, int64_t position, AVRational timeBase) {
         waitGpu(input.ready); checkCancellation(); auto frame = allocate(input.extent, input.contract, position, timeBase);
         commands([&](VkCommandBuffer cmd) {
@@ -338,6 +516,7 @@ void CompositionRenderer::setCancellation(std::function<bool()> cancelled) {
 }
 void CompositionRenderer::shutdown() {
     if (!impl_ || !impl_->gpu) return; impl_->check(); pl_gpu_finish(impl_->gpu); synchronizedQueueWaitIdle(impl_->context.queue);
+    for (auto& lut : impl_->geometryFilterLut) pl_shader_obj_destroy(&lut);
     impl_->reportedColorPaths.clear(); impl_->gradeGraphs.clear(); pl_dispatch_destroy(&impl_->compositor); impl_->graph.reset(); impl_->interops.clear(); impl_->colorPipeline.reset(); impl_->software.reset(); impl_->placement.reset(); impl_->gpu = nullptr; impl_->vulkan = nullptr; impl_->owner = {};
 }
 RenderedFrame CompositionRenderer::render(const CompositionPlan& plan, int64_t frame, const std::vector<CompositionVideoLayer>& layers, std::string* error) {
@@ -403,6 +582,21 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
                 for (const auto& track : request.plan->tracks)
                     for (const auto& candidate : track.clips)
                         if (candidate.id == layer.clipId) { clip = &candidate; break; }
+            }
+            if (clip && !request.sourceMode) {
+                std::string geometryError;
+                const bool validGeometry = validateConstantGeometry(clip->visualSnapshot,&geometryError);
+                require(validGeometry,geometryError.empty() ? "Invalid constant geometry" : geometryError.c_str());
+                if (request.strict) {
+                    const auto& appearance = clip->visualSnapshot;
+                    require(appearance.transform.rotationX == 0.0 && appearance.transform.rotationY == 0.0,
+                            "Unsupported 3D clip rotation");
+                    require(!appearance.opacityTrack && !appearance.positionTrack && !appearance.scaleTrack
+                            && !appearance.rotationTrack && !appearance.cropTrack,
+                            "Unsupported animated clip geometry or opacity");
+                    require(!appearance.blendMode || *appearance.blendMode == "normal",
+                            "Unsupported clip blend mode");
+                }
             }
             contributions.push_back({std::move(layer),clip});
         }
@@ -489,13 +683,6 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
                 working = impl_->runGraph(*cache.graph,working,timing);
             }
         }
-        if (working.image().extent.width != canvas.width || working.image().extent.height != canvas.height || av->sample_aspect_ratio.num != av->sample_aspect_ratio.den) {
-            auto placed = impl_->allocate(canvas,kWorkingImageContract,request.targetFrame,timeBase);
-            BorrowedTexture texture(impl_->gpu,working.image()); auto source = rgb(texture.get(),av->width,av->height);
-            const double sar = av->sample_aspect_ratio.num > 0 && av->sample_aspect_ratio.den > 0 ? av_q2d(av->sample_aspect_ratio) : 1.0;
-            impl_->draw(source,placed,true,av->width*sar/av->height);
-            require(texture.close(), "Cannot release placement input"); working = std::move(placed);
-        }
         const auto& metadata = selection.observedMetadata;
         const auto* formatName = av_get_pix_fmt_name(metadata.format);
         const auto repr = colorReprFromAvFrame(av);
@@ -539,7 +726,11 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
                 finishedRec709 = finishedRec709 && layer.storage_->finishedRec709;
                 if (!inputPath.empty()) inputPath += " | ";
                 inputPath += layer.storage_->inputPath;
-                impl_->blend(target.get(),layer,it->layer.opacity);
+                const auto* av = it->layer.frame->get();
+                const double sar = av->sample_aspect_ratio.num > 0 && av->sample_aspect_ratio.den > 0
+                    ? av_q2d(av->sample_aspect_ratio) : 1.0;
+                const Clip appearance = !request.sourceMode && it->clip ? it->clip->visualSnapshot : Clip{};
+                impl_->geometryBlend(target.get(),layer,appearance,sar,it->layer.opacity);
             }
             require(target.close(), "Cannot return composite image");
         }

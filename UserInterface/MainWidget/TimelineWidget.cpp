@@ -1,5 +1,6 @@
 #include "MainWidget/TimelineWidget.hpp"
 #include "Backend/EditorSession.hpp"
+#include "MainWidget/ClipAppearanceDialog.hpp"
 #include "MainWidget/ColorGradeDialog.hpp"
 
 #include <QDir>
@@ -270,32 +271,27 @@ void TimelineWidget::toggleTrack(const std::string& trackId, bool hidden) {
 
 void TimelineWidget::editSelectedClipAppearance() {
     cancelInteraction();
-    const auto* clip = timeline() ? timeline()->clipById(selectedClipId_) : nullptr;
-    if (!session_ || !clip || clip->mediaType != heisenberg::ClipType::Video) return;
-    const QString id = QString::fromStdString(clip->id);
+    if (editInProgress_ || !session_) return;
+    // Keep only values and IDs across modal events and editRequested, which may
+    // replace the complete timeline when flushing a pending grade transaction.
+    const auto original = [this]() -> std::optional<heisenberg::Clip> {
+        const auto* clip = timeline() ? timeline()->clipById(selectedClipId_) : nullptr;
+        if (!clip || clip->mediaType != heisenberg::ClipType::Video) return std::nullopt;
+        return *clip;
+    }();
+    if (!original) return;
+    const QString id = QString::fromStdString(original->id);
     const QPointer<heisenberg::ui::EditorSession> session = session_;
-    const double original = clip->opacity;
-    QDialog dialog(this);
-    dialog.setObjectName("clipAppearanceDialog");
-    dialog.setWindowTitle(tr("Clip Appearance"));
-    auto* form = new QFormLayout(&dialog);
-    auto* opacity = new QDoubleSpinBox(&dialog);
-    opacity->setObjectName("clipOpacity");
-    opacity->setRange(0.0, 100.0);
-    opacity->setDecimals(2);
-    opacity->setSuffix(tr(" %"));
-    opacity->setValue(original * 100.0);
-    form->addRow(tr("Opacity"), opacity);
-    auto* hint = new QLabel(tr("Sets a fixed opacity for this clip."), &dialog);
-    form->addRow(hint);
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    form->addRow(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    heisenberg::ui::ClipAppearanceDialog dialog(*original, this);
     if (dialog.exec() != QDialog::Accepted || !session || session_ != session.data()) return;
-    const double value = opacity->value() / 100.0;
-    if (std::abs(value - original) < 0.000001) return;
-    mutate([id, value](heisenberg::ui::EditorSession& active) { return active.setClipOpacity(id, value); });
+    const auto patch = dialog.changedPatch();
+    if (patch.empty()) return;
+    mutate([id, patch](heisenberg::ui::EditorSession& active) {
+        const auto* timeline = active.editor().activeTimeline();
+        const auto* clip = timeline ? timeline->clipById(id.toStdString()) : nullptr;
+        if (!clip || clip->mediaType != heisenberg::ClipType::Video) return heisenberg::EditResult{};
+        return active.setClipAppearance(id, patch);
+    });
 }
 
 void TimelineWidget::splitSelectedClip() {

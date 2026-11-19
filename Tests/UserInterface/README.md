@@ -113,9 +113,23 @@ Media import itself is not part of timeline undo history.
   target; direct drops use their actual lane. Track removal, undo and project changes
   must leave a valid target or a predictable compatible fallback.
 - Video lanes appear above audio lanes. Within video, the visually upper lane is
-  composited over lower lanes. Right-click a video clip's appearance settings to set
-  constant opacity. Verify 0%, 50% and 100%, transparent source pixels, and differently
-  shaped sources whose fitted borders should reveal lower layers rather than black.
+  composited over lower lanes. Right-click a video's **Clip Appearance...** to edit
+  constant geometry and opacity. Center X/Y are canvas percentages (50% centers the
+  image); Width/Height scale the existing aspect-fit result independently. Rotation
+  is clockwise in degrees and flips use the image's local axes.
+- Crop percentages remove the corresponding source sides without zooming or changing
+  the full-image rotation pivot. Rounding and softness use the cropped source's short
+  side, so scaling/rotation also transforms the mask. Check all four crop sides,
+  asymmetric crop plus flips, off-canvas placement and arbitrary rotation.
+- Verify opacity 0%, 50% and 100%, existing transparent source pixels, rounded/soft
+  corners over a contrasting lower layer, and differently shaped sources whose fitted
+  borders should reveal lower layers rather than black. Small/downscaled images must
+  not acquire a fringe from RGB stored in fully transparent texels.
+- Opening and confirming unchanged appearance or cancelling it leaves the project
+  untouched. Multiple changed controls commit one undo step, preserve grade/audio and
+  imported animation, and apply only to the primary selected clip. Save/reopen, unsaved
+  preview and export must reproduce the appearance. Perspective and geometry animation
+  remain unsupported and must fail strict export before touching an existing output.
 - Wheel scrolls vertically beneath the fixed ruler; Shift-wheel or horizontal wheel
   scrolls horizontally, Ctrl-wheel zooms. Verify hit testing, track buttons, cross-track
   ghosts and drops after scrolling and after deleting tracks near the bottom.

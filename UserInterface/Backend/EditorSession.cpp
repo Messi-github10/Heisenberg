@@ -283,6 +283,12 @@ EditResult EditorSession::setTrackHidden(const QString& trackId, bool hidden) {
     return result;
 }
 
+EditResult EditorSession::setClipAppearance(const QString& clipId, const ClipAppearancePatch& patch) {
+    auto result = project_.editor().setClipAppearance(clipId.toUtf8().toStdString(), patch);
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
 EditResult EditorSession::setClipOpacity(const QString& clipId, double opacity) {
     auto result = project_.editor().setClipOpacity(clipId.toUtf8().toStdString(), opacity);
     if (result.changed()) { syncDirty(); emit timelineChanged(-1); }

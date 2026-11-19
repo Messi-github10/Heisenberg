@@ -6,6 +6,8 @@
 #include <atomic>
 #include <cmath>
 #include <filesystem>
+#include <functional>
+#include <limits>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -73,6 +75,8 @@ struct MediaReadback {
     std::vector<float> audio;
     std::vector<double> brightness;
     std::vector<std::vector<double>> grayPatches;
+    std::vector<std::vector<uint8_t>> luma;
+    std::vector<double> videoTimes;
 };
 MediaReadback readback(const fs::path& path, AVCodecID expectedVideo, int expectedFrames) {
     AVFormatContext* input = nullptr;
@@ -107,6 +111,14 @@ MediaReadback readback(const fs::path& path, AVCodecID expectedVideo, int expect
         while ((status = avcodec_receive_frame(decoders[index], frame)) == 0) {
             if (!index) {
                 ++result.pictures;
+                EXPECT_EQ(frame->format, AV_PIX_FMT_YUV420P);
+                std::vector<uint8_t> luma(frame->width * frame->height);
+                for (int y = 0; y < frame->height; ++y)
+                    std::copy_n(frame->data[0] + y * frame->linesize[0], frame->width,
+                                luma.data() + y * frame->width);
+                result.luma.push_back(std::move(luma));
+                result.videoTimes.push_back(frame->best_effort_timestamp == AV_NOPTS_VALUE ? -1.0
+                    : frame->best_effort_timestamp * av_q2d(input->streams[vi]->time_base));
                 double value = 0;
                 for (int y = 0; y < frame->height; ++y) for (int x = 0; x < frame->width; ++x)
                     value += frame->data[0][y * frame->linesize[0] + x];
@@ -168,6 +180,13 @@ double tone(const std::vector<float>& pcm, double hz, double begin, double end) 
     }
     return 2.0 * std::hypot(re, im) / (last - first);
 }
+double geometryPatch(const std::vector<uint8_t>& pixels, int x, int y) {
+    double total = 0;
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx) total += pixels[(y + dy) * 160 + x + dx];
+    return total / 9.0;
+}
+
 std::string contents(const fs::path& path) {
     std::ifstream input(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
@@ -390,6 +409,223 @@ TEST(ExportEngineTest, AudioTailAndAudioOnlyProduceBlackFramesAndKeepSound) {
         for (size_t i = picture ? 24 : 0; i < decoded.brightness.size(); ++i)
             EXPECT_NEAR(decoded.brightness[i], 16, 2.0);
         EXPECT_TRUE(folder.noStaging());
+    }
+}
+
+TEST(ExportEngineTest, PlanarGeometrySurvivesReopenAndOwnedSnapshotThenFullyDecodes) {
+    OutputFolder folder;
+    VideoProject project;
+    ProjectFile document;
+    Timeline timeline;
+    timeline.id = "geometry-timeline"; timeline.width = 160; timeline.height = 120; timeline.fps = 24;
+    Track upper; upper.id = "upper"; upper.muted = true;
+    Clip shape; shape.id = "transformed"; shape.mediaRef = "gray";
+    shape.startFrame = 2; shape.durationFrames = 4; shape.trimStartFrame = 1; shape.trimEndFrame = 1;
+    shape.transform.centerX = 0.55; shape.transform.centerY = 0.55;
+    shape.transform.width = 0.75; shape.transform.height = 0.5;
+    shape.transform.rotation = 90; shape.transform.flipHorizontal = true; shape.transform.flipVertical = true;
+    shape.crop = {0.125, 0.1, 0.125, 0.2};
+    shape.edgeRounding = 0.8; shape.edgeSoftness = 0.5;
+    upper.clips.push_back(shape);
+    Track lower; lower.id = "lower"; lower.muted = true;
+    Clip background; background.id = "background"; background.mediaRef = "gray";
+    background.durationFrames = 12; background.speed = 0.5;
+    lower.clips.push_back(background);
+    timeline.tracks = {upper, lower};
+    document.timelines.push_back(timeline); document.activeTimelineId = timeline.id;
+    document.colorSettings.inputColorSpaces["gray"] = "Rec.1886 Rec.709 - Display";
+    MediaManifest manifest;
+    MediaManifestEntry media; media.id = "gray"; media.duration = 0.25;
+    media.source.path = HEISENBERG_TEST_SDR_GRAY;
+    ASSERT_TRUE(manifest.add(media));
+    std::string error;
+    ASSERT_TRUE(project.editor().replaceDocument(document, manifest, "", &error)) << error;
+    const auto saved = project.snapshot();
+    const auto package = folder.root / "geometry.berg";
+    ASSERT_TRUE(project.savePackage(utf8(package), &error)) << error;
+    VideoProject reopened;
+    ASSERT_TRUE(reopened.loadPackage(utf8(package), &error)) << error;
+    const auto owned = reopened.snapshot();
+    EXPECT_EQ(owned.project(), saved.project());
+    EXPECT_EQ(owned.manifest(), saved.manifest());
+    ASSERT_NE(owned.activeTimeline(), nullptr);
+    EXPECT_EQ(owned.activeTimeline()->id, "geometry-timeline");
+    EXPECT_EQ(owned.activeTimeline()->tracks.front().clips.front(), shape);
+    EXPECT_EQ(owned.activeTimeline()->tracks.back().clips.front(), background);
+    CompositionPlan plan;
+    ASSERT_TRUE(CompositionBuilder::build(owned, plan, &error)) << error;
+    ASSERT_EQ(plan.tracks.size(), 2u);
+    EXPECT_EQ(plan.frameCount, 12);
+    EXPECT_EQ(plan.tracks[0].id, "upper"); EXPECT_EQ(plan.tracks[1].id, "lower");
+    EXPECT_EQ(plan.tracks[0].clips[0].visualSnapshot, shape);
+    EXPECT_EQ(plan.tracks[1].clips[0].visualSnapshot, background);
+    for (int f = 0; f < 12; ++f) {
+        const auto layers = plan.videoSamplesAt(f);
+        ASSERT_EQ(layers.size(), f >= 2 && f < 6 ? 2u : 1u);
+        for (const auto& layer : layers) {
+            const bool top = layer.trackIndex == 0;
+            EXPECT_EQ(layer.clipLocalFrame, top ? f - 2 : f);
+            EXPECT_NEAR(layer.sourceSeconds, (top ? f - 1.0 : f * 0.5) / 24.0, 1e-9);
+        }
+    }
+    // Mutate both the reopened editor and caller's document after capturing.
+    // The export must still use the saved geometry, IDs and frame ranges.
+    auto changed = owned.project();
+    changed.timelines.front().tracks.front().clips.front().transform = {};
+    changed.timelines.front().tracks.front().clips.front().crop = {};
+    changed.timelines.front().tracks.front().clips.front().edgeRounding = 0;
+    changed.timelines.front().tracks.front().clips.front().edgeSoftness = 0;
+    changed.timelines.front().tracks.front().clips.front().startFrame = 0;
+    ASSERT_TRUE(reopened.editor().replaceDocument(changed, owned.manifest(), owned.projectDir(), &error)) << error;
+    EXPECT_EQ(owned.activeTimeline()->tracks.front().clips.front(), shape);
+    for (auto codec : {ExportVideoCodec::H264, ExportVideoCodec::H265}) {
+        ExportEngine engine;
+        ExportRequest request; request.snapshot = owned; request.outputPath = utf8(folder.output());
+        request.overwrite = true; request.hardwareDecode = false; request.videoCodec = codec; request.crf = 0;
+        ASSERT_TRUE(engine.start(request, &error)) << error; engine.wait();
+        ASSERT_TRUE(engine.result().succeeded()) << engine.result().stage << ": " << engine.result().error;
+        const auto decoded = readback(folder.output(), codec == ExportVideoCodec::H264 ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC, 12);
+        ASSERT_EQ(decoded.luma.size(), 12u); ASSERT_EQ(decoded.videoTimes.size(), 12u);
+        EXPECT_EQ(engine.progress().completedFrames, 12);
+        EXPECT_EQ(engine.progress().completedSamples, 24000);
+        const double levels[]{16, 24, 40, 64, 96, 128, 192, 235};
+        int interior = 0, feather = 0, outside = 0;
+        for (int f = 0; f < 12; ++f) {
+            EXPECT_NEAR(decoded.videoTimes[f], f / 24.0, 1e-6);
+            for (int y = 5; y < 115; y += 3) for (int x = 5; x < 155; x += 3) {
+                if (x % 20 < 4 || x % 20 > 16) continue;
+                const double bottom = levels[x / 20];
+                double expected = bottom;
+                if (f >= 2 && f < 6) {
+                    // Independent inverse of clockwise 90 degree placement, then
+                    // both source flips. Width/height multiply the 160x120 fit.
+                    const double sx = 80 - (y + 0.5 - 66) / 0.75;
+                    const double sy = 60 + (x + 0.5 - 88) / 0.5;
+                    // Crop rect [20,12,140,96], radius .8*84/2, feather .5*84/2.
+                    const double qx = std::abs(sx - 80) - (60 - 33.6);
+                    const double qy = std::abs(sy - 54) - (42 - 33.6);
+                    const double distance = std::hypot(std::max(qx, 0.0), std::max(qy, 0.0))
+                        + std::min(std::max(qx, qy), 0.0) - 33.6;
+                    const double t = std::clamp((distance + 21.5) / 22.0, 0.0, 1.0);
+                    const double alpha = 1 - t * t * (3 - 2 * t);
+                    if (alpha > 0) {
+                        if (sx < 4 || sx >= 156 || std::fmod(sx, 20.0) < 4 || std::fmod(sx, 20.0) > 16) continue;
+                        const double top = levels[static_cast<int>(sx) / 20];
+                        const double linear = alpha * std::pow((top - 16) / 219, 2.4)
+                            + (1 - alpha) * std::pow((bottom - 16) / 219, 2.4);
+                        expected = 16 + 219 * std::pow(linear, 1 / 2.4);
+                    }
+                    if (alpha > 0.98) ++interior;
+                    else if (alpha > 0.15 && alpha < 0.85) ++feather;
+                    else if (alpha == 0) ++outside;
+                }
+                EXPECT_NEAR(geometryPatch(decoded.luma[f], x, y), expected, 7.0)
+                    << "frame=" << f << " pixel=" << x << ',' << y;
+            }
+        }
+        EXPECT_GT(interior, 20); EXPECT_GT(feather, 20); EXPECT_GT(outside, 100);
+        EXPECT_TRUE(folder.noStaging());
+    }
+}
+
+TEST(ExportEngineTest, NonSquareSourceKeepsDefaultAspectFitAndScalesFromFittedDimensions) {
+    // Existing 160x90 source fits a 160x120 canvas at y=[15,105].
+    // Halving each size must produce 80x45, rather than 80x60.
+    OutputFolder folder;
+    for (const double scale : {1.0, 0.5}) {
+        const auto initial = snapshot(2, true, false);
+        auto document = initial.project();
+        auto& clip = document.timelines.front().tracks.front().clips.front();
+        clip.transform.width = clip.transform.height = scale;
+        MediaManifest manifest;
+        MediaManifestEntry media; media.id = "v"; media.duration = 10;
+        media.source.path = HEISENBERG_TEST_EXECUTOR_LOOKAHEAD;
+        ASSERT_TRUE(manifest.add(media));
+        VideoProject project;
+        std::string error;
+        ASSERT_TRUE(project.editor().replaceDocument(document, manifest, "", &error)) << error;
+        ExportRequest request; request.snapshot = project.snapshot(); request.outputPath = utf8(folder.output());
+        request.overwrite = true; request.hardwareDecode = false; request.crf = 0;
+        ExportEngine engine;
+        ASSERT_TRUE(engine.start(request, &error)) << error; engine.wait();
+        ASSERT_TRUE(engine.result().succeeded()) << engine.result().stage << ": " << engine.result().error;
+        const auto decoded = readback(folder.output(), AV_CODEC_ID_H264, 2);
+        ASSERT_EQ(decoded.luma.size(), 2u);
+        for (const auto& image : decoded.luma) {
+            const int top = scale == 1.0 ? 15 : 37;
+            const int bottom = scale == 1.0 ? 105 : 83;
+            for (int y = 2; y < top - 2; ++y)
+                for (int x = 2; x < 158; ++x) EXPECT_NEAR(image[y * 160 + x], 16, 2);
+            for (int y = bottom + 2; y < 118; ++y)
+                for (int x = 2; x < 158; ++x) EXPECT_NEAR(image[y * 160 + x], 16, 2);
+            double upperContent = 0, lowerContent = 0;
+            for (int x = 50; x < 110; ++x) {
+                upperContent += image[(top + 5) * 160 + x];
+                lowerContent += image[(bottom - 6) * 160 + x];
+            }
+            EXPECT_GT(upperContent / 60, 35);
+            EXPECT_GT(lowerContent / 60, 35);
+            if (scale == 0.5) {
+                EXPECT_NEAR(geometryPatch(image, 30, 60), 16, 2);
+                EXPECT_NEAR(geometryPatch(image, 130, 60), 16, 2);
+            }
+        }
+        EXPECT_TRUE(folder.noStaging());
+    }
+}
+
+TEST(ExportEngineTest, GeometryPreflightRejectsInvalidConstantsPerspectiveAndAutomationBeforeOutputAccess) {
+    struct Case {
+        const char* name;
+        std::function<void(Clip&)> apply;
+        const char* diagnostic;
+    };
+    const std::vector<Case> cases{
+        {"zero width", [](Clip& c) { c.transform.width = 0; }, "Invalid constant clip geometry"},
+        {"negative height", [](Clip& c) { c.transform.height = -1; }, "Invalid constant clip geometry"},
+        {"negative crop", [](Clip& c) { c.crop.left = -0.1; }, "Invalid constant clip geometry"},
+        {"crop above one", [](Clip& c) { c.crop.bottom = 1.1; }, "Invalid constant clip geometry"},
+        {"empty crop x", [](Clip& c) { c.crop.left = c.crop.right = 0.5; }, "Invalid constant clip geometry"},
+        {"empty crop y", [](Clip& c) { c.crop.top = 0.7; c.crop.bottom = 0.4; }, "Invalid constant clip geometry"},
+        {"negative rounding", [](Clip& c) { c.edgeRounding = -0.1; }, "Invalid constant clip geometry"},
+        {"excess softness", [](Clip& c) { c.edgeSoftness = 1.1; }, "Invalid constant clip geometry"},
+        {"perspective x", [](Clip& c) { c.transform.rotationX = 1; }, "Unsupported clip perspective rotation"},
+        {"perspective y", [](Clip& c) { c.transform.rotationY = -1; }, "Unsupported clip perspective rotation"},
+        {"opacity track", [](Clip& c) { c.opacityTrack.emplace(); }, "Unsupported clip appearance"},
+        {"position track", [](Clip& c) { c.positionTrack.emplace(); }, "Unsupported clip appearance"},
+        {"scale track", [](Clip& c) { c.scaleTrack.emplace(); }, "Unsupported clip appearance"},
+        {"rotation track", [](Clip& c) { c.rotationTrack.emplace(); }, "Unsupported clip appearance"},
+        {"crop track", [](Clip& c) { c.cropTrack.emplace(); }, "Unsupported clip appearance"},
+        {"blend", [](Clip& c) { c.blendMode = "screen"; }, "Unsupported clip appearance"},
+    };
+    OutputFolder folder;
+    { std::ofstream output(folder.output(), std::ios::binary); output << "keep-original-geometry-target"; }
+    const auto modified = fs::last_write_time(folder.output());
+    const auto initial = snapshot(2, true, false);
+    for (const auto& test : cases) {
+        SCOPED_TRACE(test.name);
+        auto document = initial.project();
+        test.apply(document.timelines.front().tracks.front().clips.front());
+        VideoProject project;
+        std::string error;
+        ASSERT_TRUE(project.editor().replaceDocument(document, initial.manifest(), "", &error)) << error;
+        EXPECT_EQ(project.editor().compatibility().level, CompatibilityLevel::Warning);
+        // A missing output parent would fail staging first if preflight ran late.
+        for (const auto& target : {folder.output(), folder.root / "absent" / "output.mp4"}) {
+            ExportRequest request; request.snapshot = project.snapshot();
+            request.outputPath = utf8(target); request.overwrite = true; request.hardwareDecode = false;
+            ExportEngine engine;
+            ASSERT_TRUE(engine.start(request, &error)) << error; engine.wait();
+            EXPECT_EQ(engine.result().state, ExportState::Failed);
+            EXPECT_EQ(engine.result().stage, "prepare");
+            EXPECT_NE(engine.result().error.find(test.diagnostic), std::string::npos) << engine.result().error;
+            EXPECT_NE(engine.result().error.find("picture"), std::string::npos);
+            EXPECT_EQ(engine.progress().completedFrames, 0);
+            EXPECT_EQ(contents(folder.output()), "keep-original-geometry-target");
+            EXPECT_EQ(fs::last_write_time(folder.output()), modified);
+            EXPECT_FALSE(fs::exists(folder.root / "absent"));
+            EXPECT_TRUE(folder.noStaging());
+        }
     }
 }
 

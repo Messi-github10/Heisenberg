@@ -55,6 +55,17 @@ track is composited over lower tracks in linear ACEScg, preserving source alpha,
 transparent fitted borders and constant clip opacity. Each layer keeps its own grade;
 the composition-wide graph and output transform run after stacking.
 
+Clip Appearance edits constant center position, independent width/height scales,
+clockwise planar rotation, local horizontal/vertical flips, source-relative crop,
+rounded corners, feathered edges and opacity. Geometry runs after each clip's grade
+and before stacking, in the shared preview/export renderer. The default transform
+retains centered aspect fit (including sample aspect ratio); width/height multiply
+that fitted size. Cropping removes source content without zooming or recentering.
+Rounding and softness are measured against the shorter cropped source dimension,
+then transform with the image. Filtering uses alpha-weighted colors so hidden RGB
+cannot contaminate transparent borders. Perspective rotation and geometry animation
+remain unsupported and are rejected by strict export.
+
 Tracks can be added, removed, renamed and reordered within their media type. Clips
 can move between compatible tracks. Drag a pool video or an existing video clip into
 the narrow strip above the video lanes to create a new top video track and place/move

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Models/ClipAppearance.hpp>
 #include <Models/MediaManifest.hpp>
 #include <Models/MediaResolver.hpp>
 #include "EditorViewModelTimelines.hpp"
@@ -63,6 +64,7 @@ public:
     // only same-type slots, preserving other-type positions; order is top-first.
     EditResult reorderTrack(const std::string& trackId, int finalIndex);
     EditResult setTrackHidden(const std::string& trackId, bool hidden);
+    EditResult setClipAppearance(const std::string& clipId, const ClipAppearancePatch& patch);
     EditResult setClipOpacity(const std::string& clipId, double opacity);
     EditResult setTrackMuted(const std::string& trackId, bool muted);
     EditResult setColorSettings(const ColorSettings& settings);

@@ -64,6 +64,7 @@ public:
     // Global same-type Timeline::tracks index; other-type slots stay fixed.
     EditResult reorderTrack(const QString& trackId, int finalIndex);
     EditResult setTrackHidden(const QString& trackId, bool hidden);
+    EditResult setClipAppearance(const QString& clipId, const ClipAppearancePatch& patch);
     EditResult setClipOpacity(const QString& clipId, double opacity);
     EditResult setTrackMuted(const QString& trackId, bool muted);
     EditResult setColorSettings(const ColorSettings& settings);

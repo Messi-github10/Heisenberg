@@ -1,4 +1,5 @@
 #include "Timeline.hpp"
+#include "ClipAppearance.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -288,8 +289,8 @@ ProjectCompatibility compatibilityFor(const Timeline& timeline) {
                 result.messages.push_back("clip opacity must be finite and between 0 and 1");
                 return result;
             }
-            if (clip.transform != Transform{} || clip.crop != Crop{} ||
-                clip.edgeRounding != 0.0 || clip.edgeSoftness != 0.0 || clip.opacityTrack ||
+            if (!validateConstantGeometry(clip) || clip.transform.rotationX != 0.0 ||
+                clip.transform.rotationY != 0.0 || clip.opacityTrack ||
                 clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack ||
                 clip.volumeTrack || (clip.blendMode && *clip.blendMode != "normal") ||
                 (clip.fadeInFrames != 0 && clip.fadeInInterpolation != Interpolation::Linear) ||

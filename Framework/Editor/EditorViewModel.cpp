@@ -1062,6 +1062,42 @@ EditResult EditorViewModel::setTrackHidden(const std::string& trackId, bool hidd
     return commitTimelineEdit(std::move(candidate), {trackId}, "Track Visibility");
 }
 
+EditResult EditorViewModel::setClipAppearance(const std::string& clipId, const ClipAppearancePatch& patch) {
+    if (hasClipEffectsTransaction())
+        return {EditStatus::Invalid, {}, "clip effects transaction is pending"};
+    const Timeline* timeline = impl_->active();
+    if (!timeline || compatibilityFor(*timeline).level == CompatibilityLevel::Unsupported)
+        return {EditStatus::Unsupported, {}, "active timeline has an unsupported track or clip layout"};
+    const Clip* clip = timeline->clipById(clipId);
+    if (!clip) return {EditStatus::Invalid, {}, "clip was not found"};
+    if (clip->mediaType != ClipType::Video)
+        return {EditStatus::Unsupported, {}, "appearance requires a video clip"};
+    if (patch.empty()) return {EditStatus::NoOp, {clipId}, {}};
+
+    Timeline candidate = *timeline;
+    Clip& updated = *candidate.clipById(clipId);
+    if (patch.centerX) updated.transform.centerX = *patch.centerX;
+    if (patch.centerY) updated.transform.centerY = *patch.centerY;
+    if (patch.width) updated.transform.width = *patch.width;
+    if (patch.height) updated.transform.height = *patch.height;
+    if (patch.rotation) updated.transform.rotation = *patch.rotation;
+    if (patch.flipHorizontal) updated.transform.flipHorizontal = *patch.flipHorizontal;
+    if (patch.flipVertical) updated.transform.flipVertical = *patch.flipVertical;
+    if (patch.cropLeft) updated.crop.left = *patch.cropLeft;
+    if (patch.cropTop) updated.crop.top = *patch.cropTop;
+    if (patch.cropRight) updated.crop.right = *patch.cropRight;
+    if (patch.cropBottom) updated.crop.bottom = *patch.cropBottom;
+    if (patch.edgeRounding) updated.edgeRounding = *patch.edgeRounding;
+    if (patch.edgeSoftness) updated.edgeSoftness = *patch.edgeSoftness;
+    if (patch.opacity) updated.opacity = *patch.opacity;
+    if (updated == *clip) return {EditStatus::NoOp, {clipId}, {}};
+
+    std::string error;
+    if (!validateClipAppearancePatch(*clip, patch, &error))
+        return {EditStatus::Invalid, {}, error};
+    return commitTimelineEdit(std::move(candidate), {clipId}, "Clip Appearance");
+}
+
 EditResult EditorViewModel::setClipOpacity(const std::string& clipId, double opacity) {
     if (hasClipEffectsTransaction())
         return {EditStatus::Invalid, {}, "clip effects transaction is pending"};

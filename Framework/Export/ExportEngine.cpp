@@ -2,6 +2,7 @@
 #include <Compositing/CompositionBuilder.hpp>
 #include <Compositing/CompositionExecutor.hpp>
 #include <Compositing/Grade/GradeCompiler.hpp>
+#include <Models/ClipAppearance.hpp>
 #include <MultiMedia/Audio/Encoder/AudioEncoder.hpp>
 #include <MultiMedia/Muxer/Muxer.hpp>
 #include <MultiMedia/Video/Encoder/VideoEncoder.hpp>
@@ -81,10 +82,13 @@ private:
 
 void validateAppearance(const Clip& clip, const CompositionPlan& plan,
                         renderer::color::ColorPipeline& color) {
+    std::string error;
+    if (!validateConstantGeometry(clip, &error))
+        throw std::runtime_error("Invalid constant clip geometry: " + clip.id + ": " + error);
+    if (clip.transform.rotationX != 0.0 || clip.transform.rotationY != 0.0)
+        throw std::runtime_error("Unsupported clip perspective rotation: " + clip.id);
     if (!std::isfinite(clip.opacity) || clip.opacity < 0.0 || clip.opacity > 1.0 ||
-        clip.transform != Transform{} || clip.crop != Crop{} ||
-        clip.edgeRounding != 0.0 || clip.edgeSoftness != 0.0 || clip.opacityTrack ||
-        clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack ||
+        clip.opacityTrack || clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack ||
         (clip.blendMode && *clip.blendMode != "normal"))
         throw std::runtime_error("Unsupported clip appearance: " + clip.id);
     if (clip.volumeTrack ||
@@ -92,7 +96,6 @@ void validateAppearance(const Clip& clip, const CompositionPlan& plan,
         (clip.fadeOutFrames && clip.fadeOutInterpolation != Interpolation::Linear))
         throw std::runtime_error("Unsupported clip audio automation: " + clip.id);
     grade::CompiledGrade compiled;
-    std::string error;
     if (!grade::GradeCompiler::compile(clip, 0, compiled, &error, {true}, &color, &plan.gradeLuts))
         throw std::runtime_error("Unsupported clip grade: " + error);
 }

@@ -9,6 +9,8 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <functional>
+#include <limits>
 #include <string>
 #include <chrono>
 #include <thread>
@@ -199,6 +201,85 @@ TEST(TimelineModelTest, ConstantOpacityAndNormalBlendAreSupportedButAnimationSti
         picture.opacity = opacity;
         EXPECT_FALSE(heisenberg::validateTimeline(timeline));
         EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Unsupported);
+    }
+}
+
+TEST(TimelineModelTest, PlanarConstantGeometryIsSupportedAndPreserved) {
+    auto timeline = timelineWithTrack({clip("picture", "media", 3, 10)});
+    auto& picture = timeline.tracks.front().clips.front();
+    picture.transform.centerX = -0.2; // Off-canvas positions and sizes above one are valid.
+    picture.transform.centerY = 1.2;
+    picture.transform.width = 1.4;
+    picture.transform.height = 0.7;
+    picture.transform.rotation = 450.0;
+    picture.transform.flipHorizontal = true;
+    picture.transform.flipVertical = true;
+    picture.crop = {0.1, 0.2, 0.3, 0.15};
+    picture.edgeRounding = 0.8;
+    picture.edgeSoftness = 0.6;
+    EXPECT_TRUE(heisenberg::validateTimeline(timeline));
+    const auto compatibility = heisenberg::compatibilityFor(timeline);
+    EXPECT_EQ(compatibility.level, heisenberg::CompatibilityLevel::Supported);
+    EXPECT_TRUE(compatibility.messages.empty());
+    heisenberg::ProjectFile project;
+    project.timelines.push_back(timeline);
+    project.activeTimelineId = timeline.id;
+    heisenberg::ProjectFile reopened;
+    std::string error;
+    ASSERT_TRUE(heisenberg::ProjectCodec::decode(heisenberg::ProjectCodec::encode(project), reopened, &error)) << error;
+    EXPECT_EQ(reopened.timelines.front(), timeline);
+}
+
+TEST(TimelineModelTest, InvalidConstantsPerspectiveAndAutomationWarnWithoutTighteningLoadValidation) {
+    using heisenberg::Clip;
+    const std::vector<std::function<void(Clip&)>> invalidConstants{
+        [](Clip& c) { c.transform.width = 0; },
+        [](Clip& c) { c.transform.height = -0.1; },
+        [](Clip& c) { c.crop.left = -0.1; },
+        [](Clip& c) { c.crop.bottom = 1.1; },
+        [](Clip& c) { c.crop.left = 0.5; c.crop.right = 0.5; },
+        [](Clip& c) { c.crop.top = 0.7; c.crop.bottom = 0.4; },
+        [](Clip& c) { c.edgeRounding = -0.1; },
+        [](Clip& c) { c.edgeSoftness = 1.1; },
+    };
+    for (size_t i = 0; i < invalidConstants.size(); ++i) {
+        SCOPED_TRACE(i);
+        auto timeline = timelineWithTrack({clip("picture", "media", 0, 10)});
+        invalidConstants[i](timeline.tracks.front().clips.front());
+        EXPECT_TRUE(heisenberg::validateTimeline(timeline));
+        EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Warning);
+        heisenberg::ProjectFile project;
+        project.timelines.push_back(timeline); project.activeTimelineId = timeline.id;
+        heisenberg::ProjectFile reopened;
+        std::string error;
+        ASSERT_TRUE(heisenberg::ProjectCodec::decode(heisenberg::ProjectCodec::encode(project), reopened, &error)) << error;
+        // The existing codec resets out-of-range edge values to zero on load;
+        // the support gate must not change this legacy normalization policy.
+        auto expected = timeline;
+        auto& expectedClip = expected.tracks.front().clips.front();
+        if (expectedClip.edgeRounding < 0.0 || expectedClip.edgeRounding > 1.0)
+            expectedClip.edgeRounding = 0.0;
+        if (expectedClip.edgeSoftness < 0.0 || expectedClip.edgeSoftness > 1.0)
+            expectedClip.edgeSoftness = 0.0;
+        EXPECT_EQ(reopened.timelines.front(), expected);
+    }
+    const std::vector<std::function<void(Clip&)>> unsupported{
+        [](Clip& c) { c.transform.rotationX = 10; },
+        [](Clip& c) { c.transform.rotationY = -20; },
+        [](Clip& c) { c.opacityTrack.emplace(); },
+        [](Clip& c) { c.positionTrack.emplace(); },
+        [](Clip& c) { c.scaleTrack.emplace(); },
+        [](Clip& c) { c.rotationTrack.emplace(); },
+        [](Clip& c) { c.cropTrack.emplace(); },
+        [](Clip& c) { c.blendMode = "multiply"; },
+        [](Clip& c) { c.transform.centerX = std::numeric_limits<double>::infinity(); },
+        [](Clip& c) { c.transform.rotation = std::numeric_limits<double>::quiet_NaN(); },
+    };
+    for (size_t i = 0; i < unsupported.size(); ++i) {
+        SCOPED_TRACE(i);
+        auto timeline = timelineWithTrack({clip("picture", "media", 0, 10)});
+        unsupported[i](timeline.tracks.front().clips.front());
+        EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Warning);
     }
 }
 
