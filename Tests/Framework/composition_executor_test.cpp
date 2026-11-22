@@ -1,4 +1,5 @@
 #include <Compositing/CompositionExecutor.hpp>
+#include <Models/BlendMode.hpp>
 #include <Preview/VideoEngine.hpp>
 #include <MultiMedia/DemuxContext.hpp>
 #include <MultiMedia/DecoderContext.hpp>
@@ -101,6 +102,47 @@ double energy(const AudioFrame& frame) {
     for (int sample = 0; sample < frame.samples(); ++sample) value += std::abs(frame.sampleRo(0, sample));
     return value / std::max(1, frame.samples());
 }
+}
+
+TEST(CompositionExecutorTest, DirectPlansAcceptEveryRegisteredBlendModeAndAbsentNormal) {
+    ASSERT_EQ(blendModes().size(), 17u);
+    CompositionPlan plan; plan.frameCount = 1;
+    CompositionClip clip; clip.id = "picture"; clip.durationFrames = 1;
+    track(plan, ClipType::Video).clips.push_back(clip);
+    CompositionExecutor executor;
+    ASSERT_TRUE(executor.open(plan, {false, CompositionErrorPolicy::Strict}));
+    for (const auto& mode : blendModes()) {
+        SCOPED_TRACE(std::string(mode.name));
+        track(plan, ClipType::Video).clips.front().visualSnapshot.blendMode = std::string(mode.name);
+        const auto result = executor.open(plan, {false, CompositionErrorPolicy::Strict});
+        ASSERT_TRUE(result) << result.error;
+        EXPECT_TRUE(executor.warnings().empty());
+        EXPECT_EQ(track(executor.plan(), ClipType::Video).clips.front().visualSnapshot.blendMode, mode.name);
+    }
+}
+
+TEST(CompositionExecutorTest, DirectPlansRejectUnknownBlendEvenOnInactiveTracksAndInPreview) {
+    for (const std::string mode : {"unknown", "", "Normal", "colorburn"}) {
+        for (const auto policy : {CompositionErrorPolicy::Strict, CompositionErrorPolicy::Preview}) {
+            for (const int state : {0, 1, 2, 3}) {
+                SCOPED_TRACE(mode + ":" + std::to_string(state));
+                CompositionPlan plan; plan.frameCount = 1;
+                CompositionClip first; first.id = "valid"; first.durationFrames = 1;
+                plan.tracks.push_back({"first-video", ClipType::Video, false, false, {first}});
+                auto invalid = first; invalid.id = "unknown-picture";
+                invalid.visualSnapshot.blendMode = mode;
+                invalid.visualSnapshot.opacity = state == 3 ? 0.0 : 1.0;
+                plan.tracks.push_back({"later-video", ClipType::Video, state == 1, state == 2, {invalid}});
+                CompositionExecutor executor;
+                const auto result = executor.open(plan, {false, policy});
+                EXPECT_EQ(result.status, CompositionStatus::Failure);
+                EXPECT_NE(result.error.find("blend"), std::string::npos);
+                EXPECT_NE(result.error.find("unknown-picture"), std::string::npos);
+                EXPECT_TRUE(executor.plan().tracks.empty());
+                EXPECT_EQ(executor.videoFrame(0).status, CompositionStatus::Failure);
+            }
+        }
+    }
 }
 
 TEST(CompositionExecutorTest, IndependentInstancesAreSynchronousWithoutDeviceOrWindow) {

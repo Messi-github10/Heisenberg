@@ -3,6 +3,7 @@
 #include <Compositing/CompositionExecutor.hpp>
 #include <Compositing/Grade/GradeCompiler.hpp>
 #include <Models/ClipAppearance.hpp>
+#include <Models/BlendMode.hpp>
 #include <MultiMedia/Audio/Encoder/AudioEncoder.hpp>
 #include <MultiMedia/Muxer/Muxer.hpp>
 #include <MultiMedia/Video/Encoder/VideoEncoder.hpp>
@@ -87,9 +88,10 @@ void validateAppearance(const Clip& clip, const CompositionPlan& plan,
         throw std::runtime_error("Invalid constant clip geometry: " + clip.id + ": " + error);
     if (clip.transform.rotationX != 0.0 || clip.transform.rotationY != 0.0)
         throw std::runtime_error("Unsupported clip perspective rotation: " + clip.id);
+    if (!parseBlendMode(clip.blendMode))
+        throw std::runtime_error("Unsupported clip blend mode: " + clip.id);
     if (!std::isfinite(clip.opacity) || clip.opacity < 0.0 || clip.opacity > 1.0 ||
-        clip.opacityTrack || clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack ||
-        (clip.blendMode && *clip.blendMode != "normal"))
+        clip.opacityTrack || clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack)
         throw std::runtime_error("Unsupported clip appearance: " + clip.id);
     if (clip.volumeTrack ||
         (clip.fadeInFrames && clip.fadeInInterpolation != Interpolation::Linear) ||

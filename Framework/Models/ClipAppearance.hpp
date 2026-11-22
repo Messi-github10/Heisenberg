@@ -22,6 +22,7 @@ struct ClipAppearancePatch {
     std::optional<double> edgeRounding;
     std::optional<double> edgeSoftness;
     std::optional<double> opacity;
+    std::optional<std::string> blendMode;
 
     bool empty() const;
 };

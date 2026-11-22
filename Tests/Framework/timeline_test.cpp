@@ -1,4 +1,6 @@
 #include <Models/Timeline.hpp>
+#include <Models/BlendMode.hpp>
+#include <Project/VideoProject.hpp>
 #include <Models/MediaManifest.hpp>
 #include <Preview/VideoEngine.hpp>
 #include <Compositing/CompositionBuilder.hpp>
@@ -194,13 +196,67 @@ TEST(TimelineModelTest, ConstantOpacityAndNormalBlendAreSupportedButAnimationSti
     EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Warning);
     picture.opacityTrack.reset();
     picture.blendMode = "multiply";
-    EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Warning);
+    EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Supported);
     picture.blendMode.reset();
     for (const double opacity : {-0.1, 1.1, std::numeric_limits<double>::infinity(),
                                  std::numeric_limits<double>::quiet_NaN()}) {
         picture.opacity = opacity;
         EXPECT_FALSE(heisenberg::validateTimeline(timeline));
         EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Unsupported);
+    }
+}
+
+TEST(TimelineModelTest, EveryRegisteredBlendModeIsSupportedAndRoundTripsExactly) {
+    using namespace heisenberg;
+    const auto modes = blendModes();
+    ASSERT_EQ(modes.size(), 17u);
+    EXPECT_EQ(parseBlendMode(std::nullopt), BlendMode::Normal);
+    for (const auto& mode : modes) {
+        SCOPED_TRACE(std::string(mode.name));
+        auto timeline = timelineWithTrack({clip("picture", "media", 0, 10)});
+        timeline.tracks.front().clips.front().blendMode = std::string(mode.name);
+        EXPECT_EQ(parseBlendMode(timeline.tracks.front().clips.front().blendMode), mode.mode);
+        for (const double opacity : {0.0, 0.5, 1.0}) {
+            timeline.tracks.front().clips.front().opacity = opacity;
+            EXPECT_TRUE(validateTimeline(timeline));
+            const auto compatibility = compatibilityFor(timeline);
+            EXPECT_EQ(compatibility.level, CompatibilityLevel::Supported);
+            EXPECT_TRUE(compatibility.messages.empty());
+        }
+        ProjectFile document;
+        document.timelines = {timeline}; document.activeTimelineId = timeline.id;
+        ProjectFile reopened;
+        std::string error;
+        ASSERT_TRUE(ProjectCodec::decode(ProjectCodec::encode(document), reopened, &error)) << error;
+        EXPECT_EQ(reopened.timelines.front(), timeline);
+    }
+}
+
+TEST(TimelineModelTest, UnknownBlendModesRemainEditableAndPreservedThroughLoad) {
+    using namespace heisenberg;
+    for (const std::string value : {"unknown", "", "Normal", "Multiply", "colorburn", " screen"}) {
+        SCOPED_TRACE(value);
+        auto timeline = timelineWithTrack({clip("picture", "media", 0, 10)});
+        timeline.tracks.front().clips.front().blendMode = value;
+        EXPECT_FALSE(parseBlendMode(value));
+        EXPECT_TRUE(validateTimeline(timeline));
+        EXPECT_EQ(compatibilityFor(timeline).level, CompatibilityLevel::Warning);
+        ProjectFile document;
+        document.timelines = {timeline}; document.activeTimelineId = timeline.id;
+        ProjectFile reopened;
+        std::string error;
+        ASSERT_TRUE(ProjectCodec::decode(ProjectCodec::encode(document), reopened, &error)) << error;
+        EXPECT_EQ(reopened.timelines.front(), timeline);
+        VideoProject project;
+        ASSERT_TRUE(project.editor().replaceDocument(reopened, MediaManifest{}, "", &error)) << error;
+        ASSERT_TRUE(project.editor().setClipOpacity("picture", 0.5).changed());
+        EXPECT_EQ(project.editor().activeTimeline()->tracks.front().clips.size(), 1u);
+        EXPECT_EQ(project.editor().activeTimeline()->clipById("picture")->blendMode, value);
+        EXPECT_EQ(project.editor().compatibility().level, CompatibilityLevel::Warning);
+        CompositionPlan plan; plan.frameCount = 123;
+        EXPECT_FALSE(CompositionBuilder::build(project.snapshot(), plan, &error));
+        EXPECT_NE(error.find("blend"), std::string::npos);
+        EXPECT_EQ(plan.frameCount, 123);
     }
 }
 
@@ -271,7 +327,7 @@ TEST(TimelineModelTest, InvalidConstantsPerspectiveAndAutomationWarnWithoutTight
         [](Clip& c) { c.scaleTrack.emplace(); },
         [](Clip& c) { c.rotationTrack.emplace(); },
         [](Clip& c) { c.cropTrack.emplace(); },
-        [](Clip& c) { c.blendMode = "multiply"; },
+        [](Clip& c) { c.blendMode = "unknown"; },
         [](Clip& c) { c.transform.centerX = std::numeric_limits<double>::infinity(); },
         [](Clip& c) { c.transform.rotation = std::numeric_limits<double>::quiet_NaN(); },
     };

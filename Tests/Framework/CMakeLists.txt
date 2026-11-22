@@ -157,6 +157,8 @@ add_executable(HeisenbergFrameworkTests
     multitrack_executor_test.cpp
     multitrack_renderer_test.cpp
     composition_geometry_renderer_test.cpp
+    blend_renderer_test.cpp
+    blend_mode_test.cpp
     mixed_resolution_interop_test.cpp
     multitrack_export_test.cpp
     logger_concurrency_test.cpp

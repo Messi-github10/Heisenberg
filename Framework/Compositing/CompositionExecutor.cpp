@@ -3,6 +3,7 @@
 #include <Common/MediaFrame.hpp>
 #include <Common/Packet.hpp>
 #include <Common/Stream.hpp>
+#include <Models/BlendMode.hpp>
 #include <MultiMedia/Audio/AudioResampler.hpp>
 #include <MultiMedia/DecoderContext.hpp>
 #include <MultiMedia/DemuxContext.hpp>
@@ -612,6 +613,8 @@ CompositionExecutor::OpenResult CompositionExecutor::open(const CompositionPlan&
             return {Status::Failure, {}, "Invalid composition track identity or type"};
         int64_t previousEnd = 0;
         for (const auto& clip : track.clips) {
+            if (track.type == ClipType::Video && !parseBlendMode(clip.visualSnapshot.blendMode))
+                return {Status::Failure, {}, "Unsupported clip blend mode: " + clip.id};
             if (clip.id.empty() || !ids.insert(clip.id).second
                 || clip.startFrame < previousEnd || clip.durationFrames <= 0 || clip.trimStartFrame < 0
                 || clip.trimEndFrame < 0 || clip.startFrame > owned.frameCount

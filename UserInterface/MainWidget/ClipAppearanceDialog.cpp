@@ -1,6 +1,8 @@
 #include "MainWidget/ClipAppearanceDialog.hpp"
 
+#include <Models/BlendMode.hpp>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -63,6 +65,25 @@ ClipAppearanceDialog::ClipAppearanceDialog(const Clip& clip, QWidget* parent)
     scalar("clipEdgeRounding", tr("Edge rounding"), clip.edgeRounding, &ClipAppearancePatch::edgeRounding, 100.0, 0.0, 100.0);
     scalar("clipEdgeSoftness", tr("Edge softness"), clip.edgeSoftness, &ClipAppearancePatch::edgeSoftness, 100.0, 0.0, 100.0);
     scalar("clipOpacity", tr("Opacity"), clip.opacity, &ClipAppearancePatch::opacity, 100.0, 0.0, 100.0);
+    blendMode_ = new QComboBox(this);
+    blendMode_->setObjectName("clipBlendMode");
+    const auto originalMode = parseBlendMode(clip.blendMode);
+    for (const auto& descriptor : blendModes()) {
+        const auto displayName = QString::fromUtf8(descriptor.displayName.data(),
+                                                   static_cast<int>(descriptor.displayName.size()));
+        const auto name = QString::fromUtf8(descriptor.name.data(), static_cast<int>(descriptor.name.size()));
+        blendMode_->addItem(displayName, name);
+        if (originalMode && *originalMode == descriptor.mode)
+            originalBlendModeIndex_ = blendMode_->count() - 1;
+    }
+    if (!originalMode) {
+        // Keep the imported value selectable so changing back remains a no-op.
+        // This temporary entry has no canonical item data and is never submitted.
+        blendMode_->addItem(tr("Unsupported (%1)").arg(QString::fromStdString(*clip.blendMode)));
+        originalBlendModeIndex_ = blendMode_->count() - 1;
+    }
+    blendMode_->setCurrentIndex(originalBlendModeIndex_);
+    form->addRow(tr("Blend mode"), blendMode_);
     auto* hint = new QLabel(tr("Position is the clip center as a percentage of the frame. "
         "Width and height scale the default fitted size; positive rotation is clockwise. "
         "These controls set fixed values; existing animation is preserved."), this);
@@ -82,6 +103,7 @@ ClipAppearanceDialog::ClipAppearanceDialog(const Clip& clip, QWidget* parent)
         connect(control.spin, &QDoubleSpinBox::valueChanged, this, [this] { updateValidation(); });
     connect(flipHorizontal_, &QCheckBox::toggled, this, [this] { updateValidation(); });
     connect(flipVertical_, &QCheckBox::toggled, this, [this] { updateValidation(); });
+    connect(blendMode_, &QComboBox::currentIndexChanged, this, [this] { updateValidation(); });
     updateValidation();
 }
 
@@ -95,6 +117,11 @@ ClipAppearancePatch ClipAppearanceDialog::changedPatch() const {
         patch.flipHorizontal = flipHorizontal_->isChecked();
     if (flipVertical_->isChecked() != originalFlipVertical_)
         patch.flipVertical = flipVertical_->isChecked();
+    const int blendIndex = blendMode_->currentIndex();
+    const auto modes = blendModes();
+    if (blendIndex != originalBlendModeIndex_ && blendIndex >= 0 &&
+        static_cast<std::size_t>(blendIndex) < modes.size())
+        patch.blendMode = std::string(modes[static_cast<std::size_t>(blendIndex)].name);
     return patch;
 }
 

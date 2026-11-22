@@ -99,8 +99,30 @@ transforms. Offline MP4 export uses software H.264/H.265 and AAC, independent of
 playback clock and window. See [composition, color and export](docs/composition-color-export.md)
 for input policies, effect semantics, deployment and output-safety details.
 
-There is no advanced blend-mode compositing, animated geometry/opacity, hardware
-encoding, HDR output, waveform cache, or pitch-preserving time stretching.
+There is no animated geometry/opacity, hardware encoding, HDR output, waveform
+cache, or pitch-preserving time stretching.
+
+Clip Appearance also selects a constant blend mode. The fixed table follows the
+published Palmier list: Normal, Darken, Multiply, Color Burn, Lighten, Screen,
+Color Dodge, Overlay, Soft Light, Hard Light, Difference, Exclusion, Hue,
+Saturation, Color and Luminosity. Add is provided as a seventeenth mode.
+All modes, including Normal, use a custom two-input Vulkan compute compositor;
+libplacebo remains responsible for unpacking and geometry filtering, not blending.
+The lower canvas is the backdrop, the current upper clip is the source, and the
+final canvas remains opaque. Source alpha includes geometry coverage; non-normal
+results fade back to the backdrop according to clip opacity. Unknown names are
+preserved in project data but rejected by preview and export until replaced.
+
+Blend calculations run in linear ACEScg. Normal, Add, Darken, Multiply, Lighten,
+Screen, Overlay, Hard Light, Difference and Exclusion use the signed/HDR input
+values without an overall RGB clamp. Color Burn, Color Dodge, Soft Light and the
+four nonseparable modes bound their blend operands to [0,1] to define their
+normalized-domain formulas; this does not clip the original backdrop when applying
+alpha/opacity. Dodge/Burn use explicit zero/one endpoint branches. Hue/Saturation/
+Color/Luminosity use the PDF/W3C luminosity/saturation helpers (0.30/0.59/0.11), not
+HSV substitution. These formulas and the opacity graph follow Palmier's named
+Core Image operations, but pixel-identical Core Image behavior is not claimed:
+Palmier delegates those kernels to Apple and uses a different color pipeline.
 
 ## Third-party dependencies
 

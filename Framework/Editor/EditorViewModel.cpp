@@ -1074,6 +1074,10 @@ EditResult EditorViewModel::setClipAppearance(const std::string& clipId, const C
         return {EditStatus::Unsupported, {}, "appearance requires a video clip"};
     if (patch.empty()) return {EditStatus::NoOp, {clipId}, {}};
 
+    std::string error;
+    if (!validateClipAppearancePatch(*clip, patch, &error))
+        return {EditStatus::Invalid, {}, error};
+
     Timeline candidate = *timeline;
     Clip& updated = *candidate.clipById(clipId);
     if (patch.centerX) updated.transform.centerX = *patch.centerX;
@@ -1090,11 +1094,9 @@ EditResult EditorViewModel::setClipAppearance(const std::string& clipId, const C
     if (patch.edgeRounding) updated.edgeRounding = *patch.edgeRounding;
     if (patch.edgeSoftness) updated.edgeSoftness = *patch.edgeSoftness;
     if (patch.opacity) updated.opacity = *patch.opacity;
+    if (patch.blendMode) updated.blendMode = *patch.blendMode;
     if (updated == *clip) return {EditStatus::NoOp, {clipId}, {}};
 
-    std::string error;
-    if (!validateClipAppearancePatch(*clip, patch, &error))
-        return {EditStatus::Invalid, {}, error};
     return commitTimelineEdit(std::move(candidate), {clipId}, "Clip Appearance");
 }
 

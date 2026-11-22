@@ -1,4 +1,5 @@
 #include <Models/ClipAppearance.hpp>
+#include <Models/BlendMode.hpp>
 
 #include <cmath>
 
@@ -7,7 +8,7 @@ namespace heisenberg {
 bool ClipAppearancePatch::empty() const {
     return !centerX && !centerY && !width && !height && !rotation &&
         !flipHorizontal && !flipVertical && !cropLeft && !cropTop &&
-        !cropRight && !cropBottom && !edgeRounding && !edgeSoftness && !opacity;
+        !cropRight && !cropBottom && !edgeRounding && !edgeSoftness && !opacity && !blendMode;
 }
 
 bool validateConstantGeometry(const Clip& clip, std::string* error) {
@@ -55,6 +56,8 @@ bool validateClipAppearancePatch(const Clip& clip, const ClipAppearancePatch& pa
         return invalid("clip width and height must be finite and positive");
     if (!unit(patch.edgeRounding) || !unit(patch.edgeSoftness))
         return invalid("clip edge rounding and softness must be finite and between 0 and 1");
+    if (patch.blendMode && !parseBlendMode(patch.blendMode))
+        return invalid("blend mode must be a known canonical name");
     if (!unit(patch.opacity))
         return invalid("opacity must be finite and between 0 and 1");
     if (patch.cropLeft || patch.cropTop || patch.cropRight || patch.cropBottom) {

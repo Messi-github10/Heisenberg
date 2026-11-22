@@ -130,6 +130,16 @@ Media import itself is not part of timeline undo history.
   imported animation, and apply only to the primary selected clip. Save/reopen, unsaved
   preview and export must reproduce the appearance. Perspective and geometry animation
   remain unsupported and must fail strict export before touching an existing output.
+- **Blend Mode** in Clip Appearance offers Palmier's 16 modes, followed by Add.
+  Check Normal, Multiply, Screen, Overlay, Add and Difference over a contrasting
+  lower layer, then the four color-component modes on asymmetric colored sources.
+  Opacity fades a non-normal result back toward the lower canvas; transparent crop
+  and rounded corners must reveal the backdrop unchanged. All calculations are linear
+  ACEScg, so encoded-sRGB screenshots from another editor need not match.
+- Verify unchanged/absent Normal stays a no-op, cancellation preserves the original,
+  mode plus geometry is one undo step, and save/reopen restores the exact mode name.
+  Imported unknown modes appear as Unsupported and remain unchanged until a supported
+  replacement is chosen; timeline preview and export reject them explicitly.
 - Wheel scrolls vertically beneath the fixed ruler; Shift-wheel or horizontal wheel
   scrolls horizontally, Ctrl-wheel zooms. Verify hit testing, track buttons, cross-track
   ghosts and drops after scrolling and after deleting tracks near the bottom.

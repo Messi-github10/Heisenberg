@@ -1,6 +1,7 @@
 #include "CompositionBuilder.hpp"
 #include <Compositing/Grade/LutLibrary.hpp>
 #include <Models/MediaResolver.hpp>
+#include <Models/BlendMode.hpp>
 #include <Project/VideoProject.hpp>
 #include <algorithm>
 
@@ -60,6 +61,18 @@ bool CompositionBuilder::build(const Timeline& timeline, const MediaManifest& ma
         if (error) *error = compatibility.messages.empty() ? "unsupported timeline"
                                                          : compatibility.messages.front();
         return false;
+    }
+
+    // Check every video clip before assembling a plan, including invisible or
+    // silent tracks. Unknown imported values remain editable, but not executable.
+    for (const auto& track : timeline.tracks) {
+        if (track.type != ClipType::Video) continue;
+        for (const auto& clip : track.clips) {
+            if (!parseBlendMode(clip.blendMode)) {
+                if (error) *error = "Unsupported clip blend mode: " + clip.id;
+                return false;
+            }
+        }
     }
 
     CompositionPlan plan;

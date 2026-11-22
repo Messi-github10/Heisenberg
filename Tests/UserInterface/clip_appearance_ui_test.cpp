@@ -1,11 +1,13 @@
 #include <Backend/EditorSession.hpp>
 #include <MainWidget/ClipAppearanceDialog.hpp>
 #include <MainWidget/TimelineWidget.hpp>
+#include <Models/BlendMode.hpp>
 #include <Models/ProjectCodec.hpp>
 
 #include <gtest/gtest.h>
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -25,6 +27,67 @@ QDoubleSpinBox* field(QDialog& dialog, const char* name) {
     auto* spin = dialog.findChild<QDoubleSpinBox*>(name);
     EXPECT_NE(spin, nullptr) << name;
     return spin;
+}
+
+QComboBox* blendField(QDialog& dialog) {
+    auto* combo = dialog.findChild<QComboBox*>("clipBlendMode");
+    EXPECT_NE(combo, nullptr);
+    return combo;
+}
+
+TEST(ClipAppearanceDialogTest, BlendModesUseSharedTableAndOnlySubmitCanonicalChanges) {
+    const auto modes = blendModes();
+    for (const auto& descriptor : modes) {
+        Clip clip;
+        clip.blendMode = std::string(descriptor.name);
+        ClipAppearanceDialog dialog(clip);
+        auto* combo = blendField(dialog);
+        ASSERT_NE(combo, nullptr);
+        ASSERT_EQ(combo->count(), static_cast<int>(modes.size()));
+        EXPECT_FALSE(combo->isEditable());
+        EXPECT_EQ(combo->currentData().toString().toStdString(), *clip.blendMode);
+        EXPECT_TRUE(dialog.changedPatch().empty());
+        for (std::size_t i = 0; i < modes.size(); ++i) {
+            EXPECT_EQ(combo->itemText(static_cast<int>(i)).toStdString(), modes[i].displayName);
+            EXPECT_EQ(combo->itemData(static_cast<int>(i)).toString().toStdString(), modes[i].name);
+            combo->setCurrentIndex(static_cast<int>(i));
+            const auto patch = dialog.changedPatch();
+            if (modes[i].mode == descriptor.mode) EXPECT_TRUE(patch.empty());
+            else EXPECT_EQ(patch.blendMode, std::optional<std::string>{std::string(modes[i].name)});
+        }
+    }
+}
+
+TEST(ClipAppearanceDialogTest, AbsentNormalAndUnsupportedValuesStayOmittedUntilChanged) {
+    for (const auto& stored : {std::optional<std::string>{}, std::optional<std::string>{"normal"},
+                              std::optional<std::string>{"futureBlend"}, std::optional<std::string>{""}}) {
+        Clip clip;
+        clip.blendMode = stored;
+        ClipAppearanceDialog dialog(clip);
+        auto* combo = blendField(dialog);
+        ASSERT_NE(combo, nullptr);
+        const int originalIndex = combo->currentIndex();
+        const bool known = parseBlendMode(stored).has_value();
+        EXPECT_EQ(combo->count(), static_cast<int>(blendModes().size()) + (known ? 0 : 1));
+        if (!known) {
+            EXPECT_TRUE(combo->currentText().startsWith("Unsupported"));
+            EXPECT_FALSE(combo->currentData().isValid());
+        } else {
+            EXPECT_EQ(combo->currentData().toString(), "normal");
+        }
+        EXPECT_TRUE(dialog.changedPatch().empty());
+        combo->setCurrentIndex(combo->findData("screen"));
+        EXPECT_EQ(dialog.changedPatch().blendMode, std::optional<std::string>{"screen"});
+        combo->setCurrentIndex(originalIndex);
+        EXPECT_TRUE(dialog.changedPatch().empty());
+        field(dialog, "clipOpacity")->setValue(25);
+        EXPECT_FALSE(dialog.changedPatch().blendMode);
+        EXPECT_TRUE(dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->isEnabled());
+        if (!known) {
+            combo->setCurrentIndex(combo->findData("normal"));
+            EXPECT_EQ(dialog.changedPatch().blendMode, std::optional<std::string>{"normal"});
+        }
+    }
 }
 
 TEST(ClipAppearanceDialogTest, UsesPercentAndDegreeUnitsAndOnlyReturnsChangedControls) {
@@ -175,13 +238,20 @@ TEST_F(ClipAppearanceUiTest, CancelNoOpAndChangeBackDoNotEmitOrDirty) {
     int edits = 0, changes = 0;
     QObject::connect(&widget, &TimelineWidget::editRequested, &widget, [&] { ++edits; });
     QObject::connect(&session, &EditorSession::timelineChanged, &widget, [&](qint64) { ++changes; });
-    appearance([](QDialog& dialog) { field(dialog, "clipOpacity")->setValue(25); }, false);
+    appearance([](QDialog& dialog) {
+        field(dialog, "clipOpacity")->setValue(25);
+        blendField(dialog)->setCurrentIndex(blendField(dialog)->findData("screen"));
+    }, false);
     appearance({});
     appearance([](QDialog& dialog) {
         auto* spin = field(dialog, "clipCenterX");
         const auto initial = spin->value();
         spin->setValue(50);
         spin->setValue(initial);
+        auto* blend = blendField(dialog);
+        const int originalBlend = blend->currentIndex();
+        blend->setCurrentIndex(blend->findData("multiply"));
+        blend->setCurrentIndex(originalBlend);
     });
     EXPECT_EQ(json(), before);
     EXPECT_EQ(session.editor().revision(), revision);
@@ -207,6 +277,7 @@ TEST_F(ClipAppearanceUiTest, MultipleFieldsCommitOnceAndUndoPreservesPayloads) {
         field(dialog, "clipEdgeRounding")->setValue(15);
         field(dialog, "clipEdgeSoftness")->setValue(25);
         field(dialog, "clipOpacity")->setValue(35);
+        blendField(dialog)->setCurrentIndex(blendField(dialog)->findData("colorBurn"));
         dialog.findChild<QCheckBox*>("clipFlipHorizontal")->setChecked(true);
         dialog.findChild<QCheckBox*>("clipFlipVertical")->setChecked(true);
     });
@@ -222,6 +293,7 @@ TEST_F(ClipAppearanceUiTest, MultipleFieldsCommitOnceAndUndoPreservesPayloads) {
     expected.edgeRounding = 0.15;
     expected.edgeSoftness = 0.25;
     expected.opacity = 0.35;
+    expected.blendMode = "colorBurn";
     EXPECT_EQ(clip(), expected);
     const auto after = json();
     session.undo();
@@ -236,6 +308,7 @@ TEST_F(ClipAppearanceUiTest, MultiSelectionAppearanceEditsOnlyThePrimaryClip) {
     secondary.startFrame = 40;
     secondary.opacity = 0.8;
     secondary.transform.width = 1.4;
+    secondary.blendMode = "screen";
     project.timelines[0].tracks[0].clips.push_back(secondary);
     reload();
     selectClip();
@@ -252,6 +325,8 @@ TEST_F(ClipAppearanceUiTest, MultiSelectionAppearanceEditsOnlyThePrimaryClip) {
     appearance([](QDialog& dialog) {
         EXPECT_DOUBLE_EQ(field(dialog, "clipOpacity")->value(), 80);
         EXPECT_DOUBLE_EQ(field(dialog, "clipWidth")->value(), 140);
+        EXPECT_EQ(blendField(dialog)->currentData().toString(), "screen");
+        blendField(dialog)->setCurrentIndex(blendField(dialog)->findData("multiply"));
         field(dialog, "clipOpacity")->setValue(35);
         field(dialog, "clipWidth")->setValue(150);
     });
@@ -260,6 +335,7 @@ TEST_F(ClipAppearanceUiTest, MultiSelectionAppearanceEditsOnlyThePrimaryClip) {
     auto& primary = *expected.timelines[0].clipById("secondary");
     primary.opacity = 0.35;
     primary.transform.width = 1.5;
+    primary.blendMode = "multiply";
     EXPECT_EQ(session.editor().project(), expected);
     EXPECT_EQ(session.editor().revision(), revision + 1);
     EXPECT_EQ(changes, 1);
@@ -288,6 +364,7 @@ TEST_F(ClipAppearanceUiTest, SavedAndReopenedPackagePreservesAllEditedConstantsA
         field(dialog, "clipEdgeRounding")->setValue(15);
         field(dialog, "clipEdgeSoftness")->setValue(25);
         field(dialog, "clipOpacity")->setValue(35);
+        blendField(dialog)->setCurrentIndex(blendField(dialog)->findData("colorBurn"));
         dialog.findChild<QCheckBox*>("clipFlipHorizontal")->setChecked(true);
         dialog.findChild<QCheckBox*>("clipFlipVertical")->setChecked(true);
     });
@@ -302,6 +379,7 @@ TEST_F(ClipAppearanceUiTest, SavedAndReopenedPackagePreservesAllEditedConstantsA
     expected.edgeRounding = 0.15;
     expected.edgeSoftness = 0.25;
     expected.opacity = 0.35;
+    expected.blendMode = "colorBurn";
     ASSERT_EQ(clip(), expected);
     ASSERT_TRUE(session.isDirty());
 
@@ -361,6 +439,49 @@ TEST_F(ClipAppearanceUiTest, UntouchedUnusualGeometrySurvivesOpacityChange) {
     EXPECT_EQ(clip(), expected);
 }
 
+TEST_F(ClipAppearanceUiTest, ImportedUnknownBlendCanBePreservedRepairedAndSaved) {
+    for (const auto* name : {"futureBlend", "", "Normal"}) {
+        SCOPED_TRACE(name);
+        project.timelines[0].tracks[0].clips[0].blendMode = name;
+        reload();
+        selectClip();
+        const auto before = json();
+        const auto revision = session.editor().revision();
+        appearance({});
+        appearance([](QDialog& dialog) {
+            auto* combo = blendField(dialog);
+            const int initial = combo->currentIndex();
+            combo->setCurrentIndex(combo->findData("screen"));
+            combo->setCurrentIndex(initial);
+        });
+        EXPECT_EQ(json(), before);
+        EXPECT_EQ(session.editor().revision(), revision);
+        EXPECT_FALSE(session.isDirty());
+        appearance([](QDialog& dialog) { field(dialog, "clipOpacity")->setValue(25); });
+        EXPECT_EQ(clip().blendMode, std::optional<std::string>{name});
+        EXPECT_DOUBLE_EQ(clip().opacity, 0.25);
+        const auto preserved = session.editor().project();
+        QString error;
+        ASSERT_TRUE(session.savePackage(package, &error)) << error.toStdString();
+        EditorSession reopened;
+        ASSERT_TRUE(reopened.loadPackage(package, &error)) << error.toStdString();
+        EXPECT_EQ(reopened.editor().project(), preserved);
+        appearance([](QDialog& dialog) {
+            auto* combo = blendField(dialog);
+            combo->setCurrentIndex(combo->findData("normal"));
+        });
+        EXPECT_EQ(clip().blendMode, std::optional<std::string>{"normal"});
+        const auto repaired = session.editor().project();
+        session.undo();
+        EXPECT_EQ(session.editor().project(), preserved);
+        session.redo();
+        EXPECT_EQ(session.editor().project(), repaired);
+        ASSERT_TRUE(session.savePackage(package, &error)) << error.toStdString();
+        ASSERT_TRUE(reopened.loadPackage(package, &error)) << error.toStdString();
+        EXPECT_EQ(reopened.editor().project(), repaired);
+    }
+}
+
 TEST_F(ClipAppearanceUiTest, FlushesPendingGradeBeforeApplyingPatchToResolvedClip) {
     const auto before = json();
     ASSERT_TRUE(session.beginClipEffectsTransaction("clip").message.empty());
@@ -371,12 +492,17 @@ TEST_F(ClipAppearanceUiTest, FlushesPendingGradeBeforeApplyingPatchToResolvedCli
         ++flushes;
         EXPECT_TRUE(session.commitClipEffectsTransaction().changed());
     });
-    appearance([](QDialog& dialog) { field(dialog, "clipWidth")->setValue(150); });
+    appearance([](QDialog& dialog) {
+        field(dialog, "clipWidth")->setValue(150);
+        blendField(dialog)->setCurrentIndex(blendField(dialog)->findData("softLight"));
+    });
     EXPECT_EQ(flushes, 1);
+    EXPECT_EQ(clip().blendMode, std::optional<std::string>{"softLight"});
     EXPECT_DOUBLE_EQ(clip().transform.width, 1.5);
     EXPECT_EQ(clip().effects, effects);
     session.undo();
     EXPECT_DOUBLE_EQ(clip().transform.width, 1.0);
+    EXPECT_FALSE(clip().blendMode);
     EXPECT_EQ(clip().effects, effects);
     session.undo();
     EXPECT_EQ(json(), before);

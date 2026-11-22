@@ -1,4 +1,5 @@
 #include <Compositing/CompositionBuilder.hpp>
+#include <Models/BlendMode.hpp>
 #include <gtest/gtest.h>
 #include <algorithm>
 
@@ -279,6 +280,53 @@ TEST(CompositionPlanTest, MultipleVideoAndAudioTracksPreserveOrderFlagsAndSample
     timeline.tracks.clear();
     EXPECT_EQ(plan.videoSamplesAt(6).size(), 2u);
     EXPECT_EQ(plan.audioSamplesAt(6).size(), 4u);
+}
+
+TEST(CompositionPlanTest, EveryRegisteredBlendModeIsPreservedWithoutWarnings) {
+    ASSERT_EQ(blendModes().size(), 17u);
+    MediaManifest manifest;
+    MediaManifestEntry entry; entry.id = "asset"; entry.source.path = "blend-fixture.mp4";
+    ASSERT_TRUE(manifest.add(entry));
+    for (const auto& mode : blendModes()) {
+        SCOPED_TRACE(std::string(mode.name));
+        auto timeline = timelineFixture();
+        for (auto& clip : timeline.tracks.front().clips) clip.blendMode = std::string(mode.name);
+        CompositionPlan plan;
+        std::string error;
+        ASSERT_TRUE(CompositionBuilder::build(timeline, manifest, "", plan, &error)) << error;
+        EXPECT_TRUE(plan.warnings.empty());
+        for (const auto& clip : plan.tracks.front().clips)
+            EXPECT_EQ(clip.visualSnapshot.blendMode, mode.name);
+    }
+}
+
+TEST(CompositionPlanTest, RejectsUnknownBlendOnEveryVideoTrackBeforeReplacingPlan) {
+    for (const std::string mode : {"unknown", "", "Normal", "colorburn"}) {
+        for (const int state : {0, 1, 2, 3}) {
+            SCOPED_TRACE(mode + ":" + std::to_string(state));
+            auto timeline = timelineFixture();
+            auto later = timeline.tracks.front(); later.id = "later-video";
+            for (auto& clip : later.clips) clip.id = "later-" + clip.id;
+            later.hidden = state == 1;
+            later.muted = state == 2;
+            later.clips.back().opacity = state == 3 ? 0.0 : 1.0;
+            later.clips.back().blendMode = mode;
+            timeline.tracks.push_back(later);
+            CompositionPlan plan;
+            ASSERT_TRUE(CompositionBuilder::build(timelineFixture(), MediaManifest{}, "", plan));
+            const auto original = plan;
+            std::string error;
+            EXPECT_EQ(compatibilityFor(timeline).level, CompatibilityLevel::Warning);
+            EXPECT_FALSE(CompositionBuilder::build(timeline, MediaManifest{}, "", plan, &error));
+            EXPECT_NE(error.find("blend"), std::string::npos);
+            EXPECT_NE(error.find("later-first"), std::string::npos);
+            EXPECT_EQ(plan.frameCount, original.frameCount);
+            EXPECT_EQ(plan.tracks.size(), original.tracks.size());
+            EXPECT_EQ(plan.tracks.front().clips.front().visualSnapshot,
+                      original.tracks.front().clips.front().visualSnapshot);
+            EXPECT_EQ(plan.warnings, original.warnings);
+        }
+    }
 }
 
 TEST(CompositionPlanTest, RejectsUnsupportedTrackTypesWithoutReplacingExistingPlan) {

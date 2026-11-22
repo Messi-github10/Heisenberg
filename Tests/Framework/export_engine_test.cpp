@@ -1,8 +1,12 @@
 #include <Compositing/CompositionBuilder.hpp>
+#include <Compositing/CompositionExecutor.hpp>
+#include <Models/BlendMode.hpp>
+#include <MultiMedia/Video/Renderer/Color/ColorPipeline.hpp>
 #include <Export/ExportEngine.hpp>
 #include <Project/VideoProject.hpp>
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <filesystem>
@@ -396,6 +400,188 @@ TEST(ExportEngineTest, FinishedSdrGrayLevelsSurviveBothSoftwareEncodersWithoutGr
     }
 }
 
+TEST(ExportEngineTest, EveryRegisteredBlendModePassesPreflightWithoutUnsupportedWarnings) {
+    ASSERT_EQ(blendModes().size(), 17u);
+    OutputFolder folder;
+    const auto initial = snapshot(2, true, false);
+    for (const auto& mode : blendModes()) {
+        SCOPED_TRACE(std::string(mode.name));
+        auto document = initial.project();
+        document.timelines.front().tracks.front().clips.front().blendMode = std::string(mode.name);
+        VideoProject project;
+        std::string error;
+        ASSERT_TRUE(project.editor().replaceDocument(document, initial.manifest(), "", &error)) << error;
+        EXPECT_EQ(project.editor().compatibility().level, CompatibilityLevel::Supported);
+        ExportRequest request; request.snapshot = project.snapshot();
+        request.outputPath = utf8(folder.root / "absent" / "output.mp4");
+        ExportEngine engine;
+        ASSERT_TRUE(engine.start(request, &error)) << error; engine.wait();
+        // The intentional path error proves appearance preflight accepted this
+        // mode, without depending on GPU initialization or writing an output.
+        EXPECT_EQ(engine.result().state, ExportState::Failed);
+        EXPECT_EQ(engine.result().error, "Output directory does not exist");
+        EXPECT_TRUE(engine.result().warnings.empty());
+        EXPECT_FALSE(fs::exists(folder.root / "absent"));
+        EXPECT_TRUE(folder.noStaging());
+    }
+}
+
+TEST(ExportEngineTest, BlendModesFullyDecodeAgainstIndependentLinearReference) {
+    namespace color = heisenberg::renderer::color;
+    color::ColorPipeline pipeline;
+    const auto toOutput = pipeline.displayProcessor(color::kWorkingSpace, color::kExportDisplay,
+                                                    color::kColorimetricView);
+    // Measure the encoded fixture through the software decoder: its stored Y
+    // levels differ from the generator's nominal constants, and Cr is not
+    // exactly neutral. Assuming neutral gray amplifies errors near black after
+    // multiply/overlay and the display transfer. No renderer output is used.
+    CompositionExecutor sourceDecoder;
+    const auto opened = sourceDecoder.openSource(HEISENBERG_TEST_SDR_GRAY,
+                                                 {false, CompositionErrorPolicy::Strict});
+    ASSERT_TRUE(opened) << opened.error;
+    const auto sourceFrame = sourceDecoder.videoFrame(0);
+    ASSERT_TRUE(sourceFrame) << sourceFrame.error;
+    ASSERT_TRUE(sourceFrame.value.source);
+    const AVFrame* input = sourceFrame.value.source->get();
+    ASSERT_NE(input, nullptr);
+    ASSERT_EQ(input->format, AV_PIX_FMT_YUV420P);
+    ASSERT_EQ(input->width, 160); ASSERT_EQ(input->height, 120);
+    ASSERT_EQ(input->colorspace, AVCOL_SPC_BT709);
+    ASSERT_EQ(input->color_range, AVCOL_RANGE_MPEG);
+    std::array<std::array<double, 3>, 8> sourcePatches{};
+    for (int patch = 0; patch < 8; ++patch) {
+        const int x = patch * 20 + 10, y = 60;
+        const double luma = (input->data[0][y * input->linesize[0] + x] - 16.0) / 219.0;
+        const double cb = (input->data[1][(y / 2) * input->linesize[1] + x / 2] - 128.0) / 224.0;
+        const double cr = (input->data[2][(y / 2) * input->linesize[2] + x / 2] - 128.0) / 224.0;
+        // Independent limited-range BT.709 matrix; the explicit ACEScg
+        // interpretation makes these unpacked RGB values scene-linear.
+        sourcePatches[patch] = {luma + 1.5748 * cr,
+            luma - (0.0722 * 1.8556 / 0.7152) * cb - (0.2126 * 1.5748 / 0.7152) * cr,
+            luma + 1.8556 * cb};
+    }
+    constexpr double opacity = 0.65;
+    for (const auto codec : {ExportVideoCodec::H264, ExportVideoCodec::H265}) {
+        for (const std::string mode : {"normal", "multiply", "screen", "overlay", "add", "difference", "luminosity"}) {
+            SCOPED_TRACE(mode + (codec == ExportVideoCodec::H264 ? " H264" : " H265"));
+            ASSERT_TRUE(parseBlendMode(mode));
+            OutputFolder folder;
+            ProjectFile document;
+            Timeline timeline;
+            timeline.id = "blend-timeline"; timeline.width = 160; timeline.height = 120; timeline.fps = 24;
+            Track upper; upper.id = "upper"; upper.muted = true;
+            Clip source; source.id = "source"; source.mediaRef = "gray"; source.durationFrames = 6;
+            source.transform.flipHorizontal = true;
+            source.blendMode = mode; source.opacity = opacity;
+            upper.clips.push_back(source);
+            Track lower; lower.id = "lower"; lower.muted = true;
+            Clip backdrop; backdrop.id = "backdrop"; backdrop.mediaRef = "gray"; backdrop.durationFrames = 6;
+            lower.clips.push_back(backdrop);
+            timeline.tracks = {upper, lower};
+            document.timelines = {timeline}; document.activeTimelineId = timeline.id;
+            // Deliberate interpretation: code values represent linear ACEScg,
+            // not the fixture's tagged SDR transfer function. No IDT math is
+            // borrowed from the renderer to calculate the blend reference.
+            document.colorSettings.inputColorSpaces["gray"] = "ACEScg";
+            document.colorSettings.exportOutput = {color::kExportDisplay, color::kColorimetricView};
+            MediaManifest manifest;
+            MediaManifestEntry media; media.id = "gray"; media.duration = 0.25;
+            media.source.path = HEISENBERG_TEST_SDR_GRAY;
+            ASSERT_TRUE(manifest.add(media));
+            VideoProject project;
+            std::string error;
+            ASSERT_TRUE(project.editor().replaceDocument(document, manifest, "", &error)) << error;
+            ExportRequest request; request.snapshot = project.snapshot(); request.outputPath = utf8(folder.output());
+            request.hardwareDecode = false; request.videoCodec = codec; request.crf = 0;
+            ExportEngine engine;
+            ASSERT_TRUE(engine.start(request, &error)) << error; engine.wait();
+            ASSERT_TRUE(engine.result().succeeded()) << engine.result().stage << ": " << engine.result().error;
+            EXPECT_TRUE(engine.result().warnings.empty());
+            const auto decoded = readback(folder.output(), codec == ExportVideoCodec::H264 ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC, 6);
+            ASSERT_EQ(decoded.pictures, 6);
+            ASSERT_EQ(decoded.grayPatches.size(), 6u);
+            for (int patch = 0; patch < 8; ++patch) {
+                const auto& backdropRgb = sourcePatches[patch];
+                const auto& sourceRgb = sourcePatches[7 - patch];
+                auto blendRgb = sourceRgb;
+                for (int channel = 0; channel < 3; ++channel) {
+                    const double cb = backdropRgb[channel], cs = sourceRgb[channel];
+                    if (mode == "multiply") blendRgb[channel] = cb * cs;
+                    else if (mode == "screen") blendRgb[channel] = cb + cs - cb * cs;
+                    else if (mode == "overlay") blendRgb[channel] = cb <= 0.5 ? 2 * cb * cs : 1 - 2 * (1 - cb) * (1 - cs);
+                    else if (mode == "add") blendRgb[channel] = cb + cs;
+                    else if (mode == "difference") blendRgb[channel] = std::abs(cb - cs);
+                }
+                if (mode == "luminosity") {
+                    auto boundedBackdrop = backdropRgb, boundedSource = sourceRgb;
+                    for (int channel = 0; channel < 3; ++channel) {
+                        boundedBackdrop[channel] = std::clamp(boundedBackdrop[channel], 0.0, 1.0);
+                        boundedSource[channel] = std::clamp(boundedSource[channel], 0.0, 1.0);
+                    }
+                    const auto lum = [](const auto& rgb) { return 0.3 * rgb[0] + 0.59 * rgb[1] + 0.11 * rgb[2]; };
+                    const double delta = lum(boundedSource) - lum(boundedBackdrop);
+                    for (int channel = 0; channel < 3; ++channel) blendRgb[channel] = boundedBackdrop[channel] + delta;
+                    const double l = lum(blendRgb);
+                    const double low = *std::min_element(blendRgb.begin(), blendRgb.end());
+                    const double high = *std::max_element(blendRgb.begin(), blendRgb.end());
+                    if (low < 0.0) for (auto& value : blendRgb) value = l + (value - l) * l / (l - low);
+                    if (high > 1.0) for (auto& value : blendRgb) value = l + (value - l) * (1 - l) / (high - l);
+                }
+                float expected[4]{0, 0, 0, 1};
+                for (int channel = 0; channel < 3; ++channel)
+                    expected[channel] = static_cast<float>((1 - opacity) * backdropRgb[channel] + opacity * blendRgb[channel]);
+                // The blend oracle above is independent. OCIO CPU supplies only
+                // the output display transform, which is not a blend operation.
+                toOutput.applyRGBA(expected, 1);
+                const double luma = 16 + 219 * (0.2126 * std::clamp(expected[0], 0.0f, 1.0f)
+                    + 0.7152 * std::clamp(expected[1], 0.0f, 1.0f)
+                    + 0.0722 * std::clamp(expected[2], 0.0f, 1.0f));
+                for (size_t frame = 0; frame < decoded.grayPatches.size(); ++frame)
+                    EXPECT_NEAR(decoded.grayPatches[frame][patch], luma, 3.0) << "frame=" << frame << " patch=" << patch;
+            }
+            EXPECT_EQ(engine.progress().completedFrames, 6);
+            EXPECT_TRUE(folder.noStaging());
+        }
+    }
+}
+
+TEST(ExportEngineTest, UnknownBlendPreflightPreservesTargetsEvenOnInactiveVideoTracks) {
+    OutputFolder folder;
+    { std::ofstream output(folder.output(), std::ios::binary); output << "keep-original-blend-target"; }
+    const auto modified = fs::last_write_time(folder.output());
+    const auto initial = snapshot(2, true, false);
+    for (const std::string mode : {"unknown", "", "Normal", "colorburn"}) {
+        for (const int state : {0, 1, 2, 3}) {
+            SCOPED_TRACE(mode + ":" + std::to_string(state));
+            auto document = initial.project();
+            auto later = document.timelines.front().tracks.front(); later.id = "later-video";
+            later.hidden = state == 1; later.muted = state == 2;
+            auto& clip = later.clips.front(); clip.id = "unknown-picture"; clip.blendMode = mode;
+            clip.opacity = state == 3 ? 0.0 : 1.0;
+            document.timelines.front().tracks.push_back(later);
+            VideoProject project;
+            std::string error;
+            ASSERT_TRUE(project.editor().replaceDocument(document, initial.manifest(), "", &error)) << error;
+            EXPECT_EQ(project.editor().compatibility().level, CompatibilityLevel::Warning);
+            for (const auto& target : {folder.output(), folder.root / "absent" / "output.mp4"}) {
+                ExportRequest request; request.snapshot = project.snapshot();
+                request.outputPath = utf8(target); request.overwrite = true;
+                ExportEngine engine;
+                ASSERT_TRUE(engine.start(request, &error)) << error; engine.wait();
+                EXPECT_EQ(engine.result().state, ExportState::Failed);
+                EXPECT_EQ(engine.result().stage, "prepare");
+                EXPECT_NE(engine.result().error.find("blend"), std::string::npos);
+                EXPECT_NE(engine.result().error.find("unknown-picture"), std::string::npos);
+                EXPECT_EQ(engine.progress().completedFrames, 0);
+                EXPECT_EQ(contents(folder.output()), "keep-original-blend-target");
+                EXPECT_EQ(fs::last_write_time(folder.output()), modified);
+                EXPECT_FALSE(fs::exists(folder.root / "absent"));
+                EXPECT_TRUE(folder.noStaging());
+            }
+        }
+    }
+}
+
 TEST(ExportEngineTest, AudioTailAndAudioOnlyProduceBlackFramesAndKeepSound) {
     for (bool picture : {true, false}) {
         OutputFolder folder; ExportEngine engine; ExportRequest request;
@@ -596,7 +782,7 @@ TEST(ExportEngineTest, GeometryPreflightRejectsInvalidConstantsPerspectiveAndAut
         {"scale track", [](Clip& c) { c.scaleTrack.emplace(); }, "Unsupported clip appearance"},
         {"rotation track", [](Clip& c) { c.rotationTrack.emplace(); }, "Unsupported clip appearance"},
         {"crop track", [](Clip& c) { c.cropTrack.emplace(); }, "Unsupported clip appearance"},
-        {"blend", [](Clip& c) { c.blendMode = "screen"; }, "Unsupported clip appearance"},
+        {"blend", [](Clip& c) { c.blendMode = "unknown"; }, "Unsupported clip blend mode"},
     };
     OutputFolder folder;
     { std::ofstream output(folder.output(), std::ios::binary); output << "keep-original-geometry-target"; }

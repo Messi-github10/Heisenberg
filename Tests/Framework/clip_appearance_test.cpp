@@ -1,5 +1,6 @@
 #include <Editor/EditorViewModel.hpp>
 #include <Models/ClipAppearance.hpp>
+#include <Models/BlendMode.hpp>
 #include <Models/ProjectCodec.hpp>
 #include <gtest/gtest.h>
 
@@ -72,6 +73,7 @@ TEST_F(ClipAppearanceTest, AllFieldsCommitAsOneUndoAndPreserveOpaquePayloads) {
     patch.edgeRounding = expected.edgeRounding = 0.15;
     patch.edgeSoftness = expected.edgeSoftness = 0.25;
     patch.opacity = expected.opacity = 0.35;
+    patch.blendMode = expected.blendMode = "colorBurn";
     const auto revision = editor.revision();
     const auto result = editor.setClipAppearance("clip", patch);
     ASSERT_TRUE(result.changed()) << result.message;
@@ -191,6 +193,107 @@ TEST_F(ClipAppearanceTest, MissingAudioAndPendingEffectsAreRejectedWithoutMutati
     EXPECT_EQ(editor.project(), before);
     ASSERT_TRUE(editor.cancelClipEffectsTransaction().message.empty());
     EXPECT_TRUE(editor.setClipAppearance("clip", patch).changed());
+}
+
+TEST_F(ClipAppearanceTest, EveryCanonicalBlendModeIsAcceptedAndPersists) {
+    for (const auto& descriptor : blendModes()) {
+        SCOPED_TRACE(descriptor.name);
+        ClipAppearancePatch patch;
+        patch.blendMode = std::string(descriptor.name);
+        const auto before = editor.project();
+        const auto revision = editor.revision();
+        ASSERT_TRUE(editor.setClipAppearance("clip", patch).changed());
+        EXPECT_EQ(clip().blendMode, patch.blendMode);
+        EXPECT_EQ(editor.revision(), revision + 1);
+        const auto after = editor.project();
+        EXPECT_EQ(editor.setClipAppearance("clip", patch).status, EditStatus::NoOp);
+        EXPECT_EQ(editor.revision(), revision + 1);
+        ASSERT_TRUE(editor.undo());
+        EXPECT_EQ(editor.project(), before);
+        ASSERT_TRUE(editor.redo());
+        EXPECT_EQ(editor.project(), after);
+        const auto json = ProjectCodec::encode(after);
+        EXPECT_NE(json.find("\"blendMode\":\"" + *patch.blendMode + "\""), std::string::npos);
+    }
+}
+
+TEST_F(ClipAppearanceTest, OmittedBlendModePreservesAbsenceAndNormalIsStoredExplicitly) {
+    ASSERT_FALSE(clip().blendMode);
+    ClipAppearancePatch patch;
+    patch.opacity = 0.5;
+    ASSERT_TRUE(editor.setClipAppearance("clip", patch).changed());
+    EXPECT_FALSE(clip().blendMode);
+    patch = {};
+    patch.blendMode = "normal";
+    EXPECT_FALSE(patch.empty());
+    ASSERT_TRUE(editor.setClipAppearance("clip", patch).changed());
+    EXPECT_EQ(clip().blendMode, std::optional<std::string>{"normal"});
+    ASSERT_TRUE(editor.undo());
+    EXPECT_FALSE(clip().blendMode);
+    ASSERT_TRUE(editor.redo());
+    patch = {};
+    patch.rotation = 45;
+    ASSERT_TRUE(editor.setClipAppearance("clip", patch).changed());
+    EXPECT_EQ(clip().blendMode, std::optional<std::string>{"normal"});
+}
+
+TEST_F(ClipAppearanceTest, UnknownImportedBlendSurvivesUnrelatedEditsAndCanBeRepaired) {
+    for (const auto* name : {"futureBlend", "", "Normal"}) {
+        SCOPED_TRACE(name);
+        project.timelines[0].tracks[0].clips[0].blendMode = name;
+        ASSERT_TRUE(editor.replaceDocument(project, manifest));
+        auto expected = clip();
+        EXPECT_EQ(editor.setClipAppearance("clip", {}).status, EditStatus::NoOp);
+        ClipAppearancePatch patch;
+        patch.opacity = expected.opacity = 0.625;
+        ASSERT_TRUE(editor.setClipAppearance("clip", patch).changed());
+        EXPECT_EQ(clip(), expected);
+        patch = {};
+        patch.blendMode = "normal";
+        ASSERT_TRUE(editor.setClipAppearance("clip", patch).changed());
+        EXPECT_EQ(clip().blendMode, std::optional<std::string>{"normal"});
+        ASSERT_TRUE(editor.undo());
+        EXPECT_EQ(clip(), expected);
+    }
+}
+
+TEST_F(ClipAppearanceTest, SuppliedUnknownBlendRejectsEvenIdenticalValuesBeforeNoOp) {
+    for (const auto* name : {"futureBlend", "", "Normal", "plus", "colorburn"}) {
+        SCOPED_TRACE(name);
+        project.timelines[0].tracks[0].clips[0].blendMode = name;
+        ASSERT_TRUE(editor.replaceDocument(project, manifest));
+        ClipAppearancePatch change;
+        change.opacity = 0.5;
+        ASSERT_TRUE(editor.setClipAppearance("clip", change).changed());
+        const auto after = editor.project();
+        ASSERT_TRUE(editor.undo());
+        const auto before = editor.project();
+        const auto revision = editor.revision();
+        ClipAppearancePatch patch;
+        patch.blendMode = name;
+        std::string error;
+        EXPECT_FALSE(validateClipAppearancePatch(clip(), patch, &error));
+        EXPECT_FALSE(error.empty());
+        EXPECT_EQ(editor.setClipAppearance("clip", patch).status, EditStatus::Invalid);
+        patch.centerX = 0.75;
+        EXPECT_EQ(editor.setClipAppearance("clip", patch).status, EditStatus::Invalid);
+        EXPECT_EQ(editor.project(), before);
+        EXPECT_EQ(editor.revision(), revision);
+        ASSERT_TRUE(editor.redo());
+        EXPECT_EQ(editor.project(), after);
+    }
+}
+
+TEST_F(ClipAppearanceTest, InvalidGeometryRejectsBlendChangeAtomically) {
+    const auto before = editor.project();
+    const auto revision = editor.revision();
+    ClipAppearancePatch patch;
+    patch.blendMode = "screen";
+    patch.width = 0;
+    EXPECT_EQ(editor.setClipAppearance("clip", patch).status, EditStatus::Invalid);
+    EXPECT_EQ(editor.project(), before);
+    EXPECT_EQ(editor.revision(), revision);
+    EXPECT_FALSE(editor.undo());
 }
 
 TEST(ConstantGeometryTest, ValidatesGeometrySeparatelyFromOpacityTiltAndAutomation) {

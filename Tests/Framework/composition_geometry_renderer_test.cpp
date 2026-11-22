@@ -368,14 +368,19 @@ TEST_F(CompositionGeometryRendererTest, StrictRenderingRejectsUnsupportedAppeara
     cases[4].rotationTrack = KeyframeTrackPayload{};
     cases[5].cropTrack = KeyframeTrackPayload{};
     cases[6].opacityTrack = KeyframeTrackPayload{};
-    cases[7].blendMode = "multiply";
+    cases[7].blendMode = "unknown";
     for (const auto& clip : cases) {
         auto plan = makePlan(48,32,clip);
         CompositionRenderRequest request; request.plan = &plan; request.source = source.frame;
         request.clipId = "geometry"; request.strict = true;
         EXPECT_FALSE(renderer->render(request,&error)); EXPECT_NE(error.find("Unsupported"),std::string::npos);
         request.strict = false;
-        EXPECT_TRUE(renderer->render(request,&error)) << error;
+        if (clip.blendMode) {
+            EXPECT_FALSE(renderer->render(request,&error));
+            EXPECT_NE(error.find("blend"),std::string::npos);
+        } else {
+            EXPECT_TRUE(renderer->render(request,&error)) << error;
+        }
     }
 }
 

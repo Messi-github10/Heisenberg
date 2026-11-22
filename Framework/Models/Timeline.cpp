@@ -1,5 +1,6 @@
 #include "Timeline.hpp"
 #include "ClipAppearance.hpp"
+#include "BlendMode.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -292,7 +293,7 @@ ProjectCompatibility compatibilityFor(const Timeline& timeline) {
             if (!validateConstantGeometry(clip) || clip.transform.rotationX != 0.0 ||
                 clip.transform.rotationY != 0.0 || clip.opacityTrack ||
                 clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack ||
-                clip.volumeTrack || (clip.blendMode && *clip.blendMode != "normal") ||
+                clip.volumeTrack || !parseBlendMode(clip.blendMode) ||
                 (clip.fadeInFrames != 0 && clip.fadeInInterpolation != Interpolation::Linear) ||
                 (clip.fadeOutFrames != 0 && clip.fadeOutInterpolation != Interpolation::Linear)) {
                 result.level = CompatibilityLevel::Warning;

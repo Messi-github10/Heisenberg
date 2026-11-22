@@ -5,6 +5,7 @@
 #include <vector>
 
 class QCheckBox;
+class QComboBox;
 class QDialogButtonBox;
 class QLabel;
 class QDoubleSpinBox;
@@ -29,6 +30,8 @@ private:
         std::optional<double> ClipAppearancePatch::* field = nullptr;
     };
     std::vector<ScalarControl> scalars_;
+    QComboBox* blendMode_ = nullptr;
+    int originalBlendModeIndex_ = -1;
     QCheckBox* flipHorizontal_ = nullptr;
     QCheckBox* flipVertical_ = nullptr;
     bool originalFlipHorizontal_ = false;

@@ -2,6 +2,7 @@
 #include "Color/ColorPipeline.hpp"
 #include "ColorSpaceUtils.hpp"
 #include "RenderEngine.hpp"
+#include "VulkanBlendPass.hpp"
 #include <Compositing/CompositionPlan.hpp>
 #include <Compositing/Grade/GradeCompiler.hpp>
 #include <Models/ClipAppearance.hpp>
@@ -157,6 +158,9 @@ struct CompositionRenderer::Impl {
     ID3D11Device* d3dDevice = nullptr; ID3D11DeviceContext* d3dContext = nullptr;
     std::unique_ptr<SoftwareContext> software; std::unique_ptr<RenderEngine> placement;
     std::unique_ptr<color::ColorPipeline> colorPipeline;
+    std::unique_ptr<VulkanBlendPass> blendPass;
+    // Private, bounded ping-pong storage is never handed to a frame consumer.
+    std::array<std::unique_ptr<VulkanImageResource>,2> blendCanvas;
     // Devices/queue are fixed for this initialized renderer. Both import paths
     // use the same RGBA16F pool; source format/metadata are handled per frame.
     using InteropKey = std::pair<int, int>;
@@ -247,14 +251,22 @@ struct CompositionRenderer::Impl {
         b.image = image.image; b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
     }
-    void clear(RenderedFrame& frame) {
+    void clear(VulkanImageResource& resource) {
+        const auto image = resource.ref();
         commands([&](VkCommandBuffer cmd) {
-            barrier(cmd,frame.image(),VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            barrier(cmd,image,image.layout,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
             VkClearColorValue black{}; black.float32[3] = 1.0f;
             VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
-            vkCmdClearColorImage(cmd,frame.image().image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&black,1,&range);
-            barrier(cmd,frame.image(),VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }); frame.storage_->complete();
+            vkCmdClearColorImage(cmd,image.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&black,1,&range);
+            barrier(cmd,image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }); resource.setLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+    void ensureBlendCanvas(VkExtent2D extent) {
+        // Blend submissions drain synchronously before reuse, resize or release.
+        for (auto& resource : blendCanvas) {
+            if (!resource) resource = std::make_unique<VulkanImageResource>(context);
+            require(resource->ensure(extent,imageUsage,kWorkingImageContract), "Cannot allocate blend canvas");
+        }
     }
     void draw(const pl_frame& input, RenderedFrame& output, bool fit, double sourceAspect = 0) {
         BorrowedTexture texture(gpu, output.image()); auto target = rgb(texture.get(), output.image().extent.width, output.image().extent.height); pl_frame source = input;
@@ -277,31 +289,8 @@ struct CompositionRenderer::Impl {
         output.storage_->complete(); checkCancellation();
         require(returned && ok, "libplacebo unpack/placement failed");
     }
-    void blend(pl_tex target, const RenderedFrame& input, double opacity) {
-        BorrowedTexture source(gpu, input.image());
-        auto shader = pl_dispatch_begin(compositor);
-        pl_sample_src sample{}; sample.tex = source.get(); sample.components = 4;
-        const bool sampled = pl_shader_sample_direct(shader, &sample);
-        const float amount = static_cast<float>(opacity);
-        pl_shader_var variable{}; variable.var = pl_var_float("layer_opacity");
-        variable.data = &amount; variable.dynamic = true;
-        pl_custom_shader alpha{}; alpha.input = alpha.output = PL_SHADER_SIG_COLOR;
-        alpha.body = "color.a = clamp(color.a, 0.0, 1.0) * layer_opacity;";
-        alpha.variables = &variable; alpha.num_variables = 1;
-        const bool modified = pl_shader_custom(shader, &alpha);
-        // Inputs are independent (straight) alpha; the destination starts
-        // opaque, so source-over keeps its alpha exactly one.
-        const pl_blend_params over{PL_BLEND_SRC_ALPHA, PL_BLEND_ONE_MINUS_SRC_ALPHA,
-                                   PL_BLEND_ONE, PL_BLEND_ONE_MINUS_SRC_ALPHA};
-        pl_dispatch_params params{}; params.shader = &shader; params.target = target;
-        params.blend_params = &over;
-        const bool submitted = sampled && modified && pl_dispatch_finish(compositor, &params);
-        if (shader) pl_dispatch_abort(compositor, &shader);
-        const bool returned = source.close();
-        checkCancellation(); require(submitted && returned, "libplacebo layer blend failed");
-    }
-    // All geometry shader text is invariant. Only uniforms change during edits;
-    // the dispatch cache is bounded by these two programs, not parameter values.
+    // Preparation shader text is invariant; parameter edits use uniforms.
+    // Final geometry sampling and mixing belong to the fixed Vulkan program.
     static pl_shader_va canvasCoordinates(pl_gpu gpu) {
         static const float corners[4][2] = {{0,0},{1,0},{0,1},{1,1}};
         pl_shader_va attribute{};
@@ -381,15 +370,20 @@ struct CompositionRenderer::Impl {
             filtered = prefilterAxis(filtered,extent,1);
         return filtered;
     }
-    void geometryBlend(pl_tex target, const RenderedFrame& input, const Clip& clip,
-                       double sar, double opacity) {
+    bool geometryBlend(const VulkanImageRef& backdrop, VulkanImageResource& target,
+                       const RenderedFrame& input, const Clip& clip,
+                       double sar, double opacity, BlendMode mode) {
         const auto& t = clip.transform;
-        const double canvasW = target->params.w, canvasH = target->params.h;
+        const double canvasW = backdrop.extent.width, canvasH = backdrop.extent.height;
         const double sourceW = input.image().extent.width, sourceH = input.image().extent.height;
+        VulkanBlendParameters parameters;
+        parameters.mode = mode; parameters.opacity = float(opacity);
         const bool identity = t == Transform{} && clip.crop == Crop{}
             && clip.edgeRounding == 0.0 && clip.edgeSoftness == 0.0;
         if (identity && sourceW == canvasW && sourceH == canvasH && sar == 1.0) {
-            blend(target,input,opacity); return;
+            blendPass->execute(backdrop,input.image(),target.ref(),parameters);
+            target.setLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            checkCancellation(); return true;
         }
         const double aspect = sourceW*sar/sourceH;
         const double fitW = std::min(canvasW,canvasH*aspect);
@@ -403,7 +397,7 @@ struct CompositionRenderer::Impl {
         const double boundX = (std::abs(c)*width+std::abs(s)*height)*0.5;
         const double boundY = (std::abs(s)*width+std::abs(c)*height)*0.5;
         if (centerX+boundX < 0 || centerX-boundX > canvasW ||
-            centerY+boundY < 0 || centerY-boundY > canvasH) return;
+            centerY+boundY < 0 || centerY-boundY > canvasH) return false;
         require(std::isfinite(width) && std::isfinite(height) && width > 0 && height > 0,
                 "Geometry size exceeds GPU coordinate range");
         const double sx = (t.flipHorizontal ? -1.0 : 1.0)/width;
@@ -427,52 +421,12 @@ struct CompositionRenderer::Impl {
                                  static_cast<uint32_t>(std::clamp(std::ceil(height),1.0,sourceH))};
         if (filtered.width != input.image().extent.width || filtered.height != input.image().extent.height)
             prepared = prefilter(prepared,filtered);
-        BorrowedTexture source(gpu,prepared.image());
-        auto shader = pl_dispatch_begin(compositor);
-        pl_shader_desc texture{}; texture.desc.name = "geometry_source";
-        texture.desc.type = PL_DESC_SAMPLED_TEX; texture.binding.object = source.get();
-        texture.binding.sample_mode = PL_TEX_SAMPLE_NEAREST;
-        const float amount = float(opacity);
-        pl_shader_var variables[3] = {{pl_var_vec4("geometry_x"),rowX,true},
-            {pl_var_vec4("geometry_y"),rowY,true},{pl_var_float("geometry_opacity"),&amount,true}};
-        auto uv = canvasCoordinates(gpu);
-        pl_custom_shader geometry{}; geometry.input = PL_SHADER_SIG_NONE; geometry.output = PL_SHADER_SIG_COLOR;
-        geometry.description = "Constant planar geometry";
-        geometry.descriptors = &texture; geometry.num_descriptors = 1;
-        geometry.variables = variables; geometry.num_variables = 3;
-        geometry.vertex_attribs = &uv; geometry.num_vertex_attribs = 1;
-        geometry.body = R"glsl(
-            vec3 p = vec3(canvas_uv, 1.0);
-            vec2 uv = vec2(dot(geometry_x.xyz,p), dot(geometry_y.xyz,p));
-            ivec2 size = textureSize(geometry_source, 0);
-            vec2 position = uv * vec2(size) - 0.5;
-            color = vec4(0.0);
-            // Test before float-to-int conversion: far-offscreen transforms
-            // must not overflow integer texel coordinates.
-            if (all(greaterThan(position,vec2(-1.0))) && all(lessThan(position,vec2(size)))) {
-                ivec2 base = ivec2(floor(position));
-                vec2 f = fract(position);
-                for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) {
-                    ivec2 tap = base + ivec2(x,y);
-                    if (all(greaterThanEqual(tap,ivec2(0))) && all(lessThan(tap,size))) {
-                        float weight = (x == 0 ? 1.0-f.x : f.x) * (y == 0 ? 1.0-f.y : f.y);
-                        color += texelFetch(geometry_source,tap,0) * weight;
-                    }
-                }
-            }
-            // Keep genuine negative/HDR RGB. Only coverage is bounded; zero
-            // alpha never releases hidden RGB into the straight blend.
-            color.rgb = color.a > 0.0 ? color.rgb / color.a : vec3(0.0);
-            color.a = clamp(color.a,0.0,1.0) * geometry_opacity;
-        )glsl";
-        const bool modified = pl_shader_custom(shader,&geometry);
-        const pl_blend_params over{PL_BLEND_SRC_ALPHA,PL_BLEND_ONE_MINUS_SRC_ALPHA,
-                                   PL_BLEND_ONE,PL_BLEND_ONE_MINUS_SRC_ALPHA};
-        pl_dispatch_params params{}; params.shader = &shader; params.target = target; params.blend_params = &over;
-        const bool submitted = modified && pl_dispatch_finish(compositor,&params);
-        if (shader) pl_dispatch_abort(compositor,&shader);
-        const bool returned = source.close(); checkCancellation();
-        require(submitted && returned,"Planar geometry blend failed");
+        parameters.affine = true;
+        std::copy(std::begin(rowX),std::end(rowX),parameters.sourceX.begin());
+        std::copy(std::begin(rowY),std::end(rowY),parameters.sourceY.begin());
+        blendPass->execute(backdrop,prepared.image(),target.ref(),parameters);
+        target.setLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        checkCancellation(); return true;
     }
     RenderedFrame copy(const VulkanImageRef& input, int64_t position, AVRational timeBase) {
         waitGpu(input.ready); checkCancellation(); auto frame = allocate(input.extent, input.contract, position, timeBase);
@@ -506,6 +460,7 @@ bool CompositionRenderer::initialize(pl_gpu gpu, pl_vulkan vk, ID3D11Device* dev
         impl_->context.instance = vk->instance; impl_->context.device = vk->device; impl_->context.physicalDevice = vk->phys_device; impl_->context.queueFamilyIndex = vk->queue_graphics.index;
         vkGetDeviceQueue(vk->device,vk->queue_graphics.index,0,&impl_->context.queue); impl_->d3dDevice = device; impl_->d3dContext = context;
         impl_->software = std::make_unique<SoftwareContext>(gpu); impl_->placement = std::make_unique<RenderEngine>(gpu); impl_->colorPipeline = std::make_unique<color::ColorPipeline>(impl_->context);
+        impl_->blendPass = std::make_unique<VulkanBlendPass>(impl_->context);
         impl_->compositor = pl_dispatch_create(nullptr, gpu);
         require(impl_->compositor != nullptr, "Cannot create libplacebo compositor"); return true;
     } catch (const std::exception& e) { if (error) *error = e.what(); shutdown(); return false; }
@@ -513,10 +468,12 @@ bool CompositionRenderer::initialize(pl_gpu gpu, pl_vulkan vk, ID3D11Device* dev
 void CompositionRenderer::setCancellation(std::function<bool()> cancelled) {
     impl_->check(); impl_->cancelled = std::move(cancelled); impl_->cancellationObserved = false;
     impl_->colorPipeline->setCancellation(impl_->cancelled);
+    impl_->blendPass->setCancellation(impl_->cancelled);
 }
 void CompositionRenderer::shutdown() {
     if (!impl_ || !impl_->gpu) return; impl_->check(); pl_gpu_finish(impl_->gpu); synchronizedQueueWaitIdle(impl_->context.queue);
     for (auto& lut : impl_->geometryFilterLut) pl_shader_obj_destroy(&lut);
+    impl_->blendCanvas = {}; impl_->blendPass.reset();
     impl_->reportedColorPaths.clear(); impl_->gradeGraphs.clear(); pl_dispatch_destroy(&impl_->compositor); impl_->graph.reset(); impl_->interops.clear(); impl_->colorPipeline.reset(); impl_->software.reset(); impl_->placement.reset(); impl_->gpu = nullptr; impl_->vulkan = nullptr; impl_->owner = {};
 }
 RenderedFrame CompositionRenderer::render(const CompositionPlan& plan, int64_t frame, const std::vector<CompositionVideoLayer>& layers, std::string* error) {
@@ -561,7 +518,17 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
             }
             layers.push_back(std::move(layer));
         }
-        struct Contribution { CompositionVideoLayer layer; const CompositionClip* clip; };
+        // Validate the plan before active-sample, hidden, blank or opacity
+        // filtering. Preview must never silently interpret an unknown mode as
+        // Normal. Source preview deliberately ignores timeline blend metadata.
+        if (request.plan && !request.sourceMode) {
+            for (const auto& track : request.plan->tracks) for (const auto& clip : track.clips) {
+                if (!parseBlendMode(clip.visualSnapshot.blendMode))
+                    throw std::runtime_error("Unsupported clip appearance blend mode: "
+                        + clip.visualSnapshot.blendMode.value_or("<unset>"));
+            }
+        }
+        struct Contribution { CompositionVideoLayer layer; const CompositionClip* clip; BlendMode mode; };
         std::vector<Contribution> contributions;
         const auto active = request.plan ? request.plan->videoSamplesAt(request.targetFrame) : std::vector<CompositionSample>{};
         if (!request.blank) for (auto layer : layers) {
@@ -594,11 +561,11 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
                     require(!appearance.opacityTrack && !appearance.positionTrack && !appearance.scaleTrack
                             && !appearance.rotationTrack && !appearance.cropTrack,
                             "Unsupported animated clip geometry or opacity");
-                    require(!appearance.blendMode || *appearance.blendMode == "normal",
-                            "Unsupported clip blend mode");
                 }
             }
-            contributions.push_back({std::move(layer),clip});
+            const auto mode = clip && !request.sourceMode
+                ? *parseBlendMode(clip->visualSnapshot.blendMode) : BlendMode::Normal;
+            contributions.push_back({std::move(layer),clip,mode});
         }
         if (request.plan && !request.sourceMode) {
             const auto rank = [&](const Contribution& contribution) {
@@ -711,16 +678,15 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
         working.storage_->finishedRec709 = inputPolicyVersion == 2 && selection.colorSpace == color::kExportDisplay;
         return working;
         };
-        auto composite = impl_->allocate(canvas,kWorkingImageContract,request.targetFrame,timeBase);
-        impl_->clear(composite);
+        impl_->ensureBlendCanvas(canvas);
+        size_t currentCanvas = 0;
+        impl_->clear(*impl_->blendCanvas[currentCanvas]);
         bool finishedRec709 = !contributions.empty();
         std::string inputPath;
         if (!contributions.empty()) {
             pl_dispatch_reset_frame(impl_->compositor);
-            BorrowedTexture target(impl_->gpu,composite.image());
-            require(target.get()->params.format->caps & PL_FMT_CAP_BLENDABLE, "RGBA16F target does not support blending");
-            // UI tracks and request layers are top first; source-over draws
-            // from bottom to top without clipping scene-linear RGB values.
+            // UI tracks and request layers are top first; composite bottom to
+            // top into private ping-pong storage, never into an input image.
             for (auto it = contributions.rbegin(); it != contributions.rend(); ++it) {
                 impl_->checkCancellation(); auto layer = prepare(*it);
                 finishedRec709 = finishedRec709 && layer.storage_->finishedRec709;
@@ -730,10 +696,15 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
                 const double sar = av->sample_aspect_ratio.num > 0 && av->sample_aspect_ratio.den > 0
                     ? av_q2d(av->sample_aspect_ratio) : 1.0;
                 const Clip appearance = !request.sourceMode && it->clip ? it->clip->visualSnapshot : Clip{};
-                impl_->geometryBlend(target.get(),layer,appearance,sar,it->layer.opacity);
+                const size_t nextCanvas = 1-currentCanvas;
+                if (impl_->geometryBlend(impl_->blendCanvas[currentCanvas]->ref(),
+                        *impl_->blendCanvas[nextCanvas],layer,appearance,sar,it->layer.opacity,it->mode))
+                    currentCanvas = nextCanvas;
             }
-            require(target.close(), "Cannot return composite image");
         }
+        // The consumer owns an independent allocation. Future renders, resize
+        // and shutdown can recycle/free both scratch images without touching it.
+        auto composite = impl_->copy(impl_->blendCanvas[currentCanvas]->ref(),request.targetFrame,timeBase);
         composite.storage_->inputPath = std::move(inputPath);
         composite.storage_->finishedRec709 = finishedRec709;
         if (impl_->graph) {
