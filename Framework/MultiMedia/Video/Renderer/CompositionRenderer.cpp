@@ -176,6 +176,8 @@ struct CompositionRenderer::Impl {
     }
     struct GradeCache { std::string key; std::unique_ptr<VulkanFilterGraph> graph; };
     std::map<std::string, GradeCache> gradeGraphs;
+    std::shared_ptr<const CompositionPlan> appearancePlan;
+    std::map<const CompositionClip*, PreparedClipAppearance> appearanceTracks;
     pl_dispatch compositor = nullptr;
     pl_shader_obj geometryFilterLut[2] = {nullptr,nullptr};
     std::thread::id owner;
@@ -299,7 +301,8 @@ struct CompositionRenderer::Impl {
         for (int i = 0; i < 4; ++i) attribute.data[i] = corners[i];
         return attribute;
     }
-    RenderedFrame maskedPremultiplied(const RenderedFrame& input, const Clip& clip) {
+    RenderedFrame maskedPremultiplied(const RenderedFrame& input, const Clip& clip,
+                                     const Crop& crop) {
         auto contract = kWorkingImageContract; contract.alpha = AlphaMode::premultiplied;
         auto output = allocate(input.image().extent, contract, input.position(), input.storage_->timeBase);
         BorrowedTexture source(gpu, input.image()), target(gpu, output.image());
@@ -307,11 +310,11 @@ struct CompositionRenderer::Impl {
         pl_sample_src sample{}; sample.tex = source.get(); sample.components = 4;
         const bool sampled = pl_shader_sample_direct(shader, &sample);
         const double w = input.image().extent.width, h = input.image().extent.height;
-        const double croppedW = w*(1.0-clip.crop.left-clip.crop.right);
-        const double croppedH = h*(1.0-clip.crop.top-clip.crop.bottom);
+        const double croppedW = w*(1.0-crop.left-crop.right);
+        const double croppedH = h*(1.0-crop.top-crop.bottom);
         const double shortSide = std::min(croppedW,croppedH);
-        const float box[4] = {float(w*(clip.crop.left+1.0-clip.crop.right)*0.5),
-            float(h*(clip.crop.top+1.0-clip.crop.bottom)*0.5), float(croppedW*0.5),float(croppedH*0.5)};
+        const float box[4] = {float(w*(crop.left+1.0-crop.right)*0.5),
+            float(h*(crop.top+1.0-crop.bottom)*0.5), float(croppedW*0.5),float(croppedH*0.5)};
         const float edge[4] = {float(clip.edgeRounding*shortSide*0.5),float(clip.edgeSoftness*shortSide*0.5),float(w),float(h)};
         pl_shader_var variables[2]{};
         variables[0] = {pl_var_vec4("crop_box"),box,true};
@@ -372,13 +375,14 @@ struct CompositionRenderer::Impl {
     }
     bool geometryBlend(const VulkanImageRef& backdrop, VulkanImageResource& target,
                        const RenderedFrame& input, const Clip& clip,
+                       const SampledClipAppearance& appearance,
                        double sar, double opacity, BlendMode mode) {
-        const auto& t = clip.transform;
+        const auto& t = appearance.transform;
         const double canvasW = backdrop.extent.width, canvasH = backdrop.extent.height;
         const double sourceW = input.image().extent.width, sourceH = input.image().extent.height;
         VulkanBlendParameters parameters;
         parameters.mode = mode; parameters.opacity = float(opacity);
-        const bool identity = t == Transform{} && clip.crop == Crop{}
+        const bool identity = t == Transform{} && appearance.crop == Crop{}
             && clip.edgeRounding == 0.0 && clip.edgeSoftness == 0.0;
         if (identity && sourceW == canvasW && sourceH == canvasH && sar == 1.0) {
             blendPass->execute(backdrop,input.image(),target.ref(),parameters);
@@ -414,7 +418,7 @@ struct CompositionRenderer::Impl {
             coordinate(0.5-(c*centerX+s*centerY)*sx),0};
         const float rowY[4] = {coordinate(-s*canvasW*sy),coordinate(c*canvasH*sy),
             coordinate(0.5-(-s*centerX+c*centerY)*sy),0};
-        auto prepared = maskedPremultiplied(input,clip);
+        auto prepared = maskedPremultiplied(input,clip,appearance.crop);
         // Downscale in source axes, before rotation. No canvas-sized or
         // unbounded transformed allocation: each axis is <= native resolution.
         const VkExtent2D filtered{static_cast<uint32_t>(std::clamp(std::ceil(width),1.0,sourceW)),
@@ -474,6 +478,7 @@ void CompositionRenderer::shutdown() {
     if (!impl_ || !impl_->gpu) return; impl_->check(); pl_gpu_finish(impl_->gpu); synchronizedQueueWaitIdle(impl_->context.queue);
     for (auto& lut : impl_->geometryFilterLut) pl_shader_obj_destroy(&lut);
     impl_->blendCanvas = {}; impl_->blendPass.reset();
+    impl_->appearanceTracks.clear(); impl_->appearancePlan.reset();
     impl_->reportedColorPaths.clear(); impl_->gradeGraphs.clear(); pl_dispatch_destroy(&impl_->compositor); impl_->graph.reset(); impl_->interops.clear(); impl_->colorPipeline.reset(); impl_->software.reset(); impl_->placement.reset(); impl_->gpu = nullptr; impl_->vulkan = nullptr; impl_->owner = {};
 }
 RenderedFrame CompositionRenderer::render(const CompositionPlan& plan, int64_t frame, const std::vector<CompositionVideoLayer>& layers, std::string* error) {
@@ -518,30 +523,53 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
             }
             layers.push_back(std::move(layer));
         }
-        // Validate the plan before active-sample, hidden, blank or opacity
-        // filtering. Preview must never silently interpret an unknown mode as
-        // Normal. Source preview deliberately ignores timeline blend metadata.
-        if (request.plan && !request.sourceMode) {
-            for (const auto& track : request.plan->tracks) for (const auto& clip : track.clips) {
-                if (!parseBlendMode(clip.visualSnapshot.blendMode))
-                    throw std::runtime_error("Unsupported clip appearance blend mode: "
-                        + clip.visualSnapshot.blendMode.value_or("<unset>"));
+        // Validate every stored track before visibility or opacity filtering.
+        // Source preview deliberately ignores timeline appearance metadata.
+        require(!request.immutablePlan || request.immutablePlan.get() == request.plan,
+                "Immutable appearance plan does not match render plan");
+        const bool reuseAppearance = request.immutablePlan &&
+            impl_->appearancePlan == request.immutablePlan;
+        std::map<const CompositionClip*, PreparedClipAppearance> preparedAppearance;
+        if (request.plan && !request.sourceMode && !reuseAppearance) {
+            for (const auto& track : request.plan->tracks) {
+                if (track.type != ClipType::Video) continue;
+                for (const auto& clip : track.clips) {
+                    if (!parseBlendMode(clip.visualSnapshot.blendMode))
+                        throw std::runtime_error("Unsupported clip appearance blend mode: "
+                            + clip.visualSnapshot.blendMode.value_or("<unset>"));
+                    std::string appearanceError;
+                    if (!prepareClipAppearance(clip.visualSnapshot, preparedAppearance[&clip], &appearanceError))
+                        throw std::runtime_error("Invalid clip appearance: " + clip.id + ": " + appearanceError);
+                }
             }
         }
-        struct Contribution { CompositionVideoLayer layer; const CompositionClip* clip; BlendMode mode; };
+        if (request.immutablePlan && !request.sourceMode && !reuseAppearance) {
+            impl_->appearanceTracks = std::move(preparedAppearance);
+            impl_->appearancePlan = request.immutablePlan;
+        }
+        const auto& appearanceTracks = request.immutablePlan
+            ? impl_->appearanceTracks : preparedAppearance;
+        struct Contribution {
+            CompositionVideoLayer layer;
+            const CompositionClip* clip;
+            BlendMode mode;
+            SampledClipAppearance appearance;
+        };
         std::vector<Contribution> contributions;
         const auto active = request.plan ? request.plan->videoSamplesAt(request.targetFrame) : std::vector<CompositionSample>{};
         if (!request.blank) for (auto layer : layers) {
             if (!layer.frame) continue;
-            require(std::isfinite(layer.opacity), "Layer opacity must be finite");
-            layer.opacity = std::clamp(layer.opacity,0.0,1.0);
-            if (layer.opacity == 0.0) continue;
             const CompositionClip* clip = nullptr;
+            int64_t localFrame = layer.clipLocalFrame;
             if (request.plan && !request.sourceMode) {
                 for (const auto& sample : active) {
                     const auto& track = request.plan->tracks[sample.trackIndex];
                     const auto& candidate = track.clips[sample.clipIndex];
-                    if (!track.hidden && !sample.hidden && track.id == layer.trackId && candidate.id == layer.clipId) { clip = &candidate; break; }
+                    if (!track.hidden && !sample.hidden && track.id == layer.trackId && candidate.id == layer.clipId) {
+                        clip = &candidate;
+                        localFrame = sample.clipLocalFrame;
+                        break;
+                    }
                 }
                 if (!clip) continue; // hidden, inactive or stale packet contribution
             }
@@ -550,22 +578,26 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
                     for (const auto& candidate : track.clips)
                         if (candidate.id == layer.clipId) { clip = &candidate; break; }
             }
+            SampledClipAppearance appearance;
             if (clip && !request.sourceMode) {
-                std::string geometryError;
-                const bool validGeometry = validateConstantGeometry(clip->visualSnapshot,&geometryError);
-                require(validGeometry,geometryError.empty() ? "Invalid constant geometry" : geometryError.c_str());
+                std::string appearanceError;
+                const bool sampled = appearanceTracks.at(clip).sample(localFrame,appearance,&appearanceError);
+                require(sampled,appearanceError.empty() ? "Invalid clip appearance" : appearanceError.c_str());
+                if (clip->visualSnapshot.opacityTrack) layer.opacity = appearance.opacity;
+                require(std::isfinite(layer.opacity), "Layer opacity must be finite");
+                layer.opacity = std::clamp(layer.opacity,0.0,1.0);
                 if (request.strict) {
-                    const auto& appearance = clip->visualSnapshot;
                     require(appearance.transform.rotationX == 0.0 && appearance.transform.rotationY == 0.0,
                             "Unsupported 3D clip rotation");
-                    require(!appearance.opacityTrack && !appearance.positionTrack && !appearance.scaleTrack
-                            && !appearance.rotationTrack && !appearance.cropTrack,
-                            "Unsupported animated clip geometry or opacity");
                 }
+            } else {
+                require(std::isfinite(layer.opacity), "Layer opacity must be finite");
+                layer.opacity = std::clamp(layer.opacity,0.0,1.0);
             }
+            if (layer.opacity == 0.0) continue;
             const auto mode = clip && !request.sourceMode
                 ? *parseBlendMode(clip->visualSnapshot.blendMode) : BlendMode::Normal;
-            contributions.push_back({std::move(layer),clip,mode});
+            contributions.push_back({std::move(layer),clip,mode,appearance});
         }
         if (request.plan && !request.sourceMode) {
             const auto rank = [&](const Contribution& contribution) {
@@ -695,10 +727,11 @@ RenderedFrame CompositionRenderer::render(const CompositionRenderRequest& reques
                 const auto* av = it->layer.frame->get();
                 const double sar = av->sample_aspect_ratio.num > 0 && av->sample_aspect_ratio.den > 0
                     ? av_q2d(av->sample_aspect_ratio) : 1.0;
-                const Clip appearance = !request.sourceMode && it->clip ? it->clip->visualSnapshot : Clip{};
+                const Clip neutral;
+                const Clip& appearance = !request.sourceMode && it->clip ? it->clip->visualSnapshot : neutral;
                 const size_t nextCanvas = 1-currentCanvas;
                 if (impl_->geometryBlend(impl_->blendCanvas[currentCanvas]->ref(),
-                        *impl_->blendCanvas[nextCanvas],layer,appearance,sar,it->layer.opacity,it->mode))
+                        *impl_->blendCanvas[nextCanvas],layer,appearance,it->appearance,sar,it->layer.opacity,it->mode))
                     currentCanvas = nextCanvas;
             }
         }

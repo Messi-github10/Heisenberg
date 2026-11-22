@@ -145,6 +145,30 @@ TEST(CompositionExecutorTest, DirectPlansRejectUnknownBlendEvenOnInactiveTracksA
     }
 }
 
+TEST(CompositionExecutorTest, AppearanceTracksValidateAllKeysBeforeVisibilityOrPlayback) {
+    for (const auto policy : {CompositionErrorPolicy::Strict, CompositionErrorPolicy::Preview}) {
+        for (int state : {0, 1, 2}) {
+            CompositionPlan plan; plan.frameCount = 12;
+            CompositionClip clip; clip.id = "animated"; clip.startFrame = 3; clip.durationFrames = 9;
+            clip.visualSnapshot.opacity = 0.0;
+            clip.visualSnapshot.opacityTrack = KeyframeTrackPayload{JsonValue::parse(
+                R"({"keyframes":[{"frame":0,"value":0.0,"interpolationOut":"smooth"},{"frame":8,"value":1.0}]})")};
+            auto& video = track(plan, ClipType::Video);
+            video.hidden = state == 1; video.muted = state == 2;
+            video.clips = {clip};
+            CompositionExecutor executor;
+            auto opened = executor.open(plan, {false, policy});
+            ASSERT_TRUE(opened) << opened.error;
+            video.clips.front().visualSnapshot.opacityTrack->value["keyframes"][1]["value"] = 2.0;
+            opened = executor.open(plan, {false, policy});
+            EXPECT_EQ(opened.status, CompositionStatus::Failure);
+            EXPECT_NE(opened.error.find("animated"), std::string::npos);
+            EXPECT_NE(opened.error.find("opacityTrack"), std::string::npos);
+            EXPECT_TRUE(executor.plan().tracks.empty());
+        }
+    }
+}
+
 TEST(CompositionExecutorTest, IndependentInstancesAreSynchronousWithoutDeviceOrWindow) {
     static_assert(std::is_same_v<DecodedFrame, CompositionVideoSample>);
     Wave wave;

@@ -15,6 +15,8 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
+#include <utility>
 #include <vector>
 
 extern "C" {
@@ -714,6 +716,209 @@ TEST(ExportEngineTest, PlanarGeometrySurvivesReopenAndOwnedSnapshotThenFullyDeco
     }
 }
 
+TEST(ExportEngineTest, FiveAppearanceTracksSurviveReopenImmutableSnapshotAndBothEncoders) {
+    namespace color = heisenberg::renderer::color;
+    color::ColorPipeline pipeline;
+    const auto toOutput = pipeline.displayProcessor(color::kWorkingSpace,color::kExportDisplay,color::kColorimetricView);
+    // Decode the static gray fixture, then independently unpack limited BT.709.
+    // OCIO below supplies only the output transform, never animation or geometry.
+    CompositionExecutor decoder;
+    const auto opened = decoder.openSource(HEISENBERG_TEST_SDR_GRAY,{false,CompositionErrorPolicy::Strict});
+    ASSERT_TRUE(opened) << opened.error;
+    const auto decodedSource = decoder.videoFrame(0); ASSERT_TRUE(decodedSource) << decodedSource.error;
+    ASSERT_TRUE(decodedSource.value.source);
+    const AVFrame* input = decodedSource.value.source->get(); ASSERT_NE(input,nullptr);
+    ASSERT_EQ(input->format,AV_PIX_FMT_YUV420P);
+    ASSERT_EQ(input->width,160); ASSERT_EQ(input->height,120);
+    ASSERT_EQ(input->colorspace,AVCOL_SPC_BT709);
+    ASSERT_EQ(input->color_range,AVCOL_RANGE_MPEG);
+    using Rgba=std::array<double,4>;
+    std::vector<Rgba> sourceRgb(160*120);
+    for (int y=0;y<120;++y) for (int x=0;x<160;++x) {
+        const double luma=(input->data[0][y*input->linesize[0]+x]-16.0)/219;
+        const double cb=(input->data[1][y/2*input->linesize[1]+x/2]-128.0)/224;
+        const double cr=(input->data[2][y/2*input->linesize[2]+x/2]-128.0)/224;
+        sourceRgb[y*160+x]={luma+1.5748*cr,luma-(0.0722*1.8556/0.7152)*cb-(0.2126*1.5748/0.7152)*cr,luma+1.8556*cb,1};
+    }
+    // Independent, normalized Lanczos-3 convolution of premultiplied source
+    // texels. Shrinking widens the kernel in source coordinates. Edge extension
+    // belongs to this prefilter; the final affine reconstruction has zero borders.
+    // No renderer, libplacebo filter LUT or appearance sampler supplies the oracle.
+    const auto shrink=[](const std::vector<Rgba>& pixels,int w,int h,int outputSize,bool horizontal) {
+        const int inputSize=horizontal ? w : h;
+        const int outputW=horizontal ? outputSize : w,outputH=horizontal ? h : outputSize;
+        std::vector<Rgba> result(outputW*outputH);
+        const double scale=double(inputSize)/outputSize;
+        const auto sinc=[](double x) {
+            if (std::abs(x)<1e-12) return 1.0;
+            const double angle=3.14159265358979323846*x;
+            return std::sin(angle)/angle;
+        };
+        for (int out=0;out<outputSize;++out) {
+            const double center=(out+0.5)*scale-0.5;
+            std::vector<std::pair<int,double>> taps;
+            double total=0;
+            for (int tap=int(std::ceil(center-3*scale));tap<=int(std::floor(center+3*scale));++tap) {
+                const double d=(tap-center)/scale;
+                const double weight=std::abs(d)<3 ? sinc(d)*sinc(d/3) : 0;
+                taps.emplace_back(std::clamp(tap,0,inputSize-1),weight); total+=weight;
+            }
+            for (int other=0;other<(horizontal ? h : w);++other) {
+                auto& pixel=result[horizontal ? other*outputW+out : out*outputW+other];
+                for (const auto& [tap,weight] : taps) {
+                    const auto& sample=pixels[horizontal ? other*w+tap : tap*w+other];
+                    for (int c=0;c<4;++c) pixel[c]+=sample[c]*weight/total;
+                }
+            }
+        }
+        return result;
+    };
+    for (const std::string interpolation : {"linear","hold","smooth"}) {
+        OutputFolder folder;
+        const auto keys = [&](JsonValue a,JsonValue b,JsonValue c) {
+            return KeyframeTrackPayload{JsonValue{{"keyframes",JsonValue::array({
+                JsonValue{{"frame",2},{"value",a},{"interpolationOut",interpolation}},
+                JsonValue{{"frame",10},{"value",b},{"interpolationOut",interpolation}},
+                JsonValue{{"frame",14},{"value",c}}})}}};
+        };
+        Clip shape; shape.id="animated"; shape.mediaRef="gray";
+        shape.startFrame=2; shape.durationFrames=16; shape.trimStartFrame=1; shape.trimEndFrame=1; shape.speed=0.25;
+        shape.opacity=0; shape.transform.centerX=0.1; shape.transform.centerY=0.9;
+        shape.transform.width=1.8; shape.transform.height=1.6; shape.transform.rotation=-123;
+        shape.transform.flipHorizontal=true; shape.edgeRounding=0.4; shape.edgeSoftness=0.3;
+        shape.opacityTrack=keys(0.0,0.9,0.45);
+        shape.positionTrack=keys(JsonValue{{"a",0.4},{"b",0.45}},JsonValue{{"a",0.6},{"b",0.55}},JsonValue{{"a",0.45},{"b",0.4}});
+        shape.scaleTrack=keys(JsonValue{{"a",0.7},{"b",0.9}},JsonValue{{"a",1.1},{"b",0.7}},JsonValue{{"a",0.85},{"b",1.05}});
+        shape.rotationTrack=keys(350.0,10.0,-50.0);
+        shape.cropTrack=keys(JsonValue{{"left",0.05},{"top",0.1},{"right",0.2},{"bottom",0.05}},
+            JsonValue{{"left",0.2},{"top",0.05},{"right",0.05},{"bottom",0.2}},
+            JsonValue{{"left",0.1},{"top",0.2},{"right",0.15},{"bottom",0.1}});
+        ProjectFile document;
+        Timeline timeline; timeline.id="appearance-animation"; timeline.width=160; timeline.height=120; timeline.fps=24;
+        Track track; track.id="video"; track.muted=true; track.clips.push_back(shape);
+        timeline.tracks.push_back(track); document.timelines.push_back(timeline); document.activeTimelineId=timeline.id;
+        document.colorSettings.inputColorSpaces["gray"]="ACEScg";
+        document.colorSettings.exportOutput={color::kExportDisplay,color::kColorimetricView};
+        MediaManifest manifest; MediaManifestEntry media; media.id="gray"; media.duration=0.25;
+        media.source.path=HEISENBERG_TEST_SDR_GRAY; ASSERT_TRUE(manifest.add(media));
+        VideoProject project; std::string error;
+        ASSERT_TRUE(project.editor().replaceDocument(document,manifest,"",&error)) << error;
+        EXPECT_EQ(project.editor().compatibility().level,CompatibilityLevel::Supported);
+        const auto saved=project.snapshot();
+        const auto package=folder.root/"animation.berg";
+        ASSERT_TRUE(project.savePackage(utf8(package),&error)) << error;
+        VideoProject reopened; ASSERT_TRUE(reopened.loadPackage(utf8(package),&error)) << error;
+        const auto owned=reopened.snapshot();
+        EXPECT_EQ(owned.project(),saved.project()); EXPECT_EQ(owned.manifest(),saved.manifest());
+        ASSERT_NE(owned.activeTimeline(),nullptr);
+        EXPECT_EQ(owned.activeTimeline()->tracks.front().clips.front(),shape);
+        CompositionPlan plan; ASSERT_TRUE(CompositionBuilder::build(owned,plan,&error)) << error;
+        EXPECT_EQ(plan.frameCount,18);
+        for (int f=0;f<18;++f) {
+            const auto sample=plan.videoSampleAt(f);
+            if (f<2) { EXPECT_FALSE(sample); continue; }
+            ASSERT_TRUE(sample); EXPECT_EQ(sample->clipLocalFrame,f-2);
+            EXPECT_NEAR(sample->sourceSeconds,(1+(f-2)*0.25)/24.0,1e-9);
+        }
+        auto changed=owned.project();
+        auto& edit=changed.timelines.front().tracks.front().clips.front();
+        edit.opacityTrack.reset(); edit.positionTrack.reset(); edit.scaleTrack.reset();
+        edit.rotationTrack.reset(); edit.cropTrack.reset(); edit.opacity=0; edit.transform={};
+        ASSERT_TRUE(reopened.editor().replaceDocument(changed,owned.manifest(),owned.projectDir(),&error)) << error;
+        changed.timelines.clear(); // Neither editor nor caller can mutate the export capture.
+        EXPECT_EQ(owned.activeTimeline()->tracks.front().clips.front(),shape);
+        for (const auto codec : {ExportVideoCodec::H264,ExportVideoCodec::H265}) {
+            SCOPED_TRACE(interpolation+(codec==ExportVideoCodec::H264 ? " H264" : " H265"));
+            ExportRequest request; request.snapshot=owned; request.outputPath=utf8(folder.output());
+            request.overwrite=true; request.hardwareDecode=false; request.videoCodec=codec; request.crf=0;
+            ExportEngine engine; ASSERT_TRUE(engine.start(request,&error)) << error; engine.wait();
+            ASSERT_TRUE(engine.result().succeeded()) << engine.result().stage << ": " << engine.result().error;
+            EXPECT_TRUE(engine.result().warnings.empty());
+            const auto decoded=readback(folder.output(),codec==ExportVideoCodec::H264 ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC,18);
+            ASSERT_EQ(decoded.luma.size(),18u); ASSERT_EQ(decoded.videoTimes.size(),18u);
+            EXPECT_EQ(engine.progress().completedFrames,18); EXPECT_EQ(engine.progress().completedSamples,36000);
+            int interior=0,feather=0,outside=0;
+            for (int f=0;f<18;++f) {
+                EXPECT_NEAR(decoded.videoTimes[f],f/24.0,1e-6);
+                // Independent fixed endpoint/time oracle: clip-local timeline
+                // frames exclude trim and speed. Hold jumps at the right key.
+                const int local=f-2; const bool second=local>=10;
+                double t=std::clamp((local-(second ? 10.0 : 2.0))/(second ? 4.0 : 8.0),0.0,1.0);
+                if (interpolation=="hold" && t<1) t=0;
+                if (interpolation=="smooth") t=t*t*(3-2*t);
+                const auto mix=[&](double a,double b,double c) { return second ? b+(c-b)*t : a+(b-a)*t; };
+                const double opacity=mix(0,0.9,0.45),cx=160*mix(0.4,0.6,0.45),cy=120*mix(0.45,0.55,0.4);
+                const double width=mix(0.7,1.1,0.85),height=mix(0.9,0.7,1.05);
+                const double angle=mix(350,10,-50)*3.14159265358979323846/180;
+                const double left=160*mix(0.05,0.2,0.1),right=160*(1-mix(0.2,0.05,0.15));
+                const double top=120*mix(0.1,0.05,0.2),bottom=120*(1-mix(0.05,0.2,0.1));
+                const double shortSide=std::min(right-left,bottom-top),radius=0.4*shortSide/2,softness=0.3*shortSide/2;
+                auto premultiplied=sourceRgb;
+                for (int sy=0;sy<120;++sy) for (int sx=0;sx<160;++sx) {
+                    const double qx=std::abs(sx+0.5-(left+right)/2)-(right-left)/2+radius;
+                    const double qy=std::abs(sy+0.5-(top+bottom)/2)-(bottom-top)/2+radius;
+                    const double distance=std::hypot(std::max(qx,0.0),std::max(qy,0.0))+std::min(std::max(qx,qy),0.0)-radius;
+                    const double maskT=std::clamp((distance+0.5+softness)/(1+softness),0.0,1.0);
+                    const double coverage=1-maskT*maskT*(3-2*maskT);
+                    auto& pixel=premultiplied[sy*160+sx];
+                    for (auto& channel : pixel) channel*=coverage;
+                }
+                const int filteredW=std::clamp(int(std::ceil(160*width)),1,160);
+                const int filteredH=std::clamp(int(std::ceil(120*height)),1,120);
+                if (filteredW<160) premultiplied=shrink(premultiplied,160,120,filteredW,true);
+                if (filteredH<120) premultiplied=shrink(premultiplied,filteredW,120,filteredH,false);
+                const auto expectedPixel=[&](int x,int y,double* amount=nullptr) {
+                    const double dx=x+0.5-cx,dy=y+0.5-cy;
+                    const double u=0.5-(std::cos(angle)*dx+std::sin(angle)*dy)/(160*width);
+                    const double v=0.5+(-std::sin(angle)*dx+std::cos(angle)*dy)/(120*height);
+                    // Half-texel coordinates in the FILTERED source, followed by
+                    // a zero-border bilinear reconstruction of premultiplied RGBA.
+                    const double sx=u*filteredW-0.5,sy=v*filteredH-0.5;
+                    Rgba sample{};
+                    if (sx>-1 && sy>-1 && sx<filteredW && sy<filteredH) {
+                        const int ix=int(std::floor(sx)),iy=int(std::floor(sy));
+                        const double fx=sx-ix,fy=sy-iy;
+                        for (int j=0;j<2;++j) for (int i=0;i<2;++i) {
+                            const int xx=ix+i,yy=iy+j;
+                            if (xx<0 || yy<0 || xx>=filteredW || yy>=filteredH) continue;
+                            const double weight=(i ? fx : 1-fx)*(j ? fy : 1-fy);
+                            const auto& tap=premultiplied[yy*filteredW+xx];
+                            for (int c=0;c<4;++c) sample[c]+=tap[c]*weight;
+                        }
+                    }
+                    const double alpha=f<2 ? 0 : opacity*std::clamp(sample[3],0.0,1.0);
+                    if (amount) *amount=alpha;
+                    float expected[4]{0,0,0,1};
+                    if (alpha>0) for (int c=0;c<3;++c)
+                        expected[c]=static_cast<float>(sample[c]/sample[3]*alpha);
+                    // Transform EACH output pixel before averaging encoded luma.
+                    // Averaging alpha/RGB first is wrong at soft edges because
+                    // the display transfer is nonlinear, particularly near black.
+                    toOutput.applyRGBA(expected,1);
+                    return 16+219*(0.2126*std::clamp(expected[0],0.0f,1.0f)
+                        +0.7152*std::clamp(expected[1],0.0f,1.0f)+0.0722*std::clamp(expected[2],0.0f,1.0f));
+                };
+                for (int y=5;y<115;y+=4) for (int x=5;x<155;x+=4) {
+                    double alpha=0;
+                    expectedPixel(x,y,&alpha);
+                    if (alpha>0.7) ++interior;
+                    else if (alpha>0.1 && alpha<0.6) ++feather;
+                    else if (alpha==0) ++outside;
+                    double luma=0;
+                    for (int dy=-1;dy<=1;++dy) for (int dx=-1;dx<=1;++dx)
+                        luma+=expectedPixel(x+dx,y+dy)/9;
+                    EXPECT_NEAR(geometryPatch(decoded.luma[f],x,y),luma,8.0) << "frame=" << f << " pixel=" << x << ',' << y;
+                }
+            }
+            EXPECT_GT(interior,20); EXPECT_GT(feather,20); EXPECT_GT(outside,100);
+            EXPECT_NEAR(decoded.brightness[2],16,2);
+            EXPECT_GT(decoded.brightness[12],decoded.brightness[2]+10); // Actual fade-in from a zero constant.
+            EXPECT_GT(std::abs(decoded.brightness[16]-decoded.brightness[12]),1);
+            EXPECT_TRUE(folder.noStaging());
+        }
+    }
+}
+
 TEST(ExportEngineTest, NonSquareSourceKeepsDefaultAspectFitAndScalesFromFittedDimensions) {
     // Existing 160x90 source fits a 160x120 canvas at y=[15,105].
     // Halving each size must produce 80x45, rather than 80x60.
@@ -760,28 +965,23 @@ TEST(ExportEngineTest, NonSquareSourceKeepsDefaultAspectFitAndScalesFromFittedDi
     }
 }
 
-TEST(ExportEngineTest, GeometryPreflightRejectsInvalidConstantsPerspectiveAndAutomationBeforeOutputAccess) {
+TEST(ExportEngineTest, GeometryPreflightRejectsInvalidConstantsAndPerspectiveBeforeOutputAccess) {
     struct Case {
         const char* name;
         std::function<void(Clip&)> apply;
         const char* diagnostic;
     };
     const std::vector<Case> cases{
-        {"zero width", [](Clip& c) { c.transform.width = 0; }, "Invalid constant clip geometry"},
-        {"negative height", [](Clip& c) { c.transform.height = -1; }, "Invalid constant clip geometry"},
-        {"negative crop", [](Clip& c) { c.crop.left = -0.1; }, "Invalid constant clip geometry"},
-        {"crop above one", [](Clip& c) { c.crop.bottom = 1.1; }, "Invalid constant clip geometry"},
-        {"empty crop x", [](Clip& c) { c.crop.left = c.crop.right = 0.5; }, "Invalid constant clip geometry"},
-        {"empty crop y", [](Clip& c) { c.crop.top = 0.7; c.crop.bottom = 0.4; }, "Invalid constant clip geometry"},
-        {"negative rounding", [](Clip& c) { c.edgeRounding = -0.1; }, "Invalid constant clip geometry"},
-        {"excess softness", [](Clip& c) { c.edgeSoftness = 1.1; }, "Invalid constant clip geometry"},
+        {"zero width", [](Clip& c) { c.transform.width = 0; }, "Invalid clip appearance"},
+        {"negative height", [](Clip& c) { c.transform.height = -1; }, "Invalid clip appearance"},
+        {"negative crop", [](Clip& c) { c.crop.left = -0.1; }, "Invalid clip appearance"},
+        {"crop above one", [](Clip& c) { c.crop.bottom = 1.1; }, "Invalid clip appearance"},
+        {"empty crop x", [](Clip& c) { c.crop.left = c.crop.right = 0.5; }, "Invalid clip appearance"},
+        {"empty crop y", [](Clip& c) { c.crop.top = 0.7; c.crop.bottom = 0.4; }, "Invalid clip appearance"},
+        {"negative rounding", [](Clip& c) { c.edgeRounding = -0.1; }, "Invalid clip appearance"},
+        {"excess softness", [](Clip& c) { c.edgeSoftness = 1.1; }, "Invalid clip appearance"},
         {"perspective x", [](Clip& c) { c.transform.rotationX = 1; }, "Unsupported clip perspective rotation"},
         {"perspective y", [](Clip& c) { c.transform.rotationY = -1; }, "Unsupported clip perspective rotation"},
-        {"opacity track", [](Clip& c) { c.opacityTrack.emplace(); }, "Unsupported clip appearance"},
-        {"position track", [](Clip& c) { c.positionTrack.emplace(); }, "Unsupported clip appearance"},
-        {"scale track", [](Clip& c) { c.scaleTrack.emplace(); }, "Unsupported clip appearance"},
-        {"rotation track", [](Clip& c) { c.rotationTrack.emplace(); }, "Unsupported clip appearance"},
-        {"crop track", [](Clip& c) { c.cropTrack.emplace(); }, "Unsupported clip appearance"},
         {"blend", [](Clip& c) { c.blendMode = "unknown"; }, "Unsupported clip blend mode"},
     };
     OutputFolder folder;
@@ -813,6 +1013,74 @@ TEST(ExportEngineTest, GeometryPreflightRejectsInvalidConstantsPerspectiveAndAut
             EXPECT_TRUE(folder.noStaging());
         }
     }
+}
+
+TEST(ExportEngineTest, InvalidAndFutureAppearanceTracksRemainSaveableButFailBeforeOutputAccess) {
+    using TrackMember=std::optional<KeyframeTrackPayload> Clip::*;
+    const std::array<TrackMember,5> members{&Clip::opacityTrack,&Clip::positionTrack,&Clip::scaleTrack,&Clip::rotationTrack,&Clip::cropTrack};
+    OutputFolder folder;
+    { std::ofstream output(folder.output(),std::ios::binary); output << "keep-animation-target"; }
+    const auto modified=fs::last_write_time(folder.output());
+    const auto initial=snapshot(2,true,false);
+    for (size_t index=0;index<members.size();++index) {
+        JsonValue value=0.5;
+        if (index==1 || index==2) value=JsonValue{{"a",0.5},{"b",0.75}};
+        if (index==4) value=JsonValue{{"left",0.1},{"top",0.05},{"right",0.2},{"bottom",0.15}};
+        const JsonValue valid{{"keyframes",JsonValue::array({JsonValue{{"frame",0},{"value",value}},
+            JsonValue{{"frame",20},{"value",value}}})}};
+        std::vector<JsonValue> payloads{JsonValue::object(),JsonValue{{"futureVersion",99},{"curve","opaque"}}};
+        auto future=valid; future["keyframes"][1]["interpolationOut"]="bezier"; payloads.push_back(future);
+        auto bad=valid;
+        if (index==0) bad["keyframes"][1]["value"]=-0.1;
+        if (index==1) bad["keyframes"][1]["value"].erase("b");
+        if (index==2) bad["keyframes"][1]["value"]["a"]=-1;
+        if (index==3) bad["keyframes"][1]["value"]="angle";
+        if (index==4) bad["keyframes"][1]["value"]["bottom"]=1.1;
+        payloads.push_back(bad);
+        for (size_t payload=0;payload<payloads.size();++payload) for (const int state : {0,1,2,3,4}) {
+            SCOPED_TRACE(testing::Message() << "track=" << index << " payload=" << payload << " state=" << state);
+            auto document=initial.project(); auto& track=document.timelines.front().tracks.front();
+            auto& clip=track.clips.front(); clip.*members[index]=KeyframeTrackPayload{payloads[payload]};
+            track.hidden=state==1; track.muted=state==4;
+            clip.opacity=state==2 ? 0 : 1;
+            if (state==3) clip.startFrame=8; // Export starts with a blank/inactive interval.
+            VideoProject project; std::string error;
+            ASSERT_TRUE(project.editor().replaceDocument(document,initial.manifest(),"",&error)) << error;
+            EXPECT_EQ(project.editor().compatibility().level,CompatibilityLevel::Warning);
+            const auto package=folder.root/("unknown-"+std::to_string(index)+"-"+std::to_string(payload)+"-"+std::to_string(state)+".berg");
+            ASSERT_TRUE(project.savePackage(utf8(package),&error)) << error;
+            VideoProject reopened; ASSERT_TRUE(reopened.loadPackage(utf8(package),&error)) << error;
+            const auto owned=reopened.snapshot();
+            ASSERT_NE(owned.activeTimeline(),nullptr);
+            EXPECT_EQ((owned.activeTimeline()->tracks.front().clips.front().*members[index])->value,payloads[payload]);
+            for (const auto& target : {folder.output(),folder.root/"absent"/"output.mp4"}) {
+                ExportRequest request; request.snapshot=owned; request.outputPath=utf8(target); request.overwrite=true;
+                ExportEngine engine; ASSERT_TRUE(engine.start(request,&error)) << error; engine.wait();
+                EXPECT_EQ(engine.result().state,ExportState::Failed); EXPECT_EQ(engine.result().stage,"prepare");
+                EXPECT_NE(engine.result().error.find("picture"),std::string::npos) << engine.result().error;
+                EXPECT_FALSE(engine.result().error.empty()); EXPECT_EQ(engine.progress().completedFrames,0);
+                EXPECT_EQ(contents(folder.output()),"keep-animation-target");
+                EXPECT_EQ(fs::last_write_time(folder.output()),modified);
+                EXPECT_FALSE(fs::exists(folder.root/"absent")); EXPECT_TRUE(folder.noStaging());
+            }
+        }
+    }
+}
+
+TEST(ExportEngineTest, EmptyAppearanceTracksPassPreflightUsingConstants) {
+    const auto initial=snapshot(2,true,false);
+    auto document=initial.project(); auto& clip=document.timelines.front().tracks.front().clips.front();
+    const KeyframeTrackPayload empty{JsonValue{{"keyframes",JsonValue::array()}}};
+    clip.opacityTrack=clip.positionTrack=clip.scaleTrack=clip.rotationTrack=clip.cropTrack=empty;
+    VideoProject project; std::string error;
+    ASSERT_TRUE(project.editor().replaceDocument(document,initial.manifest(),"",&error)) << error;
+    EXPECT_EQ(project.editor().compatibility().level,CompatibilityLevel::Supported);
+    OutputFolder folder; ExportRequest request; request.snapshot=project.snapshot();
+    request.outputPath=utf8(folder.root/"absent"/"output.mp4");
+    ExportEngine engine; ASSERT_TRUE(engine.start(request,&error)) << error; engine.wait();
+    EXPECT_EQ(engine.result().state,ExportState::Failed);
+    EXPECT_EQ(engine.result().error,"Output directory does not exist");
+    EXPECT_FALSE(fs::exists(folder.root/"absent")); EXPECT_TRUE(folder.noStaging());
 }
 
 TEST(ExportEngineTest, RefusesOverwriteAndInvalidSizeWithoutTouchingExistingTarget) {

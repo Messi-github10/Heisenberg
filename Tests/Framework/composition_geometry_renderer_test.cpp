@@ -12,6 +12,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -117,6 +118,79 @@ Pixel reference(const Pattern& source,const Clip& clip,int w,int h,int x,int y) 
     return result;
 }
 
+using AppearanceTrack = std::optional<KeyframeTrackPayload> Clip::*;
+const std::array<AppearanceTrack,5> appearanceTracks{
+    &Clip::opacityTrack, &Clip::positionTrack, &Clip::scaleTrack,
+    &Clip::rotationTrack, &Clip::cropTrack};
+
+KeyframeTrackPayload appearanceKeys(const JsonValue& first,const JsonValue& middle,
+                                    const JsonValue& last,const std::string& interpolation) {
+    return {JsonValue{{"keyframes",JsonValue::array({
+        JsonValue{{"frame",2},{"value",first},{"interpolationOut",interpolation}},
+        JsonValue{{"frame",10},{"value",middle},{"interpolationOut",interpolation}},
+        JsonValue{{"frame",18},{"value",last}}})}}};
+}
+
+Clip animatedAppearance(const std::string& interpolation) {
+    Clip clip;
+    // Every track replaces a deliberately different constant. In particular,
+    // zero base opacity must not cull an animated fade-in before sampling.
+    clip.opacity = 0;
+    clip.transform.centerX = 0.2; clip.transform.centerY = 0.8;
+    clip.transform.width = 1.7; clip.transform.height = 1.6;
+    clip.transform.rotation = -137; clip.transform.flipHorizontal = true;
+    clip.crop = {0.2,0.1,0.1,0.15};
+    clip.edgeRounding = 0.35; clip.edgeSoftness = 0.2;
+    clip.opacityTrack = appearanceKeys(0.0,0.8,0.35,interpolation);
+    clip.positionTrack = appearanceKeys(JsonValue{{"a",0.35},{"b",0.4}},
+        JsonValue{{"a",0.65},{"b",0.55}},JsonValue{{"a",0.45},{"b",0.65}},interpolation);
+    clip.scaleTrack = appearanceKeys(JsonValue{{"a",0.7},{"b",1.1}},
+        JsonValue{{"a",1.2},{"b",0.75}},JsonValue{{"a",0.85},{"b",1.15}},interpolation);
+    // 350 -> 10 is an absolute scalar angle, not a shortest-arc interpolation.
+    clip.rotationTrack = appearanceKeys(350.0,10.0,-55.0,interpolation);
+    clip.cropTrack = appearanceKeys(JsonValue{{"left",0.05},{"top",0.1},{"right",0.2},{"bottom",0.05}},
+        JsonValue{{"left",0.25},{"top",0.05},{"right",0.05},{"bottom",0.2}},
+        JsonValue{{"left",0.1},{"top",0.2},{"right",0.15},{"bottom",0.1}},interpolation);
+    return clip;
+}
+
+// A fixed, independently specified animation oracle. It neither parses tracks
+// nor calls the production appearance/Grade samplers. The endpoints clamp;
+// outgoing interpolation belongs to the left key, including exact Hold jumps.
+Clip appearanceReference(const Clip& animated,int64_t localFrame,const std::string& interpolation) {
+    const bool second = localFrame >= 10;
+    double t = std::clamp((localFrame-(second ? 10.0 : 2.0))/8.0,0.0,1.0);
+    if (interpolation == "hold" && t < 1) t = 0;
+    if (interpolation == "smooth") t = t*t*(3-2*t);
+    const auto mix = [&](double a,double b,double c) { return second ? b+(c-b)*t : a+(b-a)*t; };
+    Clip clip = animated;
+    if (clip.opacityTrack) clip.opacity = mix(0,0.8,0.35);
+    if (clip.positionTrack) {
+        clip.transform.centerX = mix(0.35,0.65,0.45);
+        clip.transform.centerY = mix(0.4,0.55,0.65);
+    }
+    if (clip.scaleTrack) {
+        clip.transform.width = mix(0.7,1.2,0.85);
+        clip.transform.height = mix(1.1,0.75,1.15);
+    }
+    if (clip.rotationTrack) clip.transform.rotation = mix(350,10,-55);
+    if (clip.cropTrack) clip.crop = {mix(0.05,0.25,0.1),mix(0.1,0.05,0.2),
+                                   mix(0.2,0.05,0.15),mix(0.05,0.2,0.1)};
+    for (const auto member : appearanceTracks) (clip.*member).reset();
+    return clip;
+}
+
+CompositionPlan animationPlan(const Clip& clip) {
+    auto plan = makePlan(96,80,clip);
+    auto& scheduled = plan.tracks.front().clips.front();
+    scheduled.startFrame = scheduled.visualSnapshot.startFrame = 7;
+    scheduled.trimStartFrame = scheduled.visualSnapshot.trimStartFrame = 11;
+    scheduled.trimEndFrame = scheduled.visualSnapshot.trimEndFrame = 3;
+    scheduled.speed = scheduled.visualSnapshot.speed = 1.75;
+    plan.frameCount = 31;
+    return plan;
+}
+
 class CompositionGeometryRendererTest : public testing::Test {
 protected:
     std::unique_ptr<GpuContext> gpu;
@@ -210,6 +284,8 @@ TEST_F(CompositionGeometryRendererTest, SourcePreviewIgnoresTimelineGeometryButR
     Clip clip; clip.crop = {0.25,0.2,0.3,0.1}; clip.edgeRounding = 0.8; clip.edgeSoftness = 0.5;
     clip.transform.centerX = -0.2; clip.transform.rotation = 67; clip.transform.width = 0.4;
     clip.opacity = 0.2;
+    const auto animated = animatedAppearance("smooth");
+    for (const auto member : appearanceTracks) clip.*member = animated.*member;
     clip.effects = JsonValue::parse(R"([{"type":"video.exposure","params":{"exposure":{"value":1}}}])");
     auto plan = makePlan(96,80,clip);
     CompositionRenderRequest request; request.plan = &plan; request.source = source.frame;
@@ -358,28 +434,239 @@ TEST_F(CompositionGeometryRendererTest, ExtremeFiniteTransformsCullOrDiagnoseWit
     EXPECT_NE(error.find("coordinate range"),std::string::npos);
 }
 
-TEST_F(CompositionGeometryRendererTest, StrictRenderingRejectsUnsupportedAppearanceTracksAndThreeDimensionalRotation) {
+TEST_F(CompositionGeometryRendererTest, FiveAppearanceTracksMatchIndependentPixelsAndLocalTimelineClock) {
     Pattern source(48,32,asymmetric); ASSERT_TRUE(source.frame);
-    std::vector<Clip> cases(8);
-    cases[0].transform.rotationX = 1;
-    cases[1].transform.rotationY = 1;
-    cases[2].positionTrack = KeyframeTrackPayload{};
-    cases[3].scaleTrack = KeyframeTrackPayload{};
-    cases[4].rotationTrack = KeyframeTrackPayload{};
-    cases[5].cropTrack = KeyframeTrackPayload{};
-    cases[6].opacityTrack = KeyframeTrackPayload{};
-    cases[7].blendMode = "unknown";
-    for (const auto& clip : cases) {
-        auto plan = makePlan(48,32,clip);
+    for (const std::string interpolation : {"linear","hold","smooth"}) {
+        // Exercise each track alone as well as their combined geometry/opacity.
+        for (size_t selected = 0; selected <= appearanceTracks.size(); ++selected) {
+            auto clip = animatedAppearance(interpolation);
+            if (selected < appearanceTracks.size()) {
+                for (size_t i=0;i<appearanceTracks.size();++i)
+                    if (i != selected) (clip.*appearanceTracks[i]).reset();
+                if (selected != 0) clip.opacity = 0.85;
+            }
+            auto plan = animationPlan(clip);
+            double firstEnergy = -1, maximumEnergy = 0;
+            for (const int localFrame : {0,2,4,6,9,10,12,17,18,22}) {
+                SCOPED_TRACE(testing::Message() << interpolation << " track=" << selected << " local=" << localFrame);
+                const auto expectedClip = appearanceReference(clip,localFrame,interpolation);
+                const auto samples = plan.videoSamplesAt(7+localFrame);
+                ASSERT_EQ(samples.size(),1u);
+                EXPECT_EQ(samples.front().clipLocalFrame,localFrame);
+                EXPECT_NEAR(samples.front().sourceSeconds,(11+localFrame*1.75)/24.0,1e-9);
+                std::shared_ptr<AVFrame> preview;
+                for (const bool strict : {false,true}) {
+                    CompositionRenderRequest request;
+                    request.plan = &plan; request.source = source.frame; request.clipId = "geometry";
+                    request.targetFrame = 7+localFrame; request.strict = strict;
+                    // Conflicting source-relative timing must not affect appearance.
+                    request.clipLocalFrame = 999;
+                    auto result = renderer->render(request,&error); ASSERT_TRUE(result) << error;
+                    EXPECT_EQ(result.position(),7+localFrame);
+                    auto image = renderer->download(result,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(image) << error;
+                    double energy = 0;
+                    for (int y=0;y<80;++y) for (int x=0;x<96;++x) {
+                        const auto expected = reference(source,expectedClip,96,80,x,y);
+                        const auto actual = pixel(*image,x,y);
+                        energy += actual[0];
+                        for (int c=0;c<4;++c)
+                            ASSERT_NEAR(actual[c],expected[c],0.006f) << x << ',' << y << ',' << c;
+                        if (strict) EXPECT_EQ(actual,pixel(*preview,x,y));
+                    }
+                    if (!strict) {
+                        preview = image;
+                        if (firstEnergy < 0) firstEnergy = energy;
+                        maximumEnergy = std::max(maximumEnergy,energy);
+                    }
+                }
+            }
+            if (selected == 0 || selected == appearanceTracks.size()) {
+                EXPECT_NEAR(firstEnergy,0,0.001);
+                EXPECT_GT(maximumEnergy,100); // The zero constant must not suppress the track's fade-in.
+            }
+        }
+    }
+}
+
+TEST_F(CompositionGeometryRendererTest, AnimatedPublishedWorkingAndOutputLeasesSurviveLaterSamplesAndEdits) {
+    Pattern source(48,32,asymmetric); ASSERT_TRUE(source.frame);
+    auto plan = animationPlan(animatedAppearance("smooth"));
+    auto working = renderer->render(plan,13,source.frame,&error); ASSERT_TRUE(working) << error;
+    auto published = working; working = {};
+    const auto imageIdentity = published.image().image;
+    auto before = renderer->download(published,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(before);
+    auto encoded = renderer->output(published,{},&error); ASSERT_TRUE(encoded) << error;
+    EXPECT_TRUE(encoded.encoded());
+    auto encodedBefore = renderer->download(encoded,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(encodedBefore);
+    for (const int localFrame : {18,0,10,4,22,6}) {
+        auto next = renderer->render(plan,7+localFrame,source.frame,&error); ASSERT_TRUE(next) << error;
+        auto output = renderer->output(next,{},&error); ASSERT_TRUE(output) << error;
+        ASSERT_TRUE(renderer->download(output,DownloadFormat::RgbaFloat,&error)) << error;
+    }
+    plan.tracks.front().clips.front().visualSnapshot = {};
+    ASSERT_TRUE(renderer->render(plan,13,source.frame,&error)) << error;
+    auto after = renderer->download(published,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(after);
+    auto encodedAfter = renderer->download(encoded,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(encodedAfter);
+    EXPECT_EQ(published.image().image,imageIdentity);
+    EXPECT_TRUE(published.image().ready.valid());
+    const auto expectedClip = appearanceReference(animatedAppearance("smooth"),6,"smooth");
+    for (int y=0;y<80;++y) for (int x=0;x<96;++x) {
+        EXPECT_EQ(pixel(*before,x,y),pixel(*after,x,y));
+        EXPECT_EQ(pixel(*encodedBefore,x,y),pixel(*encodedAfter,x,y));
+        const auto expected = reference(source,expectedClip,96,80,x,y);
+        for (int c=0;c<4;++c) ASSERT_NEAR(pixel(*after,x,y)[c],expected[c],0.006f);
+    }
+}
+
+TEST_F(CompositionGeometryRendererTest, ImmutableAppearanceCacheSwitchesSnapshotsAndRevalidatesMutablePlans) {
+    Pattern source(48,32,asymmetric); ASSERT_TRUE(source.frame);
+    const auto smooth = animatedAppearance("smooth");
+    const auto snapshot = std::make_shared<const CompositionPlan>(animationPlan(smooth));
+    CompositionRenderRequest request;
+    request.plan = snapshot.get(); request.immutablePlan = snapshot;
+    request.source = source.frame; request.clipId = "geometry"; request.strict = true;
+    const auto checkPixels = [&](const RenderedFrame& frame,const Clip& expectedClip) {
+        auto image = renderer->download(frame,DownloadFormat::RgbaFloat,&error);
+        ASSERT_TRUE(image) << error;
+        for (int y=0;y<80;++y) for (int x=0;x<96;++x) {
+            const auto expected = reference(source,expectedClip,96,80,x,y), actual = pixel(*image,x,y);
+            for (int c=0;c<4;++c) ASSERT_NEAR(actual[c],expected[c],0.006f) << x << ',' << y << ',' << c;
+        }
+    };
+    request.targetFrame = 13;
+    auto published = renderer->render(request,&error); ASSERT_TRUE(published) << error;
+    auto before = renderer->download(published,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(before);
+    const auto identity = published.image().image;
+    for (const int local : {0,4,10,18,6}) {
+        request.targetFrame = 7+local;
+        auto frame = renderer->render(request,&error); ASSERT_TRUE(frame) << error;
+        ASSERT_NO_FATAL_FAILURE(checkPixels(frame,appearanceReference(smooth,local,"smooth")));
+    }
+    // Same clip/track IDs, different immutable owner and curve: no stale prepared keys.
+    auto linear = animatedAppearance("linear"); linear.transform.flipHorizontal = false;
+    const auto replacement = std::make_shared<const CompositionPlan>(animationPlan(linear));
+    request.plan = replacement.get(); request.immutablePlan = replacement; request.targetFrame = 11;
+    auto next = renderer->render(request,&error); ASSERT_TRUE(next) << error;
+    ASSERT_NO_FATAL_FAILURE(checkPixels(next,appearanceReference(linear,4,"linear")));
+    auto invalidPlan = *replacement;
+    invalidPlan.tracks.front().clips.front().visualSnapshot.cropTrack = KeyframeTrackPayload{};
+    const auto invalid = std::make_shared<const CompositionPlan>(invalidPlan);
+    request.plan = invalid.get(); request.immutablePlan = invalid;
+    for (const bool strict : {false,true}) {
+        request.strict = strict;
+        EXPECT_FALSE(renderer->render(request,&error)); EXPECT_NE(error.find("cropTrack"),std::string::npos);
+    }
+    // Source preview ignores timeline appearance even after a failed cache switch.
+    request.sourceMode = true;
+    auto sourcePreview = renderer->render(request,&error); ASSERT_TRUE(sourcePreview) << error;
+    auto sourceImage = renderer->download(sourcePreview,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(sourceImage);
+    ASSERT_EQ(sourceImage->width,48); ASSERT_EQ(sourceImage->height,32);
+    for (int y=0;y<32;++y) for (int x=0;x<48;++x) {
+        const auto expected = reference(source,{},48,32,x,y), actual = pixel(*sourceImage,x,y);
+        for (int c=0;c<4;++c) ASSERT_NEAR(actual[c],expected[c],0.006f);
+    }
+    request.sourceMode = false;
+    request.plan = snapshot.get(); request.immutablePlan = replacement;
+    EXPECT_FALSE(renderer->render(request,&error)); EXPECT_FALSE(error.empty()); // Owner must match plan.
+    request.immutablePlan = snapshot; request.targetFrame = 13;
+    auto restored = renderer->render(request,&error); ASSERT_TRUE(restored) << error;
+    ASSERT_NO_FATAL_FAILURE(checkPixels(restored,appearanceReference(smooth,6,"smooth")));
+
+    // Direct callers keep the same plan/clip addresses across edits. Each call
+    // must prepare again rather than reusing the last immutable or mutable keys.
+    auto mutablePlan = *replacement;
+    request.plan = &mutablePlan; request.immutablePlan.reset(); request.targetFrame = 11;
+    auto direct = renderer->render(request,&error); ASSERT_TRUE(direct) << error;
+    ASSERT_NO_FATAL_FAILURE(checkPixels(direct,appearanceReference(linear,4,"linear")));
+    auto& edited = mutablePlan.tracks.front().clips.front().visualSnapshot;
+    for (auto& key : edited.opacityTrack->value["keyframes"]) key["value"] = 0.25;
+    auto expectedEdit = appearanceReference(linear,4,"linear"); expectedEdit.opacity = 0.25;
+    auto changed = renderer->render(request,&error); ASSERT_TRUE(changed) << error;
+    ASSERT_NO_FATAL_FAILURE(checkPixels(changed,expectedEdit));
+    edited.opacityTrack = KeyframeTrackPayload{};
+    EXPECT_FALSE(renderer->render(request,&error)); EXPECT_NE(error.find("opacityTrack"),std::string::npos);
+    edited = smooth;
+    request.targetFrame = 13;
+    auto repaired = renderer->render(request,&error); ASSERT_TRUE(repaired) << error;
+    ASSERT_NO_FATAL_FAILURE(checkPixels(repaired,appearanceReference(smooth,6,"smooth")));
+    auto after = renderer->download(published,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(after);
+    EXPECT_EQ(published.image().image,identity); EXPECT_TRUE(published.image().ready.valid());
+    for (int y=0;y<80;++y) for (int x=0;x<96;++x)
+        EXPECT_EQ(pixel(*before,x,y),pixel(*after,x,y));
+}
+
+TEST_F(CompositionGeometryRendererTest, EmptyKeyframeArraysUseConstantsInBothPreviewModes) {
+    Pattern source(48,32,asymmetric); ASSERT_TRUE(source.frame);
+    Clip clip; clip.opacity = 0.65; clip.transform.rotation = 23;
+    clip.transform.centerX = 0.6; clip.transform.width = 0.8;
+    clip.crop = {0.1,0.2,0.05,0.1};
+    for (const auto member : appearanceTracks)
+        clip.*member = KeyframeTrackPayload{JsonValue{{"keyframes",JsonValue::array()}}};
+    auto plan = animationPlan(clip);
+    for (const bool strict : {false,true}) {
+        CompositionRenderRequest request; request.plan = &plan; request.source = source.frame;
+        request.targetFrame = 13; request.clipId = "geometry"; request.strict = strict;
+        auto result = renderer->render(request,&error); ASSERT_TRUE(result) << error;
+        auto image = renderer->download(result,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(image);
+        for (int y=0;y<80;++y) for (int x=0;x<96;++x) {
+            const auto expected = reference(source,clip,96,80,x,y), actual = pixel(*image,x,y);
+            for (int c=0;c<4;++c) ASSERT_NEAR(actual[c],expected[c],0.006f);
+        }
+    }
+}
+
+TEST_F(CompositionGeometryRendererTest, InvalidAppearanceTracksFailBeforeHiddenZeroInactiveOrBlankFiltering) {
+    Pattern source(48,32,asymmetric); ASSERT_TRUE(source.frame);
+    for (size_t selected=0;selected<appearanceTracks.size();++selected) {
+        const auto valid = (animatedAppearance("linear").*appearanceTracks[selected])->value;
+        std::vector<JsonValue> invalid{JsonValue::object(),JsonValue::array(),nullptr,
+            JsonValue{{"keyframes",JsonValue::object()}}};
+        auto duplicate = valid; duplicate["keyframes"][1]["frame"] = 2; invalid.push_back(duplicate);
+        auto fractional = valid; fractional["keyframes"][1]["frame"] = 4.5; invalid.push_back(fractional);
+        auto missing = valid; missing["keyframes"][1].erase("value"); invalid.push_back(missing);
+        auto future = valid; future["keyframes"][1]["interpolationOut"] = "bezier"; invalid.push_back(future);
+        auto outside = valid;
+        if (selected == 0) outside["keyframes"][2]["value"] = 1.1;
+        if (selected == 1) outside["keyframes"][2]["value"] = JsonValue{{"x",0.5},{"y",0.5}};
+        if (selected == 2) outside["keyframes"][2]["value"]["b"] = 0;
+        if (selected == 3) outside["keyframes"][2]["value"] = "90";
+        if (selected == 4) {
+            outside["keyframes"][2]["value"]["left"] = 0.8;
+            outside["keyframes"][2]["value"]["right"] = 0.3;
+        }
+        invalid.push_back(outside); // Validate later keys even when sampling the first.
+        for (size_t payload=0;payload<invalid.size();++payload) for (const int state : {0,1,2,3,4,5}) {
+            Clip clip; clip.*appearanceTracks[selected] = KeyframeTrackPayload{invalid[payload]};
+            clip.opacity = state == 2 ? 0 : 1;
+            auto plan = animationPlan(clip); plan.tracks.front().hidden = state == 1;
+            for (const bool strict : {false,true}) {
+                SCOPED_TRACE(testing::Message() << "track=" << selected << " payload=" << payload
+                    << " state=" << state << " strict=" << strict);
+                CompositionRenderRequest request; request.plan = &plan; request.strict = strict;
+                request.targetFrame = state == 3 ? 0 : 7; request.blank = state == 4;
+                if (state != 5) request.source = source.frame;
+                request.clipId = "geometry";
+                EXPECT_FALSE(renderer->render(request,&error)); EXPECT_FALSE(error.empty());
+            }
+        }
+    }
+}
+
+TEST_F(CompositionGeometryRendererTest, PerspectiveRetainsPlanarPreviewFallbackButStrictRenderingRejectsIt) {
+    Pattern source(48,32,asymmetric); ASSERT_TRUE(source.frame);
+    for (const bool xAxis : {false,true}) {
+        Clip clip; clip.transform.rotation = 23; clip.transform.width = 0.8;
+        if (xAxis) clip.transform.rotationX = 31; else clip.transform.rotationY = -47;
+        auto plan = makePlan(96,80,clip);
         CompositionRenderRequest request; request.plan = &plan; request.source = source.frame;
         request.clipId = "geometry"; request.strict = true;
-        EXPECT_FALSE(renderer->render(request,&error)); EXPECT_NE(error.find("Unsupported"),std::string::npos);
+        EXPECT_FALSE(renderer->render(request,&error)); EXPECT_FALSE(error.empty());
         request.strict = false;
-        if (clip.blendMode) {
-            EXPECT_FALSE(renderer->render(request,&error));
-            EXPECT_NE(error.find("blend"),std::string::npos);
-        } else {
-            EXPECT_TRUE(renderer->render(request,&error)) << error;
+        auto result = renderer->render(request,&error); ASSERT_TRUE(result) << error;
+        auto image = renderer->download(result,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(image);
+        for (int y=0;y<80;++y) for (int x=0;x<96;++x) {
+            const auto expected = reference(source,clip,96,80,x,y), actual = pixel(*image,x,y);
+            for (int c=0;c<4;++c) ASSERT_NEAR(actual[c],expected[c],0.006f);
         }
     }
 }

@@ -1,5 +1,5 @@
 #include "ParameterSampler.hpp"
-#include <algorithm>
+#include <Models/KeyframeSampling.hpp>
 #include <cmath>
 #include <limits>
 
@@ -15,9 +15,7 @@ bool fail(std::vector<GradeDiagnostic>& diagnostics,
 }
 
 bool number(const JsonValue& value, double& result) {
-    if (!value.is_number()) return false;
-    result = value.get<double>();
-    return std::isfinite(result);
+    return keyframes::readFiniteDouble(value, result);
 }
 
 bool representable(const JsonValue& value, size_t type, double& result) {
@@ -34,12 +32,6 @@ bool representable(const JsonValue& value, size_t type, double& result) {
     }
     return std::abs(result) <= std::numeric_limits<float>::max();
 }
-
-struct Key {
-    int64_t frame;
-    double value;
-    bool linear;
-};
 
 } // namespace
 
@@ -69,75 +61,43 @@ bool sampleParameter(const JsonValue* payload,
         return invalid("value has an invalid type, is not finite or is out of range");
     }
 
-    std::vector<Key> keys;
+    std::vector<keyframes::Key<double>> keys;
     if (payload->contains("track")) {
-        const auto& track = (*payload)["track"];
-        if (!track.is_object() || !track.contains("keyframes") || !track["keyframes"].is_array()) {
-            return invalid("track must contain a keyframes array");
+        std::string unsupportedLocation;
+        const auto unknownInterpolation = [&](const std::string& interpolation, const std::string& location) {
+            diagnostics.push_back({"unsupported_interpolation", effectId, parameter,
+                "Effect '" + effectId + "' parameter '" + parameter + "': " + location +
+                ": interpolation '" + interpolation + "' has no defined Grade semantics; preview uses Hold"});
+            if (unsupportedLocation.empty()) unsupportedLocation = location;
+            return true; // Finish validating all keys before applying strict policy.
+        };
+        std::string reason;
+        if (!keyframes::prepareTrack((*payload)["track"], "track", keys,
+                [&](const JsonValue& value, double& result) { return representable(value, type, result); },
+                unknownInterpolation, &reason)) {
+            return invalid(reason);
         }
-
-        bool unsupported = false;
-        for (const auto& key : track["keyframes"]) {
-            if (!key.is_object() || !key.contains("frame") || !key.contains("value")) {
-                return invalid("keyframe must contain frame and value");
-            }
-
-            const auto& frame = key["frame"];
-            if (!frame.is_number_integer()
-                || (frame.is_number_unsigned() && frame.get<uint64_t>() > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))) {
-                return invalid("keyframe frame must be a signed 64-bit integer");
-            }
-
-            const int64_t keyFrame = frame.get<int64_t>();
-            if (!keys.empty() && keyFrame <= keys.back().frame) {
-                return invalid("keyframe frames must be strictly increasing");
-            }
-
-            double value = 0;
-            if (!representable(key["value"], type, value)) {
-                return invalid("keyframe value has an invalid type, is not finite or is out of range");
-            }
-
-            std::string interpolation = "linear";
-            if (key.contains("interpolationOut")) {
-                if (!key["interpolationOut"].is_string()) return invalid("interpolationOut must be a string");
-                interpolation = key["interpolationOut"].get<std::string>();
-            }
-            const bool linear = interpolation == "linear";
-            if (!linear && interpolation != "hold") {
-                diagnostics.push_back({"unsupported_interpolation", effectId, parameter,
-                    "Effect '" + effectId + "' parameter '" + parameter + "': interpolation '"
-                    + interpolation + "' has no defined Grade semantics; preview uses Hold"});
-                unsupported = true;
-            }
-            keys.push_back({keyFrame, value, linear});
-        }
-
-        if (unsupported && options.strict) {
-            if (error) *error = "Unsupported keyframe interpolation in effect '" + effectId + "' parameter '" + parameter + "'";
+        if (!unsupportedLocation.empty() && options.strict) {
+            if (error) *error = "Unsupported keyframe interpolation in effect '" + effectId +
+                "' parameter '" + parameter + "': " + unsupportedLocation;
             return false;
         }
     }
 
     double sampled = base;
     if (!keys.empty()) {
-        const auto right = std::upper_bound(keys.begin(), keys.end(), clipLocalFrame,
-            [](int64_t frame, const Key& key) { return frame < key.frame; });
-        if (right == keys.begin()) {
-            sampled = keys.front().value;
-        } else {
-            const auto& left = *(right - 1);
-            sampled = left.value;
-            if (right != keys.end() && left.linear && type != 2) {
-                const long double offset = static_cast<long double>(clipLocalFrame) - left.frame;
-                const long double span = static_cast<long double>(right->frame) - left.frame;
-                const double t = static_cast<double>(offset / span);
-                sampled = left.value * (1.0 - t) + right->value * t;
-            }
-        }
+        const auto interval = keyframes::findInterval(keys, clipLocalFrame);
+        sampled = keys[interval.left].value;
+        // Boolean parameters always hold, even when the segment says Linear/Smooth.
+        if (type != 2)
+            sampled = keyframes::interpolate(sampled, keys[interval.right].value, interval.weight);
     }
 
     if (!std::isfinite(sampled)) return invalid("sampled value is not finite");
+    if ((type == 0 && (std::round(sampled) < std::numeric_limits<int32_t>::min() ||
+                       std::round(sampled) > std::numeric_limits<int32_t>::max())) ||
+        (type == 1 && std::abs(sampled) > std::numeric_limits<float>::max()))
+        return invalid("sampled value is out of range");
 
     if (type == 0) output = static_cast<int32_t>(std::round(sampled));
     else if (type == 1) output = static_cast<float>(sampled);

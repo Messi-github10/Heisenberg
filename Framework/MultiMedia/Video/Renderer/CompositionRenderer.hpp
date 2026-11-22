@@ -54,6 +54,9 @@ private:
 
 struct CompositionRenderRequest {
     const CompositionPlan* plan = nullptr;
+    // Pins an immutable playback/export snapshot for validated track reuse.
+    // Mutable direct callers leave this empty and are validated on every call.
+    std::shared_ptr<const CompositionPlan> immutablePlan;
     std::shared_ptr<VideoFrame> source;
     // Composition contributions in UI order (top first). Source remains the
     // source-preview input; composition callers provide the complete layer set.

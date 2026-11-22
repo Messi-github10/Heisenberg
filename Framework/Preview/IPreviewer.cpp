@@ -509,6 +509,7 @@ private:
         }
         renderer::CompositionRenderRequest request;
         request.plan = projectSourceColor ? &sourcePlan : packet.plan.get(); request.source = packet.source;
+        if (!projectSourceColor) request.immutablePlan = packet.plan;
         request.layers = packet.layers;
         if (projectSourceColor) {
             const auto overrideSpace = sourceColorSettings_.inputColorSpaces.find(sourceMediaRef_);
@@ -525,11 +526,18 @@ private:
         auto working = compositionRenderer_->render(request, &error);
         double renderMs = elapsedMs(renderStart);
         bool fallback = false;
+        CompositionPlan fallbackPlan;
         if (!working) {
             LOG_ERROR("IPreviewer: composition render failed: {}", error);
             notifyListener([error](Listener& listener) { listener.onFilterGraphFailed(error); });
             // Do not leave a stale successful frame visible after a failed request.
             request.blank = true; request.source.reset(); request.layers.clear();
+            if (request.plan) {
+                fallbackPlan.settings = request.plan->settings;
+                fallbackPlan.colorSettings = request.plan->colorSettings;
+                request.plan = &fallbackPlan;
+                request.immutablePlan.reset();
+            }
             fallback = true;
             renderStart = Clock::now();
             working = compositionRenderer_->render(request, nullptr);

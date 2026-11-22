@@ -290,9 +290,8 @@ ProjectCompatibility compatibilityFor(const Timeline& timeline) {
                 result.messages.push_back("clip opacity must be finite and between 0 and 1");
                 return result;
             }
-            if (!validateConstantGeometry(clip) || clip.transform.rotationX != 0.0 ||
-                clip.transform.rotationY != 0.0 || clip.opacityTrack ||
-                clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack ||
+            if (!validateClipAppearanceTracks(clip) || clip.transform.rotationX != 0.0 ||
+                clip.transform.rotationY != 0.0 ||
                 clip.volumeTrack || !parseBlendMode(clip.blendMode) ||
                 (clip.fadeInFrames != 0 && clip.fadeInInterpolation != Interpolation::Linear) ||
                 (clip.fadeOutFrames != 0 && clip.fadeOutInterpolation != Interpolation::Linear)) {

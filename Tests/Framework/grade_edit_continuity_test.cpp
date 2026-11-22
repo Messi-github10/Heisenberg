@@ -52,8 +52,8 @@ float exposureAt(const Clip& clip, int64_t frame) {
 
 } // namespace
 
-TEST(GradeEditContinuityTest, SplitRetainsHoldAndLinearSamplesIncludingCrossBoundaryAnchors) {
-    for (const std::string interpolation : {"hold", "linear"}) {
+TEST(GradeEditContinuityTest, SplitRetainsAllSupportedInterpolationsIncludingCrossBoundaryAnchors) {
+    for (const std::string interpolation : {"hold", "linear", "smooth"}) {
         const auto original = animatedClip(interpolation);
         EditorViewModel editor;
         std::string error;
@@ -77,8 +77,8 @@ TEST(GradeEditContinuityTest, SplitRetainsHoldAndLinearSamplesIncludingCrossBoun
     }
 }
 
-TEST(GradeEditContinuityTest, LeftTrimAndRightTrimPreserveHoldLinearAndExtensionRestoresCurve) {
-    for (const std::string interpolation : {"hold", "linear"}) {
+TEST(GradeEditContinuityTest, BothTrimsPreserveAllSupportedInterpolationsAndExtensionRestoresCurve) {
+    for (const std::string interpolation : {"hold", "linear", "smooth"}) {
         const auto original = animatedClip(interpolation);
         EditorViewModel editor;
         std::string error;

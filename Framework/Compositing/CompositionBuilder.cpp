@@ -2,6 +2,7 @@
 #include <Compositing/Grade/LutLibrary.hpp>
 #include <Models/MediaResolver.hpp>
 #include <Models/BlendMode.hpp>
+#include <Models/ClipAppearance.hpp>
 #include <Project/VideoProject.hpp>
 #include <algorithm>
 
@@ -70,6 +71,11 @@ bool CompositionBuilder::build(const Timeline& timeline, const MediaManifest& ma
         for (const auto& clip : track.clips) {
             if (!parseBlendMode(clip.blendMode)) {
                 if (error) *error = "Unsupported clip blend mode: " + clip.id;
+                return false;
+            }
+            std::string appearanceError;
+            if (!validateClipAppearanceTracks(clip, &appearanceError)) {
+                if (error) *error = "Invalid clip appearance: " + clip.id + ": " + appearanceError;
                 return false;
             }
         }

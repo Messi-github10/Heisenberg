@@ -128,8 +128,29 @@ Media import itself is not part of timeline undo history.
 - Opening and confirming unchanged appearance or cancelling it leaves the project
   untouched. Multiple changed controls commit one undo step, preserve grade/audio and
   imported animation, and apply only to the primary selected clip. Save/reopen, unsaved
-  preview and export must reproduce the appearance. Perspective and geometry animation
-  remain unsupported and must fail strict export before touching an existing output.
+  preview and export must reproduce the appearance. Perspective retains a planar
+  preview fallback and must fail strict export before touching an existing output.
+- This round adds no keyframe UI. Imported `opacityTrack`, `positionTrack`,
+  `scaleTrack`, `rotationTrack` and `cropTrack` execute in timeline preview and export;
+  Clip Appearance edits constants while preserving those payloads. A nonempty track
+  overrides its corresponding constant, including a fade-in from constant opacity 0.
+  Source preview continues to ignore timeline geometry/opacity while retaining grade.
+- The imported format is `{"keyframes":[{"frame":0,"value":0,"interpolationOut":"smooth"},
+  {"frame":12,"value":1}]}` (opacity example). Frames must be strictly increasing
+  integers. `localFrame = timelineFrame - clip.startFrame`; source trims and speed
+  do not alter appearance time. Values clamp at the endpoints; an absent track or
+  `{"keyframes":[]}` uses constants, while `{}` is invalid. Position values use
+  `{"a":centerX,"b":centerY}` normalized to the canvas; scale uses `{"a":width,"b":height}`
+  as direct positive multipliers of the fitted size. Rotation is an absolute clockwise
+  scalar angle without shortest-arc wrapping. Crop requires normalized `left`, `top`,
+  `right`, `bottom` sides leaving a positive rectangle; opacity must remain in [0,1].
+- Verify imported Linear, Hold and Smooth clips at multiple frames after save/reopen
+  and actual H.264/H.265 export. The outgoing left key chooses `linear` (default),
+  `hold`, or `smooth`; Smooth matches Grade's `t*t*(3-2*t)` easing, without Bezier
+  handles. Preview strict false/true must sample supported animation identically.
+  Unknown/invalid animation remains loadable and saveable, but preview/export must
+  reject execution even when hidden, zero-opacity, inactive or blank. Animated flips,
+  rounding/softness, blend mode and audio volume tracks are not supported here.
 - **Blend Mode** in Clip Appearance offers Palmier's 16 modes, followed by Add.
   Check Normal, Multiply, Screen, Overlay, Add and Difference over a contrasting
   lower layer, then the four color-component modes on asymmetric colored sources.

@@ -84,15 +84,12 @@ private:
 void validateAppearance(const Clip& clip, const CompositionPlan& plan,
                         renderer::color::ColorPipeline& color) {
     std::string error;
-    if (!validateConstantGeometry(clip, &error))
-        throw std::runtime_error("Invalid constant clip geometry: " + clip.id + ": " + error);
+    if (!validateClipAppearanceTracks(clip, &error))
+        throw std::runtime_error("Invalid clip appearance: " + clip.id + ": " + error);
     if (clip.transform.rotationX != 0.0 || clip.transform.rotationY != 0.0)
         throw std::runtime_error("Unsupported clip perspective rotation: " + clip.id);
     if (!parseBlendMode(clip.blendMode))
         throw std::runtime_error("Unsupported clip blend mode: " + clip.id);
-    if (!std::isfinite(clip.opacity) || clip.opacity < 0.0 || clip.opacity > 1.0 ||
-        clip.opacityTrack || clip.positionTrack || clip.scaleTrack || clip.rotationTrack || clip.cropTrack)
-        throw std::runtime_error("Unsupported clip appearance: " + clip.id);
     if (clip.volumeTrack ||
         (clip.fadeInFrames && clip.fadeInInterpolation != Interpolation::Linear) ||
         (clip.fadeOutFrames && clip.fadeOutInterpolation != Interpolation::Linear))
@@ -238,7 +235,11 @@ struct ExportEngine::Impl {
                     if (resolved.source == renderer::color::InputSelectionSource::Fallback)
                         throw std::runtime_error("Resolve input color space before export: " + clip->mediaRef);
                 }
-                auto image = renderer.render(plan, frame, sample.layers, &error);
+                renderer::CompositionRenderRequest renderRequest;
+                renderRequest.plan = sample.plan.get(); renderRequest.immutablePlan = sample.plan;
+                renderRequest.targetFrame = frame; renderRequest.layers = sample.layers;
+                renderRequest.blank = sample.blank; renderRequest.strict = true;
+                auto image = renderer.render(renderRequest, &error);
                 if (!image) throw std::runtime_error(error);
                 renderer::ColorOutputRequest target;
                 target.display = plan.colorSettings.exportOutput.display;

@@ -63,8 +63,35 @@ retains centered aspect fit (including sample aspect ratio); width/height multip
 that fitted size. Cropping removes source content without zooming or recentering.
 Rounding and softness are measured against the shorter cropped source dimension,
 then transform with the image. Filtering uses alpha-weighted colors so hidden RGB
-cannot contaminate transparent borders. Perspective rotation and geometry animation
-remain unsupported and are rejected by strict export.
+cannot contaminate transparent borders. Perspective rotation retains a planar
+preview fallback and is rejected by strict export.
+
+Preview and export also execute imported `opacityTrack`, `positionTrack`,
+`scaleTrack`, `rotationTrack` and `cropTrack` payloads. This round adds no keyframe
+UI: Clip Appearance still edits constants and preserves imported tracks. Each
+track is an object with a `keyframes` array, for example
+`{"keyframes":[{"frame":0,"value":0,"interpolationOut":"smooth"},{"frame":12,"value":1}]}`
+for opacity. Frames are strictly increasing integers in clip-local timeline time:
+`localFrame = timelineFrame - clip.startFrame`, without adding source trim or
+multiplying by playback speed. Values clamp to the first/last key outside the key
+range. A missing track or `{"keyframes":[]}` uses its constant; `{}` is invalid.
+
+Opacity values are scalars in [0,1] and replace constant opacity, so a zero constant
+can still animate a fade-in. Position values are `{"a":centerX,"b":centerY}` in
+normalized canvas coordinates. Scale values are `{"a":width,"b":height}` with
+positive independent multipliers of the aspect-fit size; they replace the constant
+width/height directly. Rotation values are absolute clockwise degrees, interpolated
+as scalars without shortest-arc wrapping. Crop values contain all four normalized
+`left`, `top`, `right`, `bottom` sides and must leave positive width and height.
+The left key's `interpolationOut` selects `linear` (the default), `hold`, or `smooth`.
+Smooth uses `t*t*(3-2*t)`, the same easing as Grade; it has no Bezier tangents.
+
+Both preview strictness modes sample these supported tracks identically. Invalid
+or unknown animation payloads remain saveable and survive reopening, but cannot
+execute: preview and export reject them even on hidden, zero-opacity or currently
+inactive clips and blank timeline frames. Export validates before accessing the
+output target. Perspective, animated flips, rounding/softness, blend mode and audio
+volume tracks remain outside this appearance-animation support.
 
 Tracks can be added, removed, renamed and reordered within their media type. Clips
 can move between compatible tracks. Drag a pool video or an existing video clip into
@@ -99,8 +126,8 @@ transforms. Offline MP4 export uses software H.264/H.265 and AAC, independent of
 playback clock and window. See [composition, color and export](docs/composition-color-export.md)
 for input policies, effect semantics, deployment and output-safety details.
 
-There is no animated geometry/opacity, hardware encoding, HDR output, waveform
-cache, or pitch-preserving time stretching.
+There is no keyframe editing UI, hardware encoding, HDR output, waveform cache,
+or pitch-preserving time stretching.
 
 Clip Appearance also selects a constant blend mode. The fixed table follows the
 published Palmier list: Normal, Darken, Multiply, Color Burn, Lighten, Screen,

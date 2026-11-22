@@ -2,6 +2,7 @@
 #include <Compositing/Grade/ParameterSampler.hpp>
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace {
@@ -86,8 +87,20 @@ TEST(GradeCompilerTest, AnimatedNeutralFastPathAndTopologyKeysIgnoreValues) {
     EXPECT_EQ(a.stages[0].document.edges(), b.stages[0].document.edges());
 }
 
-TEST(GradeCompilerTest, SmoothFixtureIsDiagnosedAndStrictRefusesEvenBeforeItsKey) {
-    auto clip = withEffects(R"([{"id":"effect-a","type":"video.blur","enabled":true,"params":{"radius":{"value":4.0,"track":{"keyframes":[{"frame":3,"value":5.0,"interpolationOut":"smooth"}]}}}}])");
+TEST(GradeCompilerTest, SmoothInterpolationUsesCubicWeightAndHasNoDiagnostics) {
+    auto clip = withEffects(R"([{"id":"exp","type":"video.exposure","params":{"exposure":{"track":{"keyframes":[{"frame":0,"value":1,"interpolationOut":"smooth"},{"frame":8,"value":5}]}}}}])");
+    for (const auto& [frame, expected] : std::vector<std::pair<int64_t, float>>{
+             {-1, 1.0f}, {0, 1.0f}, {2, 1.625f}, {4, 3.0f}, {6, 4.375f}, {8, 5.0f}, {9, 5.0f}}) {
+        CompiledGrade grade;
+        std::string error;
+        ASSERT_TRUE(GradeCompiler::compile(clip, frame, grade, &error)) << error;
+        EXPECT_FLOAT_EQ(firstFloat(grade, "exposure"), expected) << frame;
+        EXPECT_TRUE(grade.diagnostics.empty());
+    }
+}
+
+TEST(GradeCompilerTest, UnknownInterpolationIsDiagnosedAndStrictRefusesEvenBeforeItsKey) {
+    auto clip = withEffects(R"([{"id":"effect-a","type":"video.blur","enabled":true,"params":{"radius":{"value":4.0,"track":{"keyframes":[{"frame":3,"value":5.0,"interpolationOut":"future-curve"},{"frame":11,"value":9}]}}}}])");
     CompiledGrade grade;
     std::string error;
     EXPECT_FALSE(GradeCompiler::compile(clip, 0, grade, &error));
@@ -97,7 +110,7 @@ TEST(GradeCompilerTest, SmoothFixtureIsDiagnosedAndStrictRefusesEvenBeforeItsKey
     EXPECT_EQ(grade.diagnostics[0].effectId, "effect-a");
     EXPECT_EQ(grade.diagnostics[0].parameter, "radius");
     EXPECT_FALSE(error.empty());
-    ASSERT_TRUE(GradeCompiler::compile(clip, 0, grade, &error, {.strict=false})) << error;
+    ASSERT_TRUE(GradeCompiler::compile(clip, 7, grade, &error, {.strict=false})) << error;
     ASSERT_EQ(grade.stages.size(),1u);
     EXPECT_EQ(std::get<int32_t>(grade.stages[0].parameterUpdates[0].parameters.at("blurRadius")), 5);
     EXPECT_FALSE(grade.diagnostics.empty());
@@ -171,12 +184,70 @@ TEST(GradeParameterSamplerTest, DefaultEmptyTrackIntegerRoundingAndBooleanHold) 
     ASSERT_TRUE(sampleParameter(&numeric, int32_t{0}, 3, sampled, diagnostics, "e", "p"));
     EXPECT_EQ(std::get<int32_t>(sampled), 1);
     auto boolean = JsonValue::parse(R"({"value":true,"track":{"keyframes":[{"frame":0,"value":false,"interpolationOut":"linear"},{"frame":4,"value":true}]}})");
-    ASSERT_TRUE(sampleParameter(&boolean, true, 3, sampled, diagnostics, "e", "p"));
-    EXPECT_FALSE(std::get<bool>(sampled));
-    ASSERT_TRUE(sampleParameter(&boolean, false, 4, sampled, diagnostics, "e", "p"));
-    EXPECT_TRUE(std::get<bool>(sampled));
+    for (const auto* interpolation : {"linear", "hold", "smooth"}) {
+        boolean["track"]["keyframes"][0]["interpolationOut"] = interpolation;
+        ASSERT_TRUE(sampleParameter(&boolean, true, 3, sampled, diagnostics, "e", "p"));
+        EXPECT_FALSE(std::get<bool>(sampled));
+        ASSERT_TRUE(sampleParameter(&boolean, false, 4, sampled, diagnostics, "e", "p"));
+        EXPECT_TRUE(std::get<bool>(sampled));
+    }
 }
 
+TEST(GradeParameterSamplerTest, AdjacentExtremeFramesUseSharedLinearAndSmoothWeights) {
+    auto payload = JsonValue::parse(R"({"track":{"keyframes":[{"frame":0,"value":1},{"frame":8,"value":9}]}})");
+    auto& keys = payload["track"]["keyframes"];
+    for (const auto start : {std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max() - 8}) {
+        keys[0]["frame"] = start;
+        keys[1]["frame"] = start + 8;
+        for (const auto* interpolation : {"linear", "smooth", "hold"}) {
+            keys[0]["interpolationOut"] = interpolation;
+            VulkanParameterValue value;
+            std::vector<GradeDiagnostic> diagnostics;
+            ASSERT_TRUE(sampleParameter(&payload, 0.0f, start + 2, value, diagnostics, "e", "p"));
+            EXPECT_FLOAT_EQ(std::get<float>(value), std::string(interpolation) == "linear" ? 3.0f :
+                std::string(interpolation) == "smooth" ? 2.25f : 1.0f);
+            EXPECT_TRUE(diagnostics.empty());
+        }
+    }
+}
+
+TEST(GradeParameterSamplerTest, FullTrackValidationRejectsUnsignedOverflowAndBadFutureKeys) {
+    auto payload = JsonValue::parse(R"({"track":{"keyframes":[{"frame":0,"value":1},{"frame":8,"value":2}]}})");
+    for (const JsonValue badFrame : std::vector<JsonValue>{1.0, 1.5, true, "8", -1, 0,
+             std::numeric_limits<uint64_t>::max()}) {
+        auto candidate = payload;
+        candidate["track"]["keyframes"][1]["frame"] = badFrame;
+        VulkanParameterValue value;
+        std::vector<GradeDiagnostic> diagnostics;
+        std::string error;
+        EXPECT_FALSE(sampleParameter(&candidate, 0.0f, -100, value, diagnostics, "e", "p", &error));
+        EXPECT_NE(error.find("keyframes[1]"), std::string::npos) << error;
+    }
+    for (const auto invalid : {std::numeric_limits<double>::infinity(),
+             std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::max()}) {
+        auto candidate = payload;
+        candidate["track"]["keyframes"][1]["value"] = invalid;
+        VulkanParameterValue value;
+        std::vector<GradeDiagnostic> diagnostics;
+        EXPECT_FALSE(sampleParameter(&candidate, 0.0f, -100, value, diagnostics, "e", "p"));
+    }
+}
+
+TEST(GradeParameterSamplerTest, SmoothIntegerSamplesRoundAndMaxFloatsRemainFinite) {
+    auto payload = JsonValue::parse(R"({"track":{"keyframes":[{"frame":0,"value":-2,"interpolationOut":"smooth"},{"frame":8,"value":2}]}})");
+    VulkanParameterValue value;
+    std::vector<GradeDiagnostic> diagnostics;
+    ASSERT_TRUE(sampleParameter(&payload, int32_t{0}, 2, value, diagnostics, "e", "p"));
+    EXPECT_EQ(std::get<int32_t>(value), -1);
+    ASSERT_TRUE(sampleParameter(&payload, int32_t{0}, 6, value, diagnostics, "e", "p"));
+    EXPECT_EQ(std::get<int32_t>(value), 1);
+    payload["track"]["keyframes"][0]["value"] = -std::numeric_limits<float>::max();
+    payload["track"]["keyframes"][1]["value"] = std::numeric_limits<float>::max();
+    ASSERT_TRUE(sampleParameter(&payload, 0.0f, 4, value, diagnostics, "e", "p"));
+    EXPECT_EQ(std::get<float>(value), 0.0f);
+    ASSERT_TRUE(sampleParameter(&payload, 0.0f, 6, value, diagnostics, "e", "p"));
+    EXPECT_TRUE(std::isfinite(std::get<float>(value)));
+}
 TEST(GradeParameterSamplerTest, SignedFrameExtremesDoNotOverflowLinearSampling) {
     auto payload = JsonValue::parse(R"({"track":{"keyframes":[{"frame":-9223372036854775808,"value":1,"interpolationOut":"linear"},{"frame":9223372036854775807,"value":3}]}})");
     VulkanParameterValue value;

@@ -182,7 +182,7 @@ TEST(ProjectCodecTest, IndependentAudioUsesExistingBergWireAndRoundTripsAutomati
     EXPECT_EQ(reopened, project);
 }
 
-TEST(TimelineModelTest, ConstantOpacityAndNormalBlendAreSupportedButAnimationStillWarns) {
+TEST(TimelineModelTest, ConstantOpacityAndSupportedAnimationAreSupported) {
     auto timeline = timelineWithTrack({clip("picture", "media", 0, 10)});
     auto& picture = timeline.tracks.front().clips.front();
     for (const double opacity : {0.0, 0.5, 1.0}) {
@@ -193,7 +193,7 @@ TEST(TimelineModelTest, ConstantOpacityAndNormalBlendAreSupportedButAnimationSti
     }
     picture.opacityTrack = heisenberg::KeyframeTrackPayload{heisenberg::JsonValue::parse(
         R"({"keyframes":[{"frame":0,"value":0.5}]})")};
-    EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Warning);
+    EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Supported);
     picture.opacityTrack.reset();
     picture.blendMode = "multiply";
     EXPECT_EQ(heisenberg::compatibilityFor(timeline).level, heisenberg::CompatibilityLevel::Supported);

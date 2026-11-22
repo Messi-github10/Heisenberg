@@ -79,16 +79,8 @@ struct EditorViewModel::Impl {
 };
 
 namespace {
-void shiftJsonKeyframeTracks(JsonValue& value, int64_t shift, int64_t duration);
-
-std::pair<std::optional<KeyframeTrackPayload>, std::optional<KeyframeTrackPayload>>
-splitTrackPayload(const std::optional<KeyframeTrackPayload>& source, int64_t offset) {
-    if (!source || !source->value.is_object() || !source->value.contains("keyframes") ||
-        !source->value["keyframes"].is_array()) return {source, source};
-    auto left = source, right = source;
-    shiftJsonKeyframeTracks(right->value, -offset, 0);
-    return {std::move(left), std::move(right)};
-}
+bool shiftJsonKeyframeTracks(JsonValue& value, int64_t shift);
+bool shiftTrackPayload(std::optional<KeyframeTrackPayload>& payload, int64_t shift);
 
 std::optional<std::pair<Clip, Clip>> splitValue(const Clip& source, int64_t atFrame) {
     if (atFrame <= source.startFrame || atFrame >= source.endFrame()) return std::nullopt;
@@ -104,7 +96,7 @@ std::optional<std::pair<Clip, Clip>> splitValue(const Clip& source, int64_t atFr
     right.durationFrames = source.durationFrames - offset;
     right.trimStartFrame += leftSource;
     right.fadeInFrames = 0;
-#define SPLIT_TRACK(field) { auto pair = splitTrackPayload(source.field, offset); left.field = std::move(pair.first); right.field = std::move(pair.second); }
+#define SPLIT_TRACK(field) if (!shiftTrackPayload(right.field, -offset)) return std::nullopt;
     SPLIT_TRACK(opacityTrack); SPLIT_TRACK(positionTrack); SPLIT_TRACK(scaleTrack);
     SPLIT_TRACK(rotationTrack); SPLIT_TRACK(cropTrack); SPLIT_TRACK(volumeTrack);
 #undef SPLIT_TRACK
@@ -124,8 +116,7 @@ std::optional<std::pair<Clip, Clip>> splitValue(const Clip& source, int64_t atFr
                 right.wordTimings->push_back(std::move(timing));
         }
     }
-    if (left.effects) shiftJsonKeyframeTracks(*left.effects, 0, left.durationFrames);
-    if (right.effects) shiftJsonKeyframeTracks(*right.effects, -offset, right.durationFrames);
+    if (right.effects && !shiftJsonKeyframeTracks(*right.effects, -offset)) return std::nullopt;
     left.clampTimedPayloadsToDuration();
     right.clampTimedPayloadsToDuration();
     return std::make_pair(std::move(left), std::move(right));
@@ -136,41 +127,49 @@ void setDuration(Clip& clip, int64_t duration) {
     clip.clampFadesToDuration();
 }
 
-void shiftJsonKeyframeTracks(JsonValue& value, int64_t shift, int64_t duration) {
+bool shiftJsonKeyframeTracks(JsonValue& value, int64_t shift) {
+    // A duration-only edit must leave opaque payloads exactly as imported.
+    if (shift == 0) return true;
     if (value.is_array()) {
-        for (JsonValue& child : value) shiftJsonKeyframeTracks(child, shift, duration);
-        return;
+        for (JsonValue& child : value) {
+            if (!shiftJsonKeyframeTracks(child, shift)) return false;
+        }
+        return true;
     }
-    if (!value.is_object()) return;
+    if (!value.is_object()) return true;
     auto keyframes = value.find("keyframes");
     if (keyframes != value.end() && keyframes->is_array()) {
-        JsonValue kept = JsonValue::array();
-        for (JsonValue keyframe : *keyframes) {
-            if (!keyframe.is_object() || !keyframe.contains("frame") || !keyframe["frame"].is_number_integer()) continue;
+        for (JsonValue& keyframe : *keyframes) {
+            if (!keyframe.is_object() || !keyframe.contains("frame")) continue;
+            JsonValue& storedFrame = keyframe["frame"];
+            if (!storedFrame.is_number_integer()) continue;
+            // is_number_integer() also accepts unsigned JSON integers. Values
+            // outside signed frame space are opaque, not negative frame anchors.
+            if (storedFrame.is_number_unsigned() &&
+                storedFrame.get<uint64_t>() > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) continue;
             int64_t frame = 0;
-            if (!addChecked(keyframe["frame"].get<int64_t>(), shift, frame)) continue;
-            keyframe["frame"] = frame;
-            kept.push_back(std::move(keyframe));
+            if (!addChecked(storedFrame.get<int64_t>(), shift, frame)) return false;
+            storedFrame = frame;
         }
-        *keyframes = std::move(kept);
     }
     for (auto it = value.begin(); it != value.end(); ++it) {
-        if (it.key() != "keyframes") shiftJsonKeyframeTracks(it.value(), shift, duration);
+        if (it.key() != "keyframes" && !shiftJsonKeyframeTracks(it.value(), shift)) return false;
     }
+    return true;
 }
 
-void shiftTrackPayload(std::optional<KeyframeTrackPayload>& payload, int64_t shift, int64_t duration) {
+bool shiftTrackPayload(std::optional<KeyframeTrackPayload>& payload, int64_t shift) {
     if (!payload || !payload->value.is_object() || !payload->value.contains("keyframes") ||
-        !payload->value["keyframes"].is_array()) return;
-    shiftJsonKeyframeTracks(payload->value, shift, duration);
+        !payload->value["keyframes"].is_array()) return true;
+    return shiftJsonKeyframeTracks(payload->value, shift);
 }
 
-void shiftClipTimedPayloads(Clip& clip, int64_t shift) {
-#define SHIFT_TRACK(field) shiftTrackPayload(clip.field, shift, clip.durationFrames)
+bool shiftClipTimedPayloads(Clip& clip, int64_t shift) {
+#define SHIFT_TRACK(field) if (!shiftTrackPayload(clip.field, shift)) return false
     SHIFT_TRACK(opacityTrack); SHIFT_TRACK(positionTrack); SHIFT_TRACK(scaleTrack);
     SHIFT_TRACK(rotationTrack); SHIFT_TRACK(cropTrack); SHIFT_TRACK(volumeTrack);
 #undef SHIFT_TRACK
-    if (clip.effects) shiftJsonKeyframeTracks(*clip.effects, shift, clip.durationFrames);
+    if (clip.effects && !shiftJsonKeyframeTracks(*clip.effects, shift)) return false;
     if (clip.wordTimings) {
         std::vector<WordTiming> kept;
         for (WordTiming timing : *clip.wordTimings) {
@@ -185,9 +184,10 @@ void shiftClipTimedPayloads(Clip& clip, int64_t shift) {
         }
         *clip.wordTimings = std::move(kept);
     }
+    return true;
 }
 
-std::vector<std::string> clearRegion(Track& track, int64_t start, int64_t end,
+std::optional<std::vector<std::string>> clearRegion(Track& track, int64_t start, int64_t end,
                                      const std::unordered_set<std::string>& excluded = {}) {
     std::vector<std::string> changed;
     std::vector<Clip> output;
@@ -201,15 +201,17 @@ std::vector<std::string> clearRegion(Track& track, int64_t start, int64_t end,
         if (clip.startFrame < start && clip.endFrame() > end) {
             auto first = splitValue(clip, start);
             auto second = first ? splitValue(first->second, end) : std::nullopt;
-            if (first) output.push_back(std::move(first->first));
-            if (second) { changed.push_back(second->second.id); output.push_back(std::move(second->second)); }
+            if (!first || !second) return std::nullopt;
+            output.push_back(std::move(first->first));
+            changed.push_back(second->second.id);
+            output.push_back(std::move(second->second));
             continue;
         }
         if (clip.startFrame < start) {
             const int64_t newDuration = start - clip.startFrame;
             clip.trimEndFrame += std::llround((clip.durationFrames - newDuration) * clip.speed);
             setDuration(clip, newDuration);
-            shiftClipTimedPayloads(clip, 0);
+            if (!shiftClipTimedPayloads(clip, 0)) return std::nullopt;
             output.push_back(std::move(clip));
             continue;
         }
@@ -217,7 +219,7 @@ std::vector<std::string> clearRegion(Track& track, int64_t start, int64_t end,
         clip.trimStartFrame += std::llround(trimAmount * clip.speed);
         clip.startFrame = end;
         setDuration(clip, clip.durationFrames - trimAmount);
-        shiftClipTimedPayloads(clip, -trimAmount);
+        if (!shiftClipTimedPayloads(clip, -trimAmount)) return std::nullopt;
         output.push_back(std::move(clip));
     }
     track.clips = std::move(output);
@@ -439,6 +441,7 @@ EditResult EditorViewModel::placeClipInternal(const std::string& mediaRef, int64
         for (Clip existing : track->clips) {
             if (existing.startFrame < startFrame && existing.endFrame() > startFrame) {
                 auto split = splitValue(existing, startFrame);
+                if (!split) return {EditStatus::Invalid, {}, "keyframe frame shift overflows"};
                 affected.push_back(existing.id);
                 affected.push_back(split->second.id);
                 split->second.startFrame = endFrame;
@@ -456,7 +459,8 @@ EditResult EditorViewModel::placeClipInternal(const std::string& mediaRef, int64
         track->clips = std::move(output);
     } else {
         const auto cleared = clearRegion(*track, startFrame, endFrame);
-        affected.insert(affected.end(), cleared.begin(), cleared.end());
+        if (!cleared) return {EditStatus::Invalid, {}, "keyframe frame shift overflows"};
+        affected.insert(affected.end(), cleared->begin(), cleared->end());
     }
     Clip clip;
     clip.id = makeUuid();
@@ -553,7 +557,8 @@ EditResult EditorViewModel::moveClip(const std::string& clipId, int64_t startFra
                                      [&](const Clip& value) { return value.id == clipId; }), sourceClips.end());
     Track& destination = *candidate.trackById(destinationId);
     const auto cleared = clearRegion(destination, startFrame, endFrame);
-    affected.insert(affected.end(), cleared.begin(), cleared.end());
+    if (!cleared) return {EditStatus::Invalid, {}, "keyframe frame shift overflows"};
+    affected.insert(affected.end(), cleared->begin(), cleared->end());
     moved.startFrame = startFrame;
     destination.clips.push_back(std::move(moved));
     destination.sortClips();
@@ -653,7 +658,8 @@ EditResult EditorViewModel::moveClips(const std::vector<ClipMoveRequest>& moves,
             ++i;
         }
         const auto cleared = clearRegion(*candidate.trackById(first.targetId), first.start, end);
-        affected.insert(affected.end(), cleared.begin(), cleared.end());
+        if (!cleared) return {EditStatus::Invalid, {}, "keyframe frame shift overflows"};
+        affected.insert(affected.end(), cleared->begin(), cleared->end());
     }
     std::unordered_set<std::string> destinations;
     for (auto& move : planned) {
@@ -680,8 +686,10 @@ EditResult EditorViewModel::splitClip(const std::string& clipId, int64_t atFrame
     if (!track) return {EditStatus::Invalid, {}, "clip was not found"};
     const Clip* current = track->clipById(clipId);
     if (!current) return {EditStatus::Invalid, {}, "clip was not found"};
+    if (atFrame <= current->startFrame || atFrame >= current->endFrame())
+        return {EditStatus::NoOp, {clipId}, "split frame must be inside the clip"};
     const auto values = splitValue(*current, atFrame);
-    if (!values) return {EditStatus::NoOp, {clipId}, "split frame must be inside the clip"};
+    if (!values) return {EditStatus::Invalid, {}, "keyframe frame shift overflows"};
 
     Timeline candidate = *timeline;
     Track& candidateTrack = *candidate.trackById(track->id);
@@ -734,14 +742,14 @@ EditResult EditorViewModel::trimClip(const std::string& clipId, TrimEdge edge, i
         if (!addChecked(snapshot.startFrame, deltaFrames, newStart) || newStart < 0 ||
             !addChecked(snapshot.trimStartFrame, sourceDelta, newTrim) || newTrim < 0)
             return {EditStatus::Invalid, {}, "trim exceeds the available clip head"};
-        if (deltaFrames < 0)
-            clearRegion(candidateTrack, newStart, snapshot.startFrame, {clipId});
+        if (deltaFrames < 0 && !clearRegion(candidateTrack, newStart, snapshot.startFrame, {clipId}))
+            return {EditStatus::Invalid, {}, "keyframe frame shift overflows"};
     } else {
         if (!addChecked(snapshot.trimEndFrame, -sourceDelta, newTrim) || newTrim < 0 ||
             !addChecked(snapshot.startFrame, newDuration, newEnd))
             return {EditStatus::Invalid, {}, "trim exceeds the available clip tail"};
-        if (deltaFrames > 0)
-            clearRegion(candidateTrack, snapshot.endFrame(), newEnd, {clipId});
+        if (deltaFrames > 0 && !clearRegion(candidateTrack, snapshot.endFrame(), newEnd, {clipId}))
+            return {EditStatus::Invalid, {}, "keyframe frame shift overflows"};
     }
 
     Clip* clip = candidateTrack.clipById(clipId);
@@ -750,7 +758,8 @@ EditResult EditorViewModel::trimClip(const std::string& clipId, TrimEdge edge, i
     if (edge == TrimEdge::Left) clip->trimStartFrame = newTrim;
     else clip->trimEndFrame = newTrim;
     setDuration(*clip, newDuration);
-    shiftClipTimedPayloads(*clip, edge == TrimEdge::Left ? -deltaFrames : 0);
+    if (!shiftClipTimedPayloads(*clip, edge == TrimEdge::Left ? -deltaFrames : 0))
+        return {EditStatus::Invalid, {}, "keyframe frame shift overflows"};
     candidateTrack.sortClips();
     std::string error;
     if (!validateTimeline(candidate, &error)) return {EditStatus::Invalid, {}, error};

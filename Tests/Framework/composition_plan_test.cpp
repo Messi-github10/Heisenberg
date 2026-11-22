@@ -329,6 +329,32 @@ TEST(CompositionPlanTest, RejectsUnknownBlendOnEveryVideoTrackBeforeReplacingPla
     }
 }
 
+TEST(CompositionPlanTest, AppearanceTracksAreCapturedAndInvalidFutureKeysPreserveExistingPlan) {
+    auto timeline = timelineFixture();
+    auto& clip = timeline.tracks.front().clips.front();
+    clip.opacityTrack = KeyframeTrackPayload{JsonValue::parse(
+        R"({"keyframes":[{"frame":-2,"value":0.0,"interpolationOut":"smooth"},{"frame":20,"value":1.0}]})")};
+    CompositionPlan plan;
+    std::string error;
+    MediaManifest manifest;
+    MediaManifestEntry entry; entry.id = "asset"; entry.source.path = "appearance-fixture.mp4";
+    ASSERT_TRUE(manifest.add(entry));
+    ASSERT_TRUE(CompositionBuilder::build(timeline, manifest, "", plan, &error)) << error;
+    EXPECT_TRUE(plan.warnings.empty());
+    const auto original = plan;
+    EXPECT_EQ(plan.tracks.front().clips.back().visualSnapshot.opacityTrack, clip.opacityTrack);
+    for (int state : {0, 1, 2}) {
+        timeline.tracks.front().hidden = state == 1;
+        clip.opacity = state == 2 ? 0.0 : 1.0;
+        clip.opacityTrack->value["keyframes"][1]["interpolationOut"] = "future";
+        EXPECT_EQ(compatibilityFor(timeline).level, CompatibilityLevel::Warning);
+        EXPECT_FALSE(CompositionBuilder::build(timeline, MediaManifest{}, "", plan, &error));
+        EXPECT_NE(error.find("opacityTrack"), std::string::npos);
+        EXPECT_EQ(plan.tracks.front().clips.front().visualSnapshot,
+                  original.tracks.front().clips.front().visualSnapshot);
+    }
+}
+
 TEST(CompositionPlanTest, RejectsUnsupportedTrackTypesWithoutReplacingExistingPlan) {
     for (const auto type : {ClipType::Image, ClipType::Text, ClipType::Lottie, ClipType::Sequence, ClipType::Subtitle}) {
         auto timeline = timelineFixture();

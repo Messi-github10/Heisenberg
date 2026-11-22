@@ -4,6 +4,7 @@
 #include <Common/Packet.hpp>
 #include <Common/Stream.hpp>
 #include <Models/BlendMode.hpp>
+#include <Models/ClipAppearance.hpp>
 #include <MultiMedia/Audio/AudioResampler.hpp>
 #include <MultiMedia/DecoderContext.hpp>
 #include <MultiMedia/DemuxContext.hpp>
@@ -428,6 +429,7 @@ struct DecoderSession {
 
 struct CompositionExecutor::Impl {
     std::shared_ptr<const CompositionPlan> snapshot;
+    std::unordered_map<std::string, PreparedClipAppearance> appearanceTracks;
     Options options;
     Info info;
     std::vector<std::string> warnings;
@@ -583,6 +585,7 @@ void CompositionExecutor::reset() {
 void CompositionExecutor::close() {
     impl_->reset();
     impl_->snapshot.reset();
+    impl_->appearanceTracks.clear();
     impl_->info = {};
     impl_->warnings.clear();
 }
@@ -607,14 +610,19 @@ CompositionExecutor::OpenResult CompositionExecutor::open(const CompositionPlan&
     if (!owned.settings.valid(&error) || owned.frameCount < 0)
         return {Status::Failure, {}, error.empty() ? "Negative composition duration" : error};
     std::unordered_set<std::string> ids;
+    std::unordered_map<std::string, PreparedClipAppearance> appearanceTracks;
     for (const auto& track : owned.tracks) {
         if (track.id.empty() || !ids.insert(track.id).second
             || (track.type != ClipType::Video && track.type != ClipType::Audio))
             return {Status::Failure, {}, "Invalid composition track identity or type"};
         int64_t previousEnd = 0;
         for (const auto& clip : track.clips) {
-            if (track.type == ClipType::Video && !parseBlendMode(clip.visualSnapshot.blendMode))
-                return {Status::Failure, {}, "Unsupported clip blend mode: " + clip.id};
+            if (track.type == ClipType::Video) {
+                if (!parseBlendMode(clip.visualSnapshot.blendMode))
+                    return {Status::Failure, {}, "Unsupported clip blend mode: " + clip.id};
+                if (!prepareClipAppearance(clip.visualSnapshot, appearanceTracks[clip.id], &error))
+                    return {Status::Failure, {}, "Invalid clip appearance: " + clip.id + ": " + error};
+            }
             if (clip.id.empty() || !ids.insert(clip.id).second
                 || clip.startFrame < previousEnd || clip.durationFrames <= 0 || clip.trimStartFrame < 0
                 || clip.trimEndFrame < 0 || clip.startFrame > owned.frameCount
@@ -628,6 +636,7 @@ CompositionExecutor::OpenResult CompositionExecutor::open(const CompositionPlan&
         }
     }
     impl_->snapshot = std::move(snapshot);
+    impl_->appearanceTracks = std::move(appearanceTracks);
     impl_->options = options;
     impl_->warnings = impl_->snapshot->warnings;
     impl_->info.settings = impl_->snapshot->settings;
@@ -742,8 +751,11 @@ CompositionExecutor::VideoResult CompositionExecutor::videoFrame(int64_t frame, 
             output.mediaRef = clip.mediaRef;
             output.clipLocalFrame = sample.clipLocalFrame;
         } else if (image) {
+            SampledClipAppearance appearance;
+            if (!impl_->appearanceTracks.at(clip.id).sample(sample.clipLocalFrame, appearance, &error))
+                return {Status::Failure, {}, "Invalid clip appearance: " + clip.id + ": " + error};
             output.layers.push_back({std::move(image), track.id, clip.id, sample.clipLocalFrame,
-                std::clamp(clip.visualSnapshot.opacity, 0.0, 1.0)});
+                appearance.opacity});
         }
     }
     impl_->retain("video:", used);
