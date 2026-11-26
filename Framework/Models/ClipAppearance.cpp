@@ -206,4 +206,221 @@ bool sampleClipAppearance(const Clip& clip, int64_t frame, Clip& output, std::st
     return true;
 }
 
+namespace {
+
+std::optional<KeyframeTrackPayload>& appearanceTrack(Clip& clip, AppearanceProperty property) {
+    switch (property) {
+    case AppearanceProperty::Opacity: return clip.opacityTrack;
+    case AppearanceProperty::Position: return clip.positionTrack;
+    case AppearanceProperty::Scale: return clip.scaleTrack;
+    case AppearanceProperty::Rotation: return clip.rotationTrack;
+    case AppearanceProperty::Crop: return clip.cropTrack;
+    }
+    return clip.opacityTrack;
+}
+
+ClipAppearancePatch propertyPatch(const SampledClipAppearance& value, AppearanceProperty property) {
+    ClipAppearancePatch patch;
+    switch (property) {
+    case AppearanceProperty::Opacity: patch.opacity = value.opacity; break;
+    case AppearanceProperty::Position:
+        patch.centerX = value.transform.centerX; patch.centerY = value.transform.centerY; break;
+    case AppearanceProperty::Scale:
+        patch.width = value.transform.width; patch.height = value.transform.height; break;
+    case AppearanceProperty::Rotation: patch.rotation = value.transform.rotation; break;
+    case AppearanceProperty::Crop:
+        patch.cropLeft = value.crop.left; patch.cropTop = value.crop.top;
+        patch.cropRight = value.crop.right; patch.cropBottom = value.crop.bottom; break;
+    }
+    return patch;
+}
+
+void applyPatch(Clip& clip, const ClipAppearancePatch& patch) {
+    if (patch.centerX) clip.transform.centerX = *patch.centerX;
+    if (patch.centerY) clip.transform.centerY = *patch.centerY;
+    if (patch.width) clip.transform.width = *patch.width;
+    if (patch.height) clip.transform.height = *patch.height;
+    if (patch.rotation) clip.transform.rotation = *patch.rotation;
+    if (patch.flipHorizontal) clip.transform.flipHorizontal = *patch.flipHorizontal;
+    if (patch.flipVertical) clip.transform.flipVertical = *patch.flipVertical;
+    if (patch.cropLeft) clip.crop.left = *patch.cropLeft;
+    if (patch.cropTop) clip.crop.top = *patch.cropTop;
+    if (patch.cropRight) clip.crop.right = *patch.cropRight;
+    if (patch.cropBottom) clip.crop.bottom = *patch.cropBottom;
+    if (patch.edgeRounding) clip.edgeRounding = *patch.edgeRounding;
+    if (patch.edgeSoftness) clip.edgeSoftness = *patch.edgeSoftness;
+    if (patch.opacity) clip.opacity = *patch.opacity;
+    if (patch.blendMode) clip.blendMode = *patch.blendMode;
+}
+
+void writePropertyValue(JsonValue& value, const Clip& clip, AppearanceProperty property,
+                        const ClipAppearancePatch* changed = nullptr) {
+    switch (property) {
+    case AppearanceProperty::Opacity: value = clip.opacity; break;
+    case AppearanceProperty::Rotation: value = clip.transform.rotation; break;
+    case AppearanceProperty::Position:
+    case AppearanceProperty::Scale:
+        if (!value.is_object()) value = JsonValue::object();
+        if (!changed || (property == AppearanceProperty::Position ? changed->centerX.has_value() : changed->width.has_value()))
+            value["a"] = property == AppearanceProperty::Position ? clip.transform.centerX : clip.transform.width;
+        if (!changed || (property == AppearanceProperty::Position ? changed->centerY.has_value() : changed->height.has_value()))
+            value["b"] = property == AppearanceProperty::Position ? clip.transform.centerY : clip.transform.height;
+        break;
+    case AppearanceProperty::Crop:
+        if (!value.is_object()) value = JsonValue::object();
+        if (!changed || changed->cropLeft) value["left"] = clip.crop.left;
+        if (!changed || changed->cropTop) value["top"] = clip.crop.top;
+        if (!changed || changed->cropRight) value["right"] = clip.crop.right;
+        if (!changed || changed->cropBottom) value["bottom"] = clip.crop.bottom;
+        break;
+    }
+}
+
+bool validProperty(AppearanceProperty property) {
+    return property >= AppearanceProperty::Opacity && property <= AppearanceProperty::Crop;
+}
+
+} // namespace
+
+bool prepareAppearanceProperty(const Clip& clip, AppearanceProperty property,
+                               PreparedAppearanceProperty& output, std::string* error) {
+    if (!validProperty(property)) {
+        if (error) *error = "unknown appearance property";
+        return false;
+    }
+    // Isolate the selected property before invoking the shared numeric sampler.
+    // No unrelated constants, tracks, or opaque effects enter validation.
+    Clip isolated;
+    switch (property) {
+    case AppearanceProperty::Opacity: isolated.opacity = clip.opacity; isolated.opacityTrack = clip.opacityTrack; break;
+    case AppearanceProperty::Position:
+        isolated.transform.centerX = clip.transform.centerX; isolated.transform.centerY = clip.transform.centerY;
+        isolated.positionTrack = clip.positionTrack; break;
+    case AppearanceProperty::Scale:
+        isolated.transform.width = clip.transform.width; isolated.transform.height = clip.transform.height;
+        isolated.scaleTrack = clip.scaleTrack; break;
+    case AppearanceProperty::Rotation:
+        isolated.transform.rotation = clip.transform.rotation; isolated.rotationTrack = clip.rotationTrack; break;
+    case AppearanceProperty::Crop: isolated.crop = clip.crop; isolated.cropTrack = clip.cropTrack; break;
+    }
+    PreparedAppearanceProperty candidate;
+    candidate.property_ = property;
+    if (!prepareClipAppearance(isolated, candidate.prepared_, error)) return false;
+    const auto& track = appearanceTrack(isolated, property);
+    if (track) for (const auto& key : track->value["keyframes"]) {
+        candidate.frames_.push_back(key["frame"].get<int64_t>());
+        Interpolation interpolation = Interpolation::Linear;
+        if (key.contains("interpolationOut"))
+            keyframes::readInterpolation(key["interpolationOut"].get<std::string>(), interpolation);
+        candidate.interpolations_.push_back(interpolation);
+    }
+    output = std::move(candidate);
+    return true;
+}
+
+bool PreparedAppearanceProperty::sample(int64_t frame, ClipAppearancePropertyState& output,
+                                        std::string* error) const {
+    SampledClipAppearance appearance;
+    if (!prepared_.sample(frame, appearance, error)) return false;
+    ClipAppearancePropertyState candidate;
+    candidate.sampled = propertyPatch(appearance, property_);
+    candidate.keyframes = frames_;
+    candidate.animated = !frames_.empty();
+    const auto next = std::upper_bound(frames_.begin(), frames_.end(), frame);
+    if (next != frames_.begin()) {
+        const auto index = static_cast<size_t>(next - frames_.begin() - 1);
+        candidate.exactKey = frames_[index] == frame;
+        candidate.interpolation = interpolations_[index];
+    }
+    output = std::move(candidate);
+    return true;
+}
+
+bool inspectClipAppearanceProperty(const Clip& clip, AppearanceProperty property, int64_t frame,
+                                   ClipAppearancePropertyState& output, std::string* error) {
+    PreparedAppearanceProperty prepared;
+    return prepareAppearanceProperty(clip, property, prepared, error) && prepared.sample(frame, output, error);
+}
+
+bool applyClipAppearanceEdit(const Clip& clip, const ClipAppearanceEdit& edit,
+                             Clip& output, std::string* error) {
+    if (error) error->clear();
+    const auto invalid = [&](const char* reason) { if (error) *error = reason; return false; };
+    if (edit.action != AppearanceEditAction::Values && edit.action != AppearanceEditAction::ToggleKeyframe &&
+        edit.action != AppearanceEditAction::SetInterpolation) return invalid("unknown appearance edit action");
+    if (edit.action == AppearanceEditAction::SetInterpolation &&
+        edit.interpolation != Interpolation::Linear && edit.interpolation != Interpolation::Hold &&
+        edit.interpolation != Interpolation::Smooth) return invalid("unknown appearance interpolation");
+    Clip candidate = clip;
+    if (!edit.property) {
+        if (edit.action != AppearanceEditAction::Values)
+            return invalid("keyframe actions require an appearance property");
+        if (edit.patch.opacity || edit.patch.centerX || edit.patch.centerY || edit.patch.width ||
+            edit.patch.height || edit.patch.rotation || edit.patch.cropLeft || edit.patch.cropTop ||
+            edit.patch.cropRight || edit.patch.cropBottom)
+            return invalid("animated fields require an appearance property");
+        if (!validateClipAppearancePatch(clip, edit.patch, error)) return false;
+        applyPatch(candidate, edit.patch);
+        output = std::move(candidate);
+        return true;
+    }
+    const auto property = *edit.property;
+    ClipAppearancePropertyState state;
+    if (!inspectClipAppearanceProperty(clip, property, edit.localFrame, state, error)) return false;
+    if ((state.animated || edit.action != AppearanceEditAction::Values) &&
+        (edit.localFrame < 0 || edit.localFrame >= clip.durationFrames))
+        return invalid("appearance keyframe edit frame must be within the clip duration");
+    // Enforce a single group per intent; constant extras use an absent property.
+    ClipAppearancePatch outside = edit.patch;
+    switch (property) {
+    case AppearanceProperty::Opacity: outside.opacity.reset(); break;
+    case AppearanceProperty::Position: outside.centerX.reset(); outside.centerY.reset(); break;
+    case AppearanceProperty::Scale: outside.width.reset(); outside.height.reset(); break;
+    case AppearanceProperty::Rotation: outside.rotation.reset(); break;
+    case AppearanceProperty::Crop:
+        outside.cropLeft.reset(); outside.cropTop.reset(); outside.cropRight.reset(); outside.cropBottom.reset(); break;
+    }
+    if (!outside.empty()) return invalid("appearance patch contains fields outside the selected property");
+    if (edit.action != AppearanceEditAction::Values && !edit.patch.empty())
+        return invalid("keyframe actions do not accept a values patch");
+
+    auto& track = appearanceTrack(candidate, property);
+    const auto found = std::lower_bound(state.keyframes.begin(), state.keyframes.end(), edit.localFrame);
+    const size_t index = static_cast<size_t>(found - state.keyframes.begin());
+    if (edit.action == AppearanceEditAction::SetInterpolation) {
+        if (!state.exactKey) return invalid("interpolation requires an exact keyframe");
+        if (state.interpolation != edit.interpolation)
+            track->value["keyframes"][index]["interpolationOut"] = toString(edit.interpolation);
+    } else if (edit.action == AppearanceEditAction::ToggleKeyframe && state.exactKey) {
+        auto& keys = track->value["keyframes"];
+        keys.erase(keys.begin() + static_cast<JsonValue::difference_type>(index));
+    } else {
+        Clip sampled;
+        applyPatch(sampled, state.sampled);
+        if (edit.action == AppearanceEditAction::Values) {
+            if (!validateClipAppearancePatch(sampled, edit.patch, error)) return false;
+            Clip changed = sampled;
+            applyPatch(changed, edit.patch);
+            if (changed == sampled) { output = clip; return true; }
+            sampled = std::move(changed);
+        }
+        if (!state.animated && edit.action == AppearanceEditAction::Values) {
+            applyPatch(candidate, edit.patch);
+        } else {
+            if (!track) track = KeyframeTrackPayload{JsonValue{{"keyframes", JsonValue::array()}}};
+            auto& keys = track->value["keyframes"];
+            if (!state.exactKey) {
+                JsonValue key{{"frame", edit.localFrame}, {"value", nullptr},
+                              {"interpolationOut", toString(state.interpolation)}};
+                writePropertyValue(key["value"], sampled, property);
+                keys.insert(keys.begin() + static_cast<JsonValue::difference_type>(index), std::move(key));
+            } else {
+                writePropertyValue(keys[index]["value"], sampled, property, &edit.patch);
+            }
+        }
+    }
+    output = std::move(candidate);
+    return true;
+}
+
 } // namespace heisenberg

@@ -58,6 +58,7 @@ public:
     void editSelectedClipGrade();
     void editSelectedClipColorGrade();
     void setColorGradePanelEnabled(bool enabled);
+    void setClipPropertiesPanelEnabled(bool enabled);
     void setFrameCount(qint64 frameCount);
     void setCurrentFrame(qint64 frame);
     void setPlaying(bool playing);
@@ -78,6 +79,8 @@ signals:
     void selectedClipChanged(const QString& clipId);
     void selectedClipsChanged(const QStringList& clipIds);
     void colorGradeRequested(const QString& clipId);
+    void clipPropertiesRequested(const QString& clipId);
+    void currentFrameChanged(qint64 frameIndex);
     void timelineActivated();
     void scrubStarted();
     void scrubFrameRequested(qint64 frameIndex);
@@ -125,6 +128,8 @@ private:
     void clampView();
     void setZoom(double zoom, double anchorX);
     void updateScrub(double x, bool finished);
+    void storeCurrentFrame(qint64 frame);
+    void refreshAppearanceMarkers();
     std::string clipAt(const QPointF& point) const;
     QString clipName(const heisenberg::Clip& clip) const;
     QColor clipColor(heisenberg::ClipType type, bool missing) const;
@@ -203,8 +208,10 @@ private:
     bool insertMode_ = false;
     bool editInProgress_ = false;
     bool colorGradePanelEnabled_ = false;
+    bool clipPropertiesPanelEnabled_ = false;
 
     heisenberg::ui::EditorSession* session_ = nullptr;
+    std::unordered_map<std::string, std::vector<int64_t>> appearanceMarkerFrames_;
     std::unordered_map<std::string, std::string> mediaNames_;
     std::unordered_set<std::string> missingMedia_;
     QString draggedMedia_;

@@ -121,6 +121,12 @@ void ColorGradePanel::previewEffects() {
     if (!transaction_ && effects == originalEffects_.value_or(JsonValue::array())) return;
     QScopedValueRollback guard(updating_, true);
     if (!transaction_) {
+        const auto clipId = clipId_;
+        const auto token = projectToken_;
+        emit editRequested();
+        if (clipId_ != clipId || projectToken_ != token) return;
+    }
+    if (!transaction_) {
         const auto result = session_->beginClipEffectsTransaction(clipId_);
         if (!result.message.empty()) { emit editFailed(QString::fromStdString(result.message)); return; }
         transaction_ = true;

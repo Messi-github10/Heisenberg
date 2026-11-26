@@ -261,6 +261,19 @@ void PlayerController::seek(double seconds) {
     pendingPosition_ = -1.0;
     previewer_->seek(seconds);
 }
+void PlayerController::seekTimelineFrame(qint64 frame) {
+    const auto* timeline = session_->editor().activeTimeline();
+    if (!previewer_ || !timeline || timeline->totalFrames() <= 0) return;
+    frame = std::clamp<qint64>(frame, 0, timeline->totalFrames() - 1);
+    const double seconds = static_cast<double>(frame) / timeline->fps;
+    if (previewingSource_ || previewer_->state() == IPreviewer::State::Idle) {
+        showTimeline(frame);
+        return;
+    }
+    pause();
+    seek(seconds);
+}
+
 void PlayerController::beginScrub() {
     if (!previewer_) return;
     if (previewingSource_) showTimeline();

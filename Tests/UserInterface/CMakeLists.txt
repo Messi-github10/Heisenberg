@@ -13,6 +13,11 @@ add_executable(HeisenbergEditorUiTests
     multitrack_ui_test.cpp
     multi_selection_ui_test.cpp
     clip_appearance_ui_test.cpp
+    clip_properties_panel_test.cpp
+    appearance_marker_ui_test.cpp
+    clip_properties_workflow_test.cpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ClipPropertiesPanel.cpp
+    ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ClipPropertiesPanel.hpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ClipAppearanceDialog.cpp
     ${CMAKE_SOURCE_DIR}/UserInterface/MainWidget/ClipAppearanceDialog.hpp
     auto_track_drop_test.cpp

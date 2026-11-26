@@ -19,6 +19,7 @@ public:
     void cancelEditing();
     QString clipId() const { return clipId_; }
 signals:
+    void editRequested();
     void editFailed(const QString& message);
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;

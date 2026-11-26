@@ -65,6 +65,12 @@ public:
     EditResult reorderTrack(const std::string& trackId, int finalIndex);
     EditResult setTrackHidden(const std::string& trackId, bool hidden);
     EditResult setClipAppearance(const std::string& clipId, const ClipAppearancePatch& patch);
+    EditResult editClipAppearance(const std::string& clipId, const ClipAppearanceEdit& edit);
+    EditResult beginClipAppearanceTransaction(const std::string& clipId, int64_t localFrame);
+    EditResult updateClipAppearanceTransaction(const ClipAppearanceEdit& edit);
+    EditResult commitClipAppearanceTransaction();
+    EditResult cancelClipAppearanceTransaction();
+    bool hasPendingDocumentTransaction() const;
     EditResult setClipOpacity(const std::string& clipId, double opacity);
     EditResult setTrackMuted(const std::string& trackId, bool muted);
     EditResult setColorSettings(const ColorSettings& settings);

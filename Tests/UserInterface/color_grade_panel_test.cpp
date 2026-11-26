@@ -110,10 +110,11 @@ TEST_F(ColorGradePanelTest, TimelineSelectionUsesPersistentInspectorAndNeverOpen
     auto* panel = window.findChild<ColorGradePanel*>("colorGradePanel");
     ASSERT_NE(inspector, nullptr);
     ASSERT_NE(panel, nullptr);
-    ASSERT_EQ(inspector->count(), 2);
-    EXPECT_EQ(inspector->tabText(0), QString("Color Grade"));
-    EXPECT_EQ(inspector->tabText(1), QString("Media Info"));
-    EXPECT_EQ(inspector->widget(0), panel);
+    ASSERT_EQ(inspector->count(), 3);
+    EXPECT_EQ(inspector->tabText(0), QString("Clip Properties"));
+    EXPECT_EQ(inspector->tabText(1), QString("Color Grade"));
+    EXPECT_EQ(inspector->tabText(2), QString("Media Info"));
+    EXPECT_EQ(inspector->widget(1), panel);
     EXPECT_TRUE(panel->clipId().isEmpty());
     EXPECT_EQ(panel->findChild<ColorGradeControls*>(), nullptr);
 
@@ -143,7 +144,8 @@ TEST_F(ColorGradePanelTest, TimelineSelectionUsesPersistentInspectorAndNeverOpen
     EXPECT_EQ(controls->findChildren<ColorWheelWidget*>().size(), 3);
     controls->setCurrentTab(3);
     EXPECT_EQ(controls->currentTab(), 3);
-    inspector->setCurrentIndex(1);
+    inspector->setCurrentWidget(panel);
+    inspector->setCurrentIndex(2);
     EXPECT_EQ(panel->clipId(), firstId);
     EXPECT_EQ(panel->findChild<ColorGradeControls*>(), controls);
 

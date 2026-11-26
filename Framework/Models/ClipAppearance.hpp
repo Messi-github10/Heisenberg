@@ -27,6 +27,28 @@ struct ClipAppearancePatch {
     std::optional<std::string> blendMode;
 
     bool empty() const;
+    bool operator==(const ClipAppearancePatch&) const = default;
+};
+
+enum class AppearanceProperty { Opacity, Position, Scale, Rotation, Crop };
+enum class AppearanceEditAction { Values, ToggleKeyframe, SetInterpolation };
+
+struct ClipAppearanceEdit {
+    // No property permits only constant extras: flips, edge styling and blend mode.
+    std::optional<AppearanceProperty> property;
+    int64_t localFrame = 0;
+    AppearanceEditAction action = AppearanceEditAction::Values;
+    ClipAppearancePatch patch;
+    Interpolation interpolation = Interpolation::Linear;
+};
+
+struct ClipAppearancePropertyState {
+    ClipAppearancePatch sampled;
+    std::vector<int64_t> keyframes;
+    bool exactKey = false;
+    bool animated = false;
+    // Exact key's outgoing interpolation, otherwise the preceding key's, or Linear.
+    Interpolation interpolation = Interpolation::Linear;
 };
 
 // Checks constant 2D geometry only. Rotation X/Y and automation require separate
@@ -74,5 +96,29 @@ bool sampleClipAppearance(const Clip& clip, int64_t clipLocalFrame,
                           SampledClipAppearance& output, std::string* error = nullptr);
 bool sampleClipAppearance(const Clip& clip, int64_t clipLocalFrame,
                           Clip& output, std::string* error = nullptr);
+
+// Cached, target-only inspection. Owns numeric data, never Clip or opaque JSON.
+class PreparedAppearanceProperty {
+public:
+    bool sample(int64_t localFrame, ClipAppearancePropertyState& output,
+                std::string* error = nullptr) const;
+    const std::vector<int64_t>& keyframes() const { return frames_; }
+private:
+    friend bool prepareAppearanceProperty(const Clip&, AppearanceProperty,
+                                          PreparedAppearanceProperty&, std::string*);
+    AppearanceProperty property_ = AppearanceProperty::Opacity;
+    PreparedClipAppearance prepared_;
+    std::vector<int64_t> frames_;
+    std::vector<Interpolation> interpolations_;
+};
+
+bool prepareAppearanceProperty(const Clip& clip, AppearanceProperty property,
+                               PreparedAppearanceProperty& output, std::string* error = nullptr);
+bool inspectClipAppearanceProperty(const Clip& clip, AppearanceProperty property, int64_t localFrame,
+                                   ClipAppearancePropertyState& output, std::string* error = nullptr);
+// Atomic target-only edit. Key writes require [0,duration); constants and inspection accept any frame.
+// Retains unknown track/key/value members and all untouched appearance properties.
+bool applyClipAppearanceEdit(const Clip& clip, const ClipAppearanceEdit& edit,
+                             Clip& output, std::string* error = nullptr);
 
 } // namespace heisenberg

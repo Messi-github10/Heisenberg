@@ -113,8 +113,8 @@ Media import itself is not part of timeline undo history.
   target; direct drops use their actual lane. Track removal, undo and project changes
   must leave a valid target or a predictable compatible fallback.
 - Video lanes appear above audio lanes. Within video, the visually upper lane is
-  composited over lower lanes. Right-click a video's **Clip Appearance...** to edit
-  constant geometry and opacity. Center X/Y are canvas percentages (50% centers the
+  composited over lower lanes. Right-click a video's **Clip Appearance...** to open
+  the persistent **Clip Properties** inspector. Center X/Y are canvas percentages (50% centers the
   image); Width/Height scale the existing aspect-fit result independently. Rotation
   is clockwise in degrees and flips use the image's local axes.
 - Crop percentages remove the corresponding source sides without zooming or changing
@@ -125,16 +125,29 @@ Media import itself is not part of timeline undo history.
   corners over a contrasting lower layer, and differently shaped sources whose fitted
   borders should reveal lower layers rather than black. Small/downscaled images must
   not acquire a fringe from RGB stored in fully transparent texels.
-- Opening and confirming unchanged appearance or cancelling it leaves the project
-  untouched. Multiple changed controls commit one undo step, preserve grade/audio and
-  imported animation, and apply only to the primary selected clip. Save/reopen, unsaved
-  preview and export must reproduce the appearance. Perspective retains a planar
-  preview fallback and must fail strict export before touching an existing output.
-- This round adds no keyframe UI. Imported `opacityTrack`, `positionTrack`,
-  `scaleTrack`, `rotationTrack` and `cropTrack` execute in timeline preview and export;
-  Clip Appearance edits constants while preserving those payloads. A nonempty track
-  overrides its corresponding constant, including a fade-in from constant opacity 0.
-  Source preview continues to ignore timeline geometry/opacity while retaining grade.
+- Clip Properties targets the primary selected video clip and keeps the active inspector
+  tab when selection changes. Its five property groups display sampled values as the
+  playhead moves. Missing/empty tracks edit constants; nonempty tracks insert/update
+  a key at the current local frame. Editing one position/scale/crop component preserves
+  the other sampled components and existing opaque metadata.
+- Use each group's diamond to add/remove a key, the arrows to seek the actual timeline
+  preview, and Linear/Hold/Smooth to edit the exact key's outgoing interpolation.
+  Removing the last key restores the stored constant. Outside the clip's half-open
+  range, key writes and animated values are disabled with an explanation; constant
+  values and navigation to in-range keys remain available. Negative/future imported
+  anchors remain stored but are not shown as clip-body markers or navigation targets.
+- Drag the ↔ handle beside a number horizontally or hold a spinbox arrow: one gesture is one undo.
+  Keyboard confirmation/focus-out commits; Escape cancels. Wheel scrolling must not
+  change values. Save/export, selection/frame/tab changes and structural edits finish
+  the gesture; switching between grading and properties commits the previous edit.
+- Selected video clips show the union of their five keyframe groups as bottom diamonds,
+  merging identical frames. Verify multiple selected clips, zoom/scroll, clip bounds,
+  and marker refresh after undo/redo, split, trim and move. Markers retain ordinary
+  clip selection/drag behavior and never modify project data.
+- `opacityTrack`, `positionTrack`, `scaleTrack`, `rotationTrack` and `cropTrack` execute
+  in timeline preview and export. A nonempty track overrides its corresponding constant,
+  including a fade-in from constant opacity 0. Source preview continues to ignore
+  timeline geometry/opacity while retaining grade.
 - The imported format is `{"keyframes":[{"frame":0,"value":0,"interpolationOut":"smooth"},
   {"frame":12,"value":1}]}` (opacity example). Frames must be strictly increasing
   integers. `localFrame = timelineFrame - clip.startFrame`; source trims and speed

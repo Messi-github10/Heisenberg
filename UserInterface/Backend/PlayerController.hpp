@@ -68,6 +68,7 @@ public slots:
     void pause();
     void togglePlayPause();
     void seek(double seconds);
+    void seekTimelineFrame(qint64 frameIndex);
     void beginScrub();
     void scrubToFrame(qint64 frameIndex);
     void endScrub(qint64 frameIndex);

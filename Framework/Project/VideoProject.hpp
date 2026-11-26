@@ -68,7 +68,7 @@ public:
     bool save(std::string* error = nullptr);
     bool saveAs(const std::string& path, std::string* error = nullptr);
     // Persist a previously captured revision. A newer committed document stays
-    // dirty. Saves/loads are rejected during a pending effects transaction;
+    // dirty. Saves/loads are rejected during any pending document transaction;
     // snapshots captured during one can never be persisted.
     bool saveSnapshot(const ProjectSnapshot& snapshot, const std::string& path,
                       std::string* error = nullptr);

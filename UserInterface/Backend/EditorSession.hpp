@@ -65,6 +65,12 @@ public:
     EditResult reorderTrack(const QString& trackId, int finalIndex);
     EditResult setTrackHidden(const QString& trackId, bool hidden);
     EditResult setClipAppearance(const QString& clipId, const ClipAppearancePatch& patch);
+    EditResult editClipAppearance(const QString& clipId, const ClipAppearanceEdit& edit);
+    EditResult beginClipAppearanceTransaction(const QString& clipId, qint64 localFrame);
+    EditResult updateClipAppearanceTransaction(const ClipAppearanceEdit& edit);
+    EditResult commitClipAppearanceTransaction();
+    EditResult cancelClipAppearanceTransaction();
+    bool hasPendingDocumentTransaction() const { return editor().hasPendingDocumentTransaction(); }
     EditResult setClipOpacity(const QString& clipId, double opacity);
     EditResult setTrackMuted(const QString& trackId, bool muted);
     EditResult setColorSettings(const ColorSettings& settings);

@@ -44,6 +44,8 @@ int main(int argc, char* argv[]) {
                      &playerCtrl, &heisenberg::ui::PlayerController::scrubToFrame);
     QObject::connect(&mainWindow, &MainWindow::scrubFinished,
                      &playerCtrl, &heisenberg::ui::PlayerController::endScrub);
+    QObject::connect(&mainWindow, &MainWindow::timelineSeekRequested,
+                     &playerCtrl, &heisenberg::ui::PlayerController::seekTimelineFrame);
     QObject::connect(&mainWindow, &MainWindow::sourceSeekRequested,
                      &playerCtrl, &heisenberg::ui::PlayerController::seek);
     QObject::connect(&mainWindow, &MainWindow::markSourceInRequested,

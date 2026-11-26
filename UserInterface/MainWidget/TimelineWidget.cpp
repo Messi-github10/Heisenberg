@@ -2,6 +2,7 @@
 #include "Backend/EditorSession.hpp"
 #include "MainWidget/ClipAppearanceDialog.hpp"
 #include "MainWidget/ColorGradeDialog.hpp"
+#include <Models/ClipAppearance.hpp>
 
 #include <QDir>
 #include <QFile>
@@ -124,17 +125,19 @@ void TimelineWidget::setSession(heisenberg::ui::EditorSession* session) {
         verticalScrollBar_->setValue(0);
         setSelectedClipId({});
         hoveredClipId_.clear();
-        currentFrame_ = 0;
         scrollOffset_ = 0.0;
         pixelsPerFrame_ = 4.0;
-        const auto& project = session_->editor().project();
-        if (const auto* active = timeline(); active && project.viewStates) {
-            const auto state = project.viewStates->find(active->id);
-            if (state != project.viewStates->end()) {
-                pixelsPerFrame_ = state->second.zoomScale;
-                scrollOffset_ = state->second.scrollOffsetX;
+        {
+            const auto& project = session_->editor().project();
+            if (const auto* active = timeline(); active && project.viewStates) {
+                const auto state = project.viewStates->find(active->id);
+                if (state != project.viewStates->end()) {
+                    pixelsPerFrame_ = state->second.zoomScale;
+                    scrollOffset_ = state->second.scrollOffsetX;
+                }
             }
         }
+        storeCurrentFrame(0);
         refreshProject();
     });
     connect(session_, &heisenberg::ui::EditorSession::mediaChanged, this, &TimelineWidget::refreshProject);
@@ -162,27 +165,57 @@ void TimelineWidget::refreshProject() {
     if (std::any_of(selectedClipIds_.begin(), selectedClipIds_.end(), [this](const auto& id) {
             return !timeline() || !timeline()->clipById(id);
         })) setSelection(selectedClipIds_, selectedClipId_);
-    currentFrame_ = std::clamp<qint64>(currentFrame_, 0, std::max<qint64>(0, contentFrameCount() - 1));
     if (!timeline() || !timeline()->trackById(selectedTrackId_)) selectedTrackId_.clear();
     if (!timeline() || !timeline()->trackById(videoTargetTrackId_)) videoTargetTrackId_.clear();
     if (!timeline() || !timeline()->trackById(audioTargetTrackId_)) audioTargetTrackId_.clear();
+    refreshAppearanceMarkers();
     updateVerticalScrollBar();
     clampView();
     updateGeometry();
     update();
+    storeCurrentFrame(std::clamp<qint64>(currentFrame_, 0, std::max<qint64>(0, contentFrameCount() - 1)));
+}
+
+void TimelineWidget::refreshAppearanceMarkers() {
+    appearanceMarkerFrames_.clear();
+    const auto* active = timeline();
+    if (!active) return;
+    constexpr std::array properties{heisenberg::AppearanceProperty::Opacity, heisenberg::AppearanceProperty::Position,
+        heisenberg::AppearanceProperty::Scale, heisenberg::AppearanceProperty::Rotation, heisenberg::AppearanceProperty::Crop};
+    for (const auto& track : active->tracks) for (const auto& clip : track.clips) {
+        if (clip.mediaType != heisenberg::ClipType::Video) continue;
+        std::vector<int64_t> frames;
+        for (const auto property : properties) {
+            heisenberg::PreparedAppearanceProperty prepared;
+            if (!heisenberg::prepareAppearanceProperty(clip, property, prepared)) continue;
+            for (const auto frame : prepared.keyframes())
+                if (frame >= 0 && frame < clip.durationFrames) frames.push_back(frame);
+        }
+        std::sort(frames.begin(), frames.end());
+        frames.erase(std::unique(frames.begin(), frames.end()), frames.end());
+        if (!frames.empty()) appearanceMarkerFrames_.emplace(clip.id, std::move(frames));
+    }
 }
 
 void TimelineWidget::setFrameCount(qint64 frameCount) {
     playbackFrameCount_ = std::max<qint64>(0, frameCount);
-    currentFrame_ = std::clamp<qint64>(currentFrame_, 0, std::max<qint64>(0, contentFrameCount() - 1));
     clampView();
     update();
+    storeCurrentFrame(std::clamp<qint64>(currentFrame_, 0, std::max<qint64>(0, contentFrameCount() - 1)));
+}
+
+void TimelineWidget::storeCurrentFrame(qint64 frame) {
+    if (currentFrame_ == frame) return;
+    currentFrame_ = frame;
+    update();
+    // Receivers may synchronously replace the project; callers must not retain
+    // clip or timeline pointers across this notification.
+    emit currentFrameChanged(frame);
 }
 
 void TimelineWidget::setCurrentFrame(qint64 frame) {
     if (scrubbing_ || (clipMove_ && clipMove_->dragging)) return;
-    currentFrame_ = std::clamp<qint64>(frame, 0, std::max<qint64>(0, contentFrameCount() - 1));
-    update();
+    storeCurrentFrame(std::clamp<qint64>(frame, 0, std::max<qint64>(0, contentFrameCount() - 1)));
 }
 
 bool TimelineWidget::cancelInteraction() {
@@ -269,6 +302,10 @@ void TimelineWidget::toggleTrack(const std::string& trackId, bool hidden) {
     });
 }
 
+void TimelineWidget::setClipPropertiesPanelEnabled(bool enabled) {
+    clipPropertiesPanelEnabled_ = enabled;
+}
+
 void TimelineWidget::editSelectedClipAppearance() {
     cancelInteraction();
     if (editInProgress_ || !session_) return;
@@ -281,6 +318,10 @@ void TimelineWidget::editSelectedClipAppearance() {
     }();
     if (!original) return;
     const QString id = QString::fromStdString(original->id);
+    if (clipPropertiesPanelEnabled_) {
+        emit clipPropertiesRequested(id);
+        return;
+    }
     const QPointer<heisenberg::ui::EditorSession> session = session_;
     heisenberg::ui::ClipAppearanceDialog dialog(*original, this);
     if (dialog.exec() != QDialog::Accepted || !session || session_ != session.data()) return;
@@ -962,7 +1003,13 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
                                      QPointF(clipRect.right() - inset, clipRect.bottom() - 5));
                 }
 
+                const auto markerFrames = appearanceMarkerFrames_.find(clip.id);
+                const bool showMarkers = selected && clip.mediaType == heisenberg::ClipType::Video &&
+                    markerFrames != appearanceMarkerFrames_.end();
+                const double markerRowHeight = showMarkers ? 10.0 : 0.0;
                 if (clipRect.width() >= 34) {
+                    painter.save();
+                    painter.setClipRect(clipRect.adjusted(0, 0, 0, -markerRowHeight), Qt::IntersectClip);
                     QFont labelFont = font();
                     labelFont.setPixelSize(10);
                     labelFont.setBold(true);
@@ -983,9 +1030,31 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
                             : tr("%1 frames%2").arg(clip.durationFrames)
                                   .arg(std::abs(clip.speed - 1.0) > 0.0001
                                            ? tr("  %1x").arg(clip.speed, 0, 'g', 3) : QString());
-                        painter.drawText(clipRect.adjusted(6, 17, -5, -2),
-                                         Qt::AlignLeft | Qt::AlignVCenter, detail);
+                        const QRectF detailRect = clipRect.adjusted(6, showMarkers ? 14 : 17, -5,
+                                                                     showMarkers ? -markerRowHeight : -2);
+                        if (detailRect.height() >= painter.fontMetrics().height())
+                            painter.drawText(detailRect, Qt::AlignLeft | Qt::AlignVCenter, detail);
                     }
+                    painter.restore();
+                }
+                if (showMarkers) {
+                    painter.save();
+                    painter.setClipPath(path, Qt::IntersectClip);
+                    painter.setPen(Qt::NoPen);
+                    painter.setBrush(QColor(245, 199, 98));
+                    const double markerY = clipRect.bottom() - markerRowHeight / 2.0;
+                    for (const auto frame : markerFrames->second) {
+                        const double x = clipRect.left() + static_cast<double>(frame) * pixelsPerFrame_;
+                        if (x + 3.0 < kHeaderWidth || x - 3.0 > contentRight()) continue;
+                        QPainterPath diamond;
+                        diamond.moveTo(x, markerY - 3.0);
+                        diamond.lineTo(x + 3.0, markerY);
+                        diamond.lineTo(x, markerY + 3.0);
+                        diamond.lineTo(x - 3.0, markerY);
+                        diamond.closeSubpath();
+                        painter.drawPath(diamond);
+                    }
+                    painter.restore();
                 }
             }
             painter.setOpacity(1.0);
@@ -1199,7 +1268,7 @@ void TimelineWidget::updateMarquee(const QPointF& point) {
 }
 
 void TimelineWidget::updateScrub(double x, bool finished) {
-    currentFrame_ = frameAtX(x);
+    storeCurrentFrame(frameAtX(x));
     if (finished) emit scrubFinished(currentFrame_);
     else emit scrubFrameRequested(currentFrame_);
     update();

@@ -66,9 +66,21 @@ then transform with the image. Filtering uses alpha-weighted colors so hidden RG
 cannot contaminate transparent borders. Perspective rotation retains a planar
 preview fallback and is rejected by strict export.
 
-Preview and export also execute imported `opacityTrack`, `positionTrack`,
-`scaleTrack`, `rotationTrack` and `cropTrack` payloads. This round adds no keyframe
-UI: Clip Appearance still edits constants and preserves imported tracks. Each
+The right-hand Clip Properties inspector edits the primary selected video clip.
+It displays sampled opacity, position, width/height scales, rotation and crop at the
+playhead, plus constant blend mode, flips and edge settings. Each animation group
+has a diamond to add/remove the current key, previous/next key navigation, and
+Linear/Hold/Smooth outgoing interpolation. Position, scale and crop keys retain
+all components together. With no keys, numbers edit constants; with animation,
+changing a number inserts or updates the current clip-local key. Removing the last
+key returns to the stored constant. Drag the adjacent ↔ handle horizontally to scrub
+its value; one continuous gesture is one undo, and Escape cancels the preview.
+Animated writes are disabled outside the selected clip. Navigation seeks the actual
+timeline preview, including when returning from source preview. Selected clips show
+in-range key positions as diamonds, merging properties at the same frame.
+
+Preview and export execute `opacityTrack`, `positionTrack`, `scaleTrack`,
+`rotationTrack` and `cropTrack` payloads. Each
 track is an object with a `keyframes` array, for example
 `{"keyframes":[{"frame":0,"value":0,"interpolationOut":"smooth"},{"frame":12,"value":1}]}`
 for opacity. Frames are strictly increasing integers in clip-local timeline time:
@@ -126,7 +138,7 @@ transforms. Offline MP4 export uses software H.264/H.265 and AAC, independent of
 playback clock and window. See [composition, color and export](docs/composition-color-export.md)
 for input policies, effect semantics, deployment and output-safety details.
 
-There is no keyframe editing UI, hardware encoding, HDR output, waveform cache,
+There is no keyframe curve editor, hardware encoding, HDR output, waveform cache,
 or pitch-preserving time stretching.
 
 Clip Appearance also selects a constant blend mode. The fixed table follows the

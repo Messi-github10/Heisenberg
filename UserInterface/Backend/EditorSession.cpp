@@ -283,6 +283,36 @@ EditResult EditorSession::setTrackHidden(const QString& trackId, bool hidden) {
     return result;
 }
 
+EditResult EditorSession::editClipAppearance(const QString& clipId, const ClipAppearanceEdit& edit) {
+    auto result = project_.editor().editClipAppearance(clipId.toUtf8().toStdString(), edit);
+    if (result.changed()) { syncDirty(); emit timelineChanged(-1); }
+    return result;
+}
+
+EditResult EditorSession::beginClipAppearanceTransaction(const QString& clipId, qint64 localFrame) {
+    return project_.editor().beginClipAppearanceTransaction(clipId.toUtf8().toStdString(), localFrame);
+}
+
+EditResult EditorSession::updateClipAppearanceTransaction(const ClipAppearanceEdit& edit) {
+    auto result = project_.editor().updateClipAppearanceTransaction(edit);
+    if (result.changed()) emit timelineChanged(-1);
+    return result;
+}
+
+EditResult EditorSession::commitClipAppearanceTransaction() {
+    auto result = project_.editor().commitClipAppearanceTransaction();
+    syncDirty();
+    if (result.changed()) emit timelineChanged(-1);
+    return result;
+}
+
+EditResult EditorSession::cancelClipAppearanceTransaction() {
+    auto result = project_.editor().cancelClipAppearanceTransaction();
+    syncDirty();
+    if (result.changed()) emit timelineChanged(-1);
+    return result;
+}
+
 EditResult EditorSession::setClipAppearance(const QString& clipId, const ClipAppearancePatch& patch) {
     auto result = project_.editor().setClipAppearance(clipId.toUtf8().toStdString(), patch);
     if (result.changed()) { syncDirty(); emit timelineChanged(-1); }

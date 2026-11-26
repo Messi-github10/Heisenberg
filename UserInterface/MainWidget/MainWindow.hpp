@@ -15,6 +15,7 @@ class QSlider;
 class QCloseEvent;
 class MediaPoolWidget;
 class ColorGradePanel;
+class ClipPropertiesPanel;
 class QTabWidget;
 namespace heisenberg::ui { class EditorSession; }
 
@@ -56,6 +57,7 @@ signals:
     void hardwareDecodeToggled(bool enabled);
     void previewMediaRequested(const QString& mediaRef);
     void timelinePreviewRequested();
+    void timelineSeekRequested(qint64 frameIndex);
 
 public slots:
     void setDuration(double seconds);
@@ -71,6 +73,7 @@ protected:
 private:
     void setupUi();
     void setupConnections();
+    void finishInspectorEditing();
     bool confirmDiscardChanges();
     void updateProjectTitle();
     void updateSourceRange();
@@ -94,6 +97,7 @@ private:
     MediaPoolWidget* mediaPool_ = nullptr;
     MediaInfoPanel* mediaInfo_ = nullptr;
     ColorGradePanel* colorGrade_ = nullptr;
+    ClipPropertiesPanel* clipProperties_ = nullptr;
     QTabWidget* inspector_ = nullptr;
     bool sourcePreview_ = false;
     quint64 probeSerial_ = 0;

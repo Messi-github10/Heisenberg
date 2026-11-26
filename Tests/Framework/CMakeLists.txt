@@ -155,6 +155,8 @@ add_executable(HeisenbergFrameworkTests
     group_move_test.cpp
     clip_appearance_test.cpp
     appearance_track_test.cpp
+    appearance_authoring_test.cpp
+    appearance_transaction_test.cpp
     appearance_edit_continuity_test.cpp
     multitrack_executor_test.cpp
     multitrack_renderer_test.cpp
