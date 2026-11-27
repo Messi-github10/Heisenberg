@@ -20,7 +20,7 @@ bool outputColorSpace(const ColorOutputRequest& selection, pl_color_space& color
     if (space == "sRGB - Display" || space == "sRGB Encoded Rec.709 (sRGB)") return true;
     if (space == "Rec.1886 Rec.709 - Display") {
         // The fixed studio config's Rec.1886 display is a pure 2.4 encoding.
-        if (selection.intent != ColorOutputIntent::SdrVideoPreview ||
+        if (selection.intent != ColorOutputIntent::CodePreserving ||
             selection.view != "Un-tone-mapped" || !selection.colorSpace.empty())
             color.transfer = PL_COLOR_TRC_GAMMA24;
         // The explicit video-preview intent presents these SDR code values

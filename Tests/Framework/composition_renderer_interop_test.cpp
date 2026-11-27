@@ -297,12 +297,12 @@ void checkSdrAppearance(bool tenBit, bool hardware, bool videoPreview = false) {
                 EXPECT_TRUE(working.outputSelectionMetadata().display.empty());
                 if (videoPreview) {
                     const auto before=renderer.download(working,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(before) << error;
-                    const ColorOutputRequest previewRequest{color::kPreviewDisplay,color::kColorimetricView,{},ColorOutputIntent::SdrVideoPreview};
+                    const ColorOutputRequest previewRequest{color::kPreviewDisplay,color::kColorimetricView,{},ColorOutputIntent::CodePreserving};
                     auto encoded=renderer.output(working,previewRequest,&error); ASSERT_TRUE(encoded) << error;
                     EXPECT_EQ(encoded.outputSelectionMetadata().display,color::kExportDisplay);
                     EXPECT_EQ(encoded.outputSelectionMetadata().view,color::kColorimetricView);
                     EXPECT_TRUE(encoded.outputSelectionMetadata().colorSpace.empty());
-                    EXPECT_EQ(encoded.outputSelectionMetadata().intent,ColorOutputIntent::SdrVideoPreview);
+                    EXPECT_EQ(encoded.outputSelectionMetadata().intent,ColorOutputIntent::CodePreserving);
                     auto codes=renderer.download(encoded,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(codes) << error;
                     // Export still has the SAME actual Rec1886 encoding but no
                     // runtime preview intent; its numerical OCIO roundtrip is
@@ -415,7 +415,7 @@ TEST(SdrVideoPreviewTest, InputInterpretationAndOutputWhitelistDoNotLeakAcrossWo
     auto req=request(source);
     auto ordinary=renderer.render(req,&error); ASSERT_TRUE(ordinary) << error;
     const auto ordinaryWorking=renderer.download(ordinary,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(ordinaryWorking) << error;
-    const ColorOutputRequest preview{color::kPreviewDisplay,color::kColorimetricView,{},ColorOutputIntent::SdrVideoPreview};
+    const ColorOutputRequest preview{color::kPreviewDisplay,color::kColorimetricView,{},ColorOutputIntent::CodePreserving};
     // Render other interpretations before outputting the original lease. The
     // eligibility belongs to that lease, never to renderer's latest source.
     for (const char* space : {"sRGB - Display","sRGB Encoded Rec.709 (sRGB)","Linear Rec.709 (sRGB)","ACEScg"}) {
@@ -441,7 +441,7 @@ TEST(SdrVideoPreviewTest, InputInterpretationAndOutputWhitelistDoNotLeakAcrossWo
     }
     auto eligible=renderer.output(ordinary,preview,&error); ASSERT_TRUE(eligible) << error;
     EXPECT_EQ(eligible.outputSelectionMetadata().display,color::kExportDisplay);
-    EXPECT_EQ(eligible.outputSelectionMetadata().intent,ColorOutputIntent::SdrVideoPreview);
+    EXPECT_EQ(eligible.outputSelectionMetadata().intent,ColorOutputIntent::CodePreserving);
     const auto eligiblePixels=renderer.download(eligible,DownloadFormat::RgbaFloat,&error); ASSERT_TRUE(eligiblePixels) << error;
     for (int band=0; band<4; ++band) {
         const auto* pixel=reinterpret_cast<const float*>(eligiblePixels->data[0]+12*eligiblePixels->linesize[0])+(band*8+4)*4;
@@ -457,7 +457,7 @@ TEST(SdrVideoPreviewTest, InputInterpretationAndOutputWhitelistDoNotLeakAcrossWo
              {{}, {}, "Linear Rec.709 (sRGB)"},
              {{}, {}, "ACEScg"}}}) {
         const auto baseline=renderer.output(ordinary,selection,&error); ASSERT_TRUE(baseline) << error;
-        selection.intent=ColorOutputIntent::SdrVideoPreview;
+        selection.intent=ColorOutputIntent::CodePreserving;
         const auto output=renderer.output(ordinary,selection,&error); ASSERT_TRUE(output) << error;
         EXPECT_EQ(output.outputSelectionMetadata().display,baseline.outputSelectionMetadata().display);
         EXPECT_EQ(output.outputSelectionMetadata().view,baseline.outputSelectionMetadata().view);

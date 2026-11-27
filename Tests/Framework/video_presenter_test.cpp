@@ -169,7 +169,7 @@ TEST_F(VideoPresenterPixelTest, ExplicitRec1886VideoPreviewPreservesGrayAndColor
     for (const auto& patch : reference) pixels.insert(pixels.end(),patch.begin(),patch.end());
     auto input = source(pixels,int(reference.size()),1); ASSERT_NE(input,nullptr);
     const ColorOutputRequest selection{"Rec.1886 Rec.709 - Display", "Un-tone-mapped", {},
-        ColorOutputIntent::SdrVideoPreview};
+        ColorOutputIntent::CodePreserving};
     for (const char* name : {"rgba8", "bgra8", "rgb10a2", "bgr10a2"}) {
         SCOPED_TRACE(name);
         auto surface = target(name,int(reference.size()),1); ASSERT_NE(surface.fbo,nullptr);
@@ -192,10 +192,10 @@ TEST_F(VideoPresenterPixelTest, ExplicitRec1886VideoPreviewPreservesGrayAndColor
 TEST_F(VideoPresenterPixelTest, PreviewIntentOnlyBypassesTheExplicitRec1886UntoneDisplayWhitelist) {
     auto input = source({0.18f,0.18f,0.18f,1},1,1); ASSERT_NE(input,nullptr);
     for (const auto& selection : std::array<ColorOutputRequest,4>{{
-             {"sRGB - Display", "Un-tone-mapped", {}, ColorOutputIntent::SdrVideoPreview},
-             {{}, {}, "sRGB Encoded Rec.709 (sRGB)", ColorOutputIntent::SdrVideoPreview},
-             {"Rec.1886 Rec.709 - Display", "ACES 2.0 - SDR 100 nits (Rec.709)", {}, ColorOutputIntent::SdrVideoPreview},
-             {{}, {}, "Rec.1886 Rec.709 - Display", ColorOutputIntent::SdrVideoPreview}}}) {
+             {"sRGB - Display", "Un-tone-mapped", {}, ColorOutputIntent::CodePreserving},
+             {{}, {}, "sRGB Encoded Rec.709 (sRGB)", ColorOutputIntent::CodePreserving},
+             {"Rec.1886 Rec.709 - Display", "ACES 2.0 - SDR 100 nits (Rec.709)", {}, ColorOutputIntent::CodePreserving},
+             {{}, {}, "Rec.1886 Rec.709 - Display", ColorOutputIntent::CodePreserving}}}) {
         SCOPED_TRACE(testing::Message() << selection.display << ' ' << selection.view << ' ' << selection.colorSpace);
         auto surface = target("rgba8",1,1); ASSERT_NE(surface.fbo,nullptr);
         std::string error;
@@ -211,15 +211,15 @@ TEST_F(VideoPresenterPixelTest, VideoPreviewIntentDoesNotPermitHdrUnknownOrNonSd
     auto input = source({0.18f,0.5f,0.75f,1},1,1); ASSERT_NE(input,nullptr);
     auto surface = target("rgba8",1,1); ASSERT_NE(surface.fbo,nullptr);
     const ColorOutputRequest selection{"Rec.1886 Rec.709 - Display", "Un-tone-mapped", {},
-        ColorOutputIntent::SdrVideoPreview};
+        ColorOutputIntent::CodePreserving};
     std::string error;
     for (const auto& unsupported : std::array<ColorOutputRequest,6>{{
-             {{}, {}, {}, ColorOutputIntent::SdrVideoPreview},
-             {"unknown display", "Un-tone-mapped", {}, ColorOutputIntent::SdrVideoPreview},
-             {"Rec.2100-PQ - Display", "Un-tone-mapped", {}, ColorOutputIntent::SdrVideoPreview},
-             {"Rec.2100-HLG - Display", "Un-tone-mapped", {}, ColorOutputIntent::SdrVideoPreview},
-             {{}, {}, "ACEScg", ColorOutputIntent::SdrVideoPreview},
-             {{}, {}, "Linear Rec.709 (sRGB)", ColorOutputIntent::SdrVideoPreview}}}) {
+             {{}, {}, {}, ColorOutputIntent::CodePreserving},
+             {"unknown display", "Un-tone-mapped", {}, ColorOutputIntent::CodePreserving},
+             {"Rec.2100-PQ - Display", "Un-tone-mapped", {}, ColorOutputIntent::CodePreserving},
+             {"Rec.2100-HLG - Display", "Un-tone-mapped", {}, ColorOutputIntent::CodePreserving},
+             {{}, {}, "ACEScg", ColorOutputIntent::CodePreserving},
+             {{}, {}, "Linear Rec.709 (sRGB)", ColorOutputIntent::CodePreserving}}}) {
         EXPECT_FALSE(blitPresentationFrame(gpu,*blitter,input,unsupported,surface,&error));
         EXPECT_FALSE(error.empty());
     }

@@ -171,7 +171,7 @@ TEST_F(MultitrackRendererTest, FinishedRec709ShortcutRequiresAllVisibleContribut
     auto plan = planWithTracks();
     for (const auto& track : plan.tracks) plan.colorSettings.inputColorSpaces[track.clips[0].mediaRef] = color::kExportDisplay;
     auto gray = solid({0.4f,0.4f,0.4f,1}); ASSERT_TRUE(gray); std::string error;
-    const ColorOutputRequest output{color::kPreviewDisplay,color::kColorimetricView,{},ColorOutputIntent::SdrVideoPreview};
+    const ColorOutputRequest output{color::kPreviewDisplay,color::kColorimetricView,{},ColorOutputIntent::CodePreserving};
     auto check = [&](const std::string& expected) {
         auto composite = renderer->render(plan,0,std::vector<CompositionVideoLayer>{layer(plan,0,gray,0.5),layer(plan,1,gray)},&error);
         EXPECT_TRUE(composite) << error; if (!composite) return;

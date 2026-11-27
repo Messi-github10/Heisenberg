@@ -549,8 +549,8 @@ private:
             output.view = request.plan->colorSettings.previewOutput.view;
             if (request.plan->colorSettings.inputPolicyVersion == 2 &&
                 output.display == "sRGB - Display" && output.view == "Un-tone-mapped")
-                output.intent = renderer::ColorOutputIntent::SdrVideoPreview;
-        } else output.intent = renderer::ColorOutputIntent::SdrVideoPreview;
+                output.intent = renderer::ColorOutputIntent::CodePreserving;
+        } else output.intent = renderer::ColorOutputIntent::CodePreserving;
         double outputMs = -1.0;
         if (working) {
             const auto outputStart = Clock::now();
